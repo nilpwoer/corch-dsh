@@ -5,9 +5,9 @@
 </style><style>.auth-card{margin:70px auto;padding:30px;width:min(440px,100%);text-align:left}.auth-card h2{margin:0 0 8px;font-size:20px}.auth-card p{margin:0 0 18px;color:var(--muted);font-size:13px}.auth-card label{display:block;margin-bottom:7px;font-size:13px;font-weight:600}.auth-card input{width:100%;padding:13px 14px;border:1px solid var(--border);border-radius:8px;letter-spacing:.22em;font-size:20px;outline:0}.auth-card input:focus{border-color:var(--accent);box-shadow:0 0 0 2px #d9534f1f}.auth-card .btn{width:100%;margin-top:14px}.auth-error{margin-top:10px;color:var(--accent);font-size:12px}</style></head><body><div class="app" id="app"></div>
 <script>
 (() => {
-  if (new URLSearchParams(location.search).get('worker') === '1') {
+  if (new URLSearchParams(location.search).get('worker') === '1' || window.__TEACHING_PORTAL__ === true) {
     import('./practice-expert-worker.js').then(({ mountWorkerInterview }) => mountWorkerInterview(document.querySelector('#app'))).catch(() => {
-      document.querySelector('#app').textContent = '无法连接本地访谈服务，请确认 Worker 已启动后刷新。'
+      document.querySelector('#app').textContent = '无法连接访谈服务，请确认服务可用后刷新。'
     })
     return
   }

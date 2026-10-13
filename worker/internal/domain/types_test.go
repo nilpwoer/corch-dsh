@@ -1,6 +1,32 @@
 package domain
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
+
+func TestDecodeRejectsDuplicateFieldsAndSlotlessAnalysisIsAccepted(t *testing.T) {
+	var result Analysis
+	if err := Decode([]byte(`{"status":"complete","reason":"回答充分"}`), &result); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateAnalysis(result, Question{}); err != nil {
+		t.Fatal(err)
+	}
+	var value any
+	for _, raw := range []string{`{"scope":"per_question","scope":"interview"}`, `{"questions":[{"id":"Q01","id":"Q02"}]}`} {
+		if Decode([]byte(raw), &value) == nil {
+			t.Fatal("duplicate field accepted")
+		}
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(encoded) != `{"status":"complete","reason":"回答充分"}` {
+		t.Fatal("slotless output gained required fields")
+	}
+}
 
 func TestEvidenceMustMatchOriginalAnswers(t *testing.T) {
 	in := Snapshot{Answers: []Answer{{QuestionID: "q", Text: "验收记录", Confirmed: true}}}

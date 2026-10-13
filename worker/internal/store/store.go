@@ -25,6 +25,9 @@ import (
 //go:embed schema.sql
 var schema string
 
+//go:embed portal-schema.sql
+var portalSchema string
+
 type Store struct {
 	DB     *gorm.DB
 	Config config.Config
@@ -137,6 +140,9 @@ func Open(ctx context.Context, c config.Config) (*Store, error) {
 	if err == nil {
 		err = s.registerReleases(startup)
 	}
+	if err == nil && c.Portal.Enabled {
+		err = s.InitializeAdmin(startup)
+	}
 	if err != nil {
 		_ = pool.Close()
 		return nil, err
@@ -211,23 +217,31 @@ func (s *Store) migrate(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	if len(versions) > 1 || len(versions) == 1 && versions[0] != 1 {
+	if len(versions) > 1 || len(versions) == 1 && versions[0] != 1 && versions[0] != 2 {
 		return fmt.Errorf("不支持的 Worker 数据库结构版本")
 	}
-	if len(versions) == 1 {
+	if len(versions) == 1 && versions[0] == 2 {
 		return nil
 	}
 	if !s.Config.Database.AutoMigrate {
 		return fmt.Errorf("数据库尚未初始化")
 	}
-	for _, statement := range strings.Split(schema, ";") {
+	ddl := portalSchema
+	if len(versions) == 0 {
+		ddl = schema + "\n" + portalSchema
+	}
+	for _, statement := range strings.Split(ddl, ";") {
 		if strings.TrimSpace(statement) != "" {
 			if _, err = conn.ExecContext(ctx, statement); err != nil {
 				return fmt.Errorf("初始化 Worker 数据表: %w", err)
 			}
 		}
 	}
-	_, err = conn.ExecContext(ctx, "INSERT INTO tw_schema(version) VALUES (1)")
+	if len(versions) == 1 {
+		_, err = conn.ExecContext(ctx, "UPDATE tw_schema SET version=2 WHERE version=1")
+	} else {
+		_, err = conn.ExecContext(ctx, "INSERT INTO tw_schema(version) VALUES (2)")
+	}
 	return err
 }
 func (s *Store) registerReleases(ctx context.Context) error {
@@ -290,6 +304,19 @@ func (s *Store) Enqueue(ctx context.Context, key string, sub domain.Submit) (Tas
 			return domain.Fail("INTERVIEW_FROZEN", 409)
 		}
 		var followupKey *string
+		if snap.InputVersion > live.InputVersion {
+			var saved struct{ Contents json.RawMessage }
+			if err := tx.Table("tw_snapshots").Where("interview_id=? AND input_version=?", live.ID, live.InputVersion).Take(&saved).Error; err != nil {
+				return err
+			}
+			var previous domain.Snapshot
+			if err := json.Unmarshal(saved.Contents, &previous); err != nil {
+				return err
+			}
+			if config.Hash(previous.Pack) != config.Hash(snap.Pack) {
+				return domain.Fail("QUESTION_PACK_MISMATCH", 409)
+			}
+		}
 		if sub.Kind == "followup" {
 			value := config.Hash([]any{live.ID, sub.QuestionID, snap.InputVersion})
 			followupKey = &value
@@ -445,7 +472,16 @@ func (s *Store) Finish(ctx context.Context, t Task, result any) error {
 				if err := tx.Model(&followed{}).Where("interview_id=? AND question_id=?", live.ID, in.Submit.QuestionID).Count(&count).Error; err != nil {
 					return err
 				}
-				if count >= int64(release.Pipeline.MaxFollowups) {
+				var publishedHistory []followed
+				if err := tx.Where("interview_id=?", live.ID).Find(&publishedHistory).Error; err != nil {
+					return err
+				}
+				history := []domain.Followup{}
+				for _, f := range publishedHistory {
+					history = append(history, domain.Followup{QuestionID: f.QuestionID})
+				}
+				used, limit := domain.FollowupLimit(in.Submit.Snapshot, history, in.Submit.QuestionID, release.Pipeline.MaxFollowups)
+				if used >= limit {
 					result = domain.FollowupResult{Status: "needs_review", Reason: "FOLLOWUP_LIMIT", AllowSkip: true}
 				} else {
 					if err := tx.Create(&followed{TaskID: t.ID, InterviewID: live.ID, QuestionID: in.Submit.QuestionID, InputVersion: in.Submit.Snapshot.InputVersion, Text: r.Text}).Error; err != nil {

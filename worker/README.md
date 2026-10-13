@@ -2,7 +2,7 @@
 
 English | [中文](README.zh.md)
 
-Reference for the independent Go service that generates interview follow-ups and evidence-linked reports. It uses Cobra, GORM and MySQL. The HTTP API is for a trusted application backend; an optional loopback browser entry supports local integration. Public expert authentication and question administration belong to the calling application.
+Reference for the independent Go service that generates interview follow-ups and evidence-linked reports. It uses Cobra, GORM and MySQL. The HTTP API is for a trusted application backend; an optional loopback browser entry supports local integration. An independent, explicitly enabled portal adds database-backed management accounts, package uploads and participant sessions; the loopback preview remains separate.
 
 ## Quick start
 
@@ -28,11 +28,11 @@ Edit `providers` and each prompt's `model` to match the provider endpoint and mo
 |---|---|
 | `mode` | `both` serves the API and executes tasks; `api` only accepts and reads tasks; `worker` only consumes tasks and serves health. Every process needs a distinct listening address and access to the same database when deployed together. |
 | `server` | Listening address, read/write/shutdown timeouts and HTTP body limit. |
-| `database` | Inline `dsn`, initial schema creation, pool sizes, connection lifetime and connection/I/O timeout. `auto_migrate` initializes schema version 1; it does not upgrade an incompatible database. |
+| `database` | Inline `dsn`, initial schema creation, pool sizes, connection lifetime and connection/I/O timeout. `auto_migrate` initializes schema version 2 or explicitly upgrades version 1 with the portal tables; other versions are rejected. |
 | `auth` | Inline shared backend `token`; at least 32 characters. Required in all modes. |
 | `queue` | Separate follow-up/report concurrency, polling, lease and heartbeat intervals, task timeout, attempt limit, retry delays and input/output byte limits. These limits are captured for each task; concurrency and polling belong to each running process. |
 | `providers` | Named endpoint, inline `api_key` and request timeout. API-only mode permits an empty model key; consumers require a key for each configured model. |
-| `prompts.followup` | Version, model settings, maximum published follow-ups per question, analysis prompt and composition prompt. |
+| `prompts.followup` | Version, model settings, legacy backend follow-up limit, analysis prompt and composition prompt. Portal sessions use the package policy instead of this limit. |
 | `prompts.report` | Independent version/model and evidence-extraction/composition prompts. `max_followups` is zero. |
 | `preview` | Optional local browser entry, asset/question-pack paths, cookie lifetime, polling interval and displayed model label. Requires `api` or `both` and a numeric loopback listening IP. |
 
@@ -54,7 +54,7 @@ An interview keeps the follow-up release selected when its first task is accepte
 | `GET /v1/tasks/{id}` | Read task status, attempts, error code, release version/hash and output. |
 | `GET /v1/interviews/{id}/tasks` | Read the interview's task and report history. |
 
-Use [examples/followup.json](examples/followup.json) and [examples/report.json](examples/report.json) as complete request examples. A snapshot carries an interview ID, positive `input_version` and `question_pack_version`, expert profile, questions with required slots, and answers. Submit only a confirmed target answer for a follow-up; reports require every question to have a confirmed answer or confirmed skip. IDs use ASCII letters, digits, underscore or hyphen, up to 100 characters.
+Use [examples/followup.json](examples/followup.json) and [examples/report.json](examples/report.json) as complete request examples. A snapshot carries an interview ID, positive `input_version` and `question_pack_version`, expert profile, questions with optional legacy slots, answers and optional publication context. Submit only a confirmed target answer for a follow-up; reports require every question to have a confirmed answer or confirmed skip. IDs use ASCII letters, digits, underscore or hyphen, up to 100 characters.
 
 ```powershell
 curl.exe http://127.0.0.1:3090/v1/tasks `
@@ -82,7 +82,7 @@ Tasks progress through `queued`, `running`, and `succeeded` or `failed`; outdate
 
 Follow-ups first assess `complete`, `incomplete`, `uncertain` or `sensitive`, then compose at most one question. Skips bypass the model. Sensitive answers, published-round exhaustion and exhausted transient model failures return `needs_review` with `allow_skip: true`. Other invalid model outputs fail explicitly. Transport errors, HTTP 408/429 and 5xx responses retry with bounded exponential delays; attempt counts include the initial execution.
 
-Reports extract literal answer quotations before composing sections and task cards. JSON Schema rejects malformed fields; deterministic checks reject unknown slots, invented quotations and missing/unknown fact or task-card citations. Statements distinguish `fact`, `interpretation` and `needs_verification`. Citation validity does not prove that a statement follows logically from its evidence; human review remains necessary.
+Reports extract literal answer quotations before composing sections and task cards. JSON Schema rejects malformed fields; deterministic checks reject invalid analysis, invented quotations and missing/unknown fact or task-card citations. Required slots are optional legacy input, not a mandatory interview checklist. Statements distinguish `fact`, `interpretation` and `needs_verification`. Citation validity does not prove that a statement follows logically from its evidence; human review remains necessary.
 
 The database retains snapshots, prompt releases, stage outputs, model requests/responses and reports. Request headers and secret values are not recorded. Model-visible input is the configured system prompt plus an output-schema instruction, followed by a separate JSON user message. This separation is an instruction convention, not proof against prompt injection. Retention/deletion, per-expert authorization, public rate limiting, administrative UI and report export are not implemented here. Interrupted model calls can be repeated and billed again before a checkpoint exists; queue fencing prevents stale publication, not duplicate external calls.
 
@@ -115,3 +115,21 @@ go build -o teaching-worker.exe .
 ```
 
 The acceptance account must be able to create/drop temporary databases. Process acceptance skips explicitly without `-mysql-config`; that flag reads only `database.dsn` from the named YAML. Tests create an isolated temporary database, build the executable and launch separate API/consumer processes, covering lease recovery, stale-result fencing, concurrent consumers, idempotency, stage reuse, prompt immutability, report regeneration and browser-session isolation. [testdata/flow.golden.json](testdata/flow.golden.json) records assembled model messages and outputs. Tests use a controlled endpoint and never use the file's real model key; live provider compatibility and report quality require separate acceptance with real interviews and credentials.
+
+## Portal management and participant sessions
+
+Set `portal.enabled` explicitly and configure an existing `packs_dir`, public `origin`, session and upload limits, and login rate limits. HTTPS is required outside loopback. Visit `/admin/` to log in, upload/list/remove JSON publications, inspect reports and download report JSON. The reports list is bounded to the latest 200 tasks. The management account is read from MySQL; first initialization inserts username `admin` only when a valid `admin_password_hash` is supplied. Portal startup rejects the example backend-token placeholder. An existing password is never overwritten, and first-login password changes are not enforced. There is no participant registration or general RBAC system.
+
+`hash-password --output <new-private-file>` reads a password from standard input and writes a salted PBKDF2-HMAC-SHA256 hash with 600,000 iterations to a new owner-only file. It prints neither password nor hash and refuses to overwrite a file. Obtain separate approval before entering or persisting a real credential; no default password is provided. The cost follows the [OWASP password-storage guidance](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html). Copy only the approved hash into private startup configuration, never a tracked file.
+
+Participant routes stay disabled until `participants_enabled` is explicit and `entry_mode` (`link` or `list`), `invitation_mode` (`code` or `none`), `participant_reports` (`allow` or `deny`), assets, polling and model label are all supplied. These are selectable protocol options, not approved default product decisions. Management and interview sessions use different HttpOnly, SameSite=Strict cookies, server-side expiry and exact-origin checks for mutations. Logout revokes the database management session. Login budgets are per process and configured through `login_limit` and `login_window`.
+
+Root `/` and the existing `/practice-expert-interview-spa.html` path serve the original template with the worker entry selected. `/portal/api` owns participant requests; missing API or JSON paths return errors rather than template HTML. Link mode does not expose a public package list. A link can use the immutable upload key as `fieldnoteId`; ambiguous fieldnote aliases require a version-specific key rather than silently selecting the latest file. Code mode validates the existing invitation on the server and never sends it to the browser. Uploaded files remain private host publications; participant views omit invitation and host materials.
+
+DSH's SPA preview adds a goal, explicit follow-up scope/count and JSON export without replacing the existing host confirmation/publishing flow. Publications preserve `followUp` and `sourceRefs`; references describe question design, not expert answer evidence. `interviewPolicy` contains `scope: per_question | interview` and a nonnegative `maxFollowups`; zero disables additional questions. Legacy publications can be inspected but cannot start portal sessions until the goal and policy are supplied. No server per-package default is inferred.
+
+Uploads are parsed and bounded before a same-filesystem, atomic no-replace publication. Same-key identical retries succeed; changed contents require another key. Path-shaped keys, escaping symlinks, malformed formal files and unfinished uploads are excluded. Interview sessions retain a publication copy, version, private full hash and policy in MySQL, so directory deletion or replacement cannot change an active session. The browser binding hash excludes invitation data to avoid exposing a fast digest of a short code.
+
+Answers use the existing transactional snapshot and task idempotency, and published follow-ups are counted both before model work and under the final interview lock. Context contains the goal, background, optional hint, actual answer history and prior follow-ups. The model may decide an answer is sufficient without composing another question; hints and answers remain user data. Report generation reuses literal quotation and citation checks. Participant report outputs are withheld when configured `deny`, while the management API remains authenticated. Process restart restores accepted snapshots, tasks and report state; unsent drafts remain in the browser.
+
+`go test . -args -mysql-config <isolated-config> -portal-browser` additionally runs the real portal with installed Playwright/Chromium through `tests/portal-browser.mjs`. Set `PORTAL_TEST_CHROMIUM` when using a separately installed executable. The browser checks login/upload, invitation, radio choices, a controlled speech-recognition hook, local draft reload, real HTTP answer submission, evidence-linked report download and logout. The model endpoint and speech recognition are controlled fixtures; this does not prove live provider quality or microphone availability.

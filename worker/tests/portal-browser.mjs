@@ -1,0 +1,72 @@
+import assert from 'node:assert/strict'
+import { createRequire } from 'node:module'
+import { readFile } from 'node:fs/promises'
+const require = createRequire(new URL('../../apps/web/package.json', import.meta.url))
+const { chromium } = require('playwright')
+const [origin, packFile] = process.argv.slice(2)
+const browser = await chromium.launch({ executablePath: process.env.PORTAL_TEST_CHROMIUM || undefined })
+try {
+  const context = await browser.newContext({ acceptDownloads: true })
+  const manager = await context.newPage()
+  const errors = []
+  manager.on('pageerror', error => errors.push(error.message))
+  await manager.goto(origin + '/admin/')
+  await manager.locator('input[name=password]').fill('synthetic-isolated-test-password')
+  await manager.getByRole('button', { name: '登录', exact: true }).click()
+  await manager.locator('#workspace').waitFor({ state: 'visible' })
+  await manager.locator('#pack-file').setInputFiles(packFile)
+  await manager.locator('#pack-key').fill('FN-browser-v1')
+  await manager.getByRole('button', { name: '上传题包', exact: true }).click()
+  await manager.getByText('FN-browser-v1', { exact: true }).waitFor()
+  const participantContext = await browser.newContext()
+  await participantContext.addInitScript(() => {
+    window.SpeechRecognition = class {
+      start() { this.onstart?.(); this.onresult?.({ results: [[{ transcript: '语音样例' }]] }); this.onend?.() }
+      stop() { this.onend?.() }
+    }
+  })
+  const participant = await participantContext.newPage()
+  participant.on('pageerror', error => errors.push(error.message))
+  await participant.goto(origin + '/?fieldnoteId=FN-missing')
+  await participant.locator('#portal-key').fill('FN-browser-v1')
+  await participant.locator('#portal-code').fill('000000')
+  await participant.getByRole('button', { name: '开始访谈' }).click()
+  await participant.locator('#answer').waitFor()
+  await participant.locator('[data-option="0"]').check()
+  await participant.locator('[data-option="1"]').check()
+  assert.equal(await participant.locator('[data-option]:checked').count(), 1)
+  await participant.locator('#voice').click()
+  assert.match(await participant.locator('#answer').inputValue(), /语音样例/)
+  const answer = '负责方案审查，以验收记录确认质量。'
+  await participant.locator('#answer').fill(answer)
+  await participant.locator('#save-draft').click()
+  await participant.reload()
+  await participant.locator('#answer').waitFor()
+  assert.equal(await participant.locator('#answer').inputValue(), answer)
+  await participant.getByRole('button', { name: '确认回答并分析' }).click()
+  await participant.getByText(/追问轮次已用完/).waitFor()
+  await participant.getByRole('button', { name: '继续下一步', exact: true }).click()
+  await participant.getByRole('button', { name: '本题不便回答' }).click()
+  await participant.getByText('本题已选择跳过。', { exact: true }).waitFor()
+  await participant.getByRole('button', { name: '继续下一步', exact: true }).click()
+  await participant.getByRole('button', { name: '确认答案并生成报告' }).click()
+  await participant.getByText('报告已保存，由访谈管理端查看。', { exact: true }).waitFor()
+  const cookies = await participantContext.cookies()
+  const cookie = cookies.find(cookie => cookie.name === 'teaching_interview')
+  assert.ok(cookie?.httpOnly)
+  assert.equal(cookie.sameSite, 'Strict')
+  await manager.getByRole('button', { name: '刷新', exact: true }).click()
+  const downloadEvent = manager.waitForEvent('download')
+  await manager.getByRole('button', { name: '查看 / 下载' }).first().click()
+  const download = await downloadEvent
+  const output = JSON.parse(await readFile(await download.path(), 'utf8'))
+  assert.ok(output.evidence.some(evidence => evidence.quote === answer))
+  await manager.getByRole('button', { name: '退出登录' }).click()
+  await manager.locator('#login').waitFor({ state: 'visible' })
+  assert.equal((await manager.request.get(origin + '/admin/api/reports')).status(), 401)
+  const miss = await participant.request.get(origin + '/portal/api/unknown')
+  assert.equal(miss.status(), 404)
+  assert.ok(!(await miss.text()).includes('<!doctype'))
+  assert.deepEqual(errors, [])
+  console.log('Browser acceptance passed: login, upload, invitation, radio choices, voice hook, draft reload, answers, report download, logout and API 404.')
+} finally { await browser.close() }

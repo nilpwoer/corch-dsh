@@ -2,7 +2,7 @@
 
 [English](README.md) | 中文
 
-本文是独立 Go 服务的参考说明，服务生成访谈追问和关联证据的报告，使用 Cobra、GORM 和 MySQL。HTTP API 面向可信应用后端，可选的回环浏览器入口用于本地联调。公开专家身份认证及题目管理由调用应用负责。
+本文是独立 Go 服务的参考说明，服务生成访谈追问和关联证据的报告，使用 Cobra、GORM 和 MySQL。HTTP API 面向可信应用后端，可选的回环浏览器入口用于本地联调。独立、显式开启的 portal 提供数据库管理账号、题包上传和访谈会话；回环 preview 保持分离。
 
 ## 快速启动
 
@@ -28,11 +28,11 @@ MySQL 可访问时，`GET /health` 返回 HTTP 200 和 `ready: true`。其他接
 |---|---|
 | `mode` | `both` 同时提供 API 和执行任务；`api` 只接收和查询任务；`worker` 只消费任务并提供健康检查。共同部署的进程使用各自的监听地址，并访问同一个数据库。 |
 | `server` | 监听地址、读写及关闭超时、HTTP 请求体上限。 |
-| `database` | 直接填写的 `dsn`、首次建表、连接池大小、连接生命周期、连接及读写超时。`auto_migrate` 初始化结构版本 1，不升级不兼容的数据库。 |
+| `database` | 直接填写的 `dsn`、首次建表、连接池大小、连接生命周期、连接及读写超时。`auto_migrate` 初始化结构版本 2，或明确将版本 1 升级并加入 portal 表；其他版本拒绝。 |
 | `auth` | 直接填写的后端共享 `token`；令牌至少 32 个字符。所有运行模式均必填。 |
 | `queue` | 追问和报告分别设置并发数，以及轮询、租约、心跳、任务超时、尝试次数、重试间隔、输入输出字节上限。限制随任务保存；并发数和轮询间隔属于各运行进程。 |
 | `providers` | 命名接口地址、直接填写的 `api_key` 和请求超时。仅 API 模式允许模型密钥为空；消费者要求每个已配置模型都有密钥。 |
-| `prompts.followup` | 版本、模型参数、每题最多发布追问数、分析提示词和生成提示词。 |
+| `prompts.followup` | 版本、模型参数、旧后端追问上限、分析提示词和生成提示词。Portal 会话使用题包策略而非此上限。 |
 | `prompts.report` | 独立版本和模型、证据提取及报告生成提示词。`max_followups` 为零。 |
 | `preview` | 可选的本地浏览器入口、页面及问题包路径、Cookie 有效期、轮询间隔及显示的模型标识。要求 `api` 或 `both` 模式，且监听数值形式的回环 IP。 |
 
@@ -54,7 +54,7 @@ MySQL 可访问时，`GET /health` 返回 HTTP 200 和 `ready: true`。其他接
 | `GET /v1/tasks/{id}` | 查询任务状态、尝试次数、错误码、版本及哈希、输出。 |
 | `GET /v1/interviews/{id}/tasks` | 查询访谈任务和报告历史。 |
 
-完整请求见 [examples/followup.json](examples/followup.json) 和 [examples/report.json](examples/report.json)。快照包含访谈 ID、正整数 `input_version` 和 `question_pack_version`、专家背景、带必需槽位的题目及答案。追问的目标答案必须已确认；报告要求每题都有已确认答案或已确认跳过。ID 使用 ASCII 字母、数字、下划线或连字符，最多 100 个字符。
+完整请求见 [examples/followup.json](examples/followup.json) 和 [examples/report.json](examples/report.json)。快照包含访谈 ID、正整数 `input_version` 和 `question_pack_version`、专家背景、带可选旧槽位的题目、答案及可选发布上下文。追问的目标答案必须已确认；报告要求每题都有已确认答案或已确认跳过。ID 使用 ASCII 字母、数字、下划线或连字符，最多 100 个字符。
 
 ```powershell
 curl.exe http://127.0.0.1:3090/v1/tasks `
@@ -82,7 +82,7 @@ curl.exe http://127.0.0.1:3090/v1/tasks `
 
 追问先判断 `complete`、`incomplete`、`uncertain` 或 `sensitive`，再至多生成一个问题。跳过项不调用模型。敏感答案、已发布轮次耗尽及模型暂时故障重试耗尽时，返回 `needs_review` 和 `allow_skip: true`。其他无效模型输出明确失败。网络故障、HTTP 408/429 和 5xx 按有上限的指数间隔重试；尝试次数包含首次执行。
 
-报告先从答案逐字提取证据，再生成章节和任务卡。JSON Schema 拒绝不符合字段要求的结果；确定性校验拒绝未知槽位、虚构引文，以及事实或任务卡缺失或未知的引用。陈述区分 `fact`、`interpretation` 和 `needs_verification`。引用有效不代表陈述在逻辑上得到证据支持，仍需人工审阅。
+报告先从答案逐字提取证据，再生成章节和任务卡。JSON Schema 拒绝不符合字段要求的结果；确定性校验拒绝无效分析、虚构引文，以及事实或任务卡缺失或未知的引用。槽位是可选旧输入，不是强制访谈清单。陈述区分 `fact`、`interpretation` 和 `needs_verification`。引用有效不代表陈述在逻辑上得到证据支持，仍需人工审阅。
 
 数据库保留快照、提示词版本、阶段输出、模型请求及响应、报告，不记录请求头或密钥值。模型可见输入为配置的系统提示词及输出 schema 指令，之后是独立 JSON 用户消息。这种分离是指令约定，不保证抵御提示词注入。此处未实现保留期及删除策略、逐专家授权、公开服务限流、管理界面和报告导出。模型调用中断且未保存检查点时可能重复调用并计费；队列令牌防止过时结果发布，不保证外部调用恰好一次。
 
@@ -115,3 +115,21 @@ go build -o teaching-worker.exe .
 ```
 
 验收账号需要创建及删除临时数据库的权限。未提供 `-mysql-config` 时，进程验收明确跳过；该参数仅从指定 YAML 读取 `database.dsn`。测试创建独立临时数据库，编译实际可执行文件，分别启动 API 和消费者进程，覆盖租约恢复、旧结果拦截、消费者并发、幂等、阶段复用、提示词不可变、报告重生成和浏览器会话隔离。[testdata/flow.golden.json](testdata/flow.golden.json) 记录组装后的模型消息和输出。测试使用可控模型接口，不使用文件中的真实模型密钥；真实服务商兼容性及报告质量需要结合真实访谈和凭据单独验收。
+
+## Portal 管理与访谈会话
+
+显式设置 portal.enabled，并配置既有 packs_dir、公开 origin、会话及上传限制和登录速率限制。非回环地址要求 HTTPS。通过 /admin/ 登录、上传/列举/移除 JSON 题包、查看报告和下载报告 JSON；报告列表最多显示最近 200 个任务。账号从 MySQL 读取；首次初始化只有在提供有效 admin_password_hash 时才插入用户名 admin。Portal 启动拒绝示例后端令牌占位值。既有密码不被覆盖，不强制首次改密。受访者不需要注册，也没有通用 RBAC 系统。
+
+hash-password --output <新建私有文件> 从标准输入读取密码，以随机盐和 600,000 次 PBKDF2-HMAC-SHA256 写入仅文件所有者可读的新文件，不打印密码或哈希，不覆盖文件。实际输入或持久保存真实凭据需另外授权，没有默认密码；成本遵循 [OWASP 密码存储建议](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html)。仅将获准的哈希复制到私有启动配置，不写入受 Git 跟踪的文件。
+
+受访者路由只有在明确开启 participants_enabled 并填写 entry_mode（link/list）、invitation_mode（code/none）、participant_reports（allow/deny）、资产、轮询及模型标识后才启用。这些是可选择的协议选项，不代表用户批准默认产品策略。管理与访谈使用不同的 HttpOnly、SameSite=Strict Cookie，服务端校验有效期，变更请求校验准确来源。管理退出撤销数据库会话；login_limit 和 login_window 配置各进程登录预算。
+
+根路径 / 与既有 /practice-expert-interview-spa.html 使用原母版并选择 worker 入口；/portal/api 负责受访者请求，不存在的 API/JSON 返回错误而非 HTML。link 模式不公开题包列表。链接可将不可变上传键作为 fieldnoteId；多版本别名要求明确版本键，不自动选择最新文件。code 模式在服务器校验既有口令，不下发给浏览器。上传文件保持为私有发布对象，受访者视图排除邀请信息与主持人资料。
+
+DSH 的 SPA 预览增加目标、明确的追问范围/次数和 JSON 导出，保留主持人确认及原发布流程。发布包保留 followUp 和 sourceRefs；后者是问题设计来源，不是专家回答证据。interviewPolicy 包含 scope（per_question/interview）和非负 maxFollowups，0 禁止追加问题。旧题包可检查，但未补齐目标与策略时不能创建 portal 会话，不推断服务器逐包默认值。
+
+上传先解析和限制大小，再进行同文件系统原子发布，禁止覆盖。相同键相同内容重试成功，不同内容使用新键。拒绝路径形式的键、越界符号链接、非法正式文件和未完成上传。会话在 MySQL 保存题包副本、版本、私有完整哈希及策略，目录删除或替换不改变活跃会话；浏览器绑定哈希排除邀请信息，避免暴露短口令的快速摘要。
+
+回答复用事务快照与任务幂等，追问次数在调用模型前和访谈最终锁内检查。模型上下文包含目标、背景、可选提示、真实回答历史及已有追问，可以判断回答充分而不再生成问题；提示和回答仍是用户数据。报告复用逐字证据及引用校验。participant_reports 为 deny 时不向受访者输出报告正文，管理 API 始终要求登录。进程重启恢复已接收快照、任务和报告；未发送草稿仍在浏览器。
+
+执行 go test . -args -mysql-config <隔离配置> -portal-browser 可通过 tests/portal-browser.mjs 使用已安装的 Playwright/Chromium 检查真实 portal；单独安装的浏览器通过 PORTAL_TEST_CHROMIUM 指定。浏览器检查登录/上传、邀请、单选、可控语音入口、本地草稿刷新、真实 HTTP 回答提交、带证据的报告下载和退出。模型接口与语音识别为测试替身，不证明真实模型质量或麦克风可用。

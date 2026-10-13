@@ -25,6 +25,16 @@ import (
 
 func Handler(s *store.Store) (http.Handler, error) {
 	mux := http.NewServeMux()
+	if s.Config.Portal.Enabled {
+		if err := mountManagement(mux, s.Config.Portal, s); err != nil {
+			return nil, err
+		}
+		if s.Config.Portal.ParticipantsEnabled {
+			if err := mountPortal(mux, s.Config.Portal, s, s.Config.Server.MaxBodyBytes, s.Config.Queue.MaxInputBytes); err != nil {
+				return nil, err
+			}
+		}
+	}
 	if s.Config.Preview.Enabled {
 		if err := mountPreview(mux, s); err != nil {
 			return nil, err
@@ -123,11 +133,12 @@ func public(t store.Task) any {
 	_ = json.Unmarshal(t.Input, &input)
 	return struct {
 		store.Task
-		ReleaseVersion string `json:"release_version"`
-		ReleaseHash    string `json:"release_hash"`
-		InputVersion   int64  `json:"input_version"`
-		QuestionID     string `json:"question_id,omitempty"`
-	}{t, release.Pipeline.Version, release.Hash, input.Submit.Snapshot.InputVersion, input.Submit.QuestionID}
+		ReleaseVersion string              `json:"release_version"`
+		ReleaseHash    string              `json:"release_hash"`
+		InputVersion   int64               `json:"input_version"`
+		QuestionID     string              `json:"question_id,omitempty"`
+		Pack           *domain.PackContext `json:"pack,omitempty"`
+	}{t, release.Pipeline.Version, release.Hash, input.Submit.Snapshot.InputVersion, input.Submit.QuestionID, input.Submit.Snapshot.Pack}
 }
 func failure(w http.ResponseWriter, err error) {
 	var expected *domain.Error

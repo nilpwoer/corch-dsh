@@ -36,3 +36,5 @@ Reports separate literal evidence extraction from composition. Code checks JSON 
 The backend API uses a shared server token and owns no expert identity. Public browser access requires an application authorization layer. Reports freeze an interview at enqueue; editing frozen answers requires another interview ID. Local draft synchronization, question administration, retention/deletion and report export remain application responsibilities.
 
 [Process acceptance](../../../../worker/acceptance_test.go) builds and runs the executable against real MySQL with a controlled model endpoint, asserting lease recovery after process termination, claim fencing, version/idempotency conflicts, stage reuse, concurrent consumers and immutable/regenerated reports. The assembled transcript has a keyless golden snapshot. Real provider compatibility and semantic report quality are separate acceptance requirements; a deterministic fixture cannot establish them.
+
+The [interview portal decision](../feature/2026-10-13-worker-interview-portal.md) owns publication uploads and public participant sessions; this record continues to own MySQL leases and captured execution releases.

@@ -20,6 +20,40 @@ func fixture(t *testing.T) string {
 	return file
 }
 func TestConfig(t *testing.T) {
+	t.Run("participant policies must be explicitly selected", func(t *testing.T) {
+		c, err := Load(fixture(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.Portal.Enabled = true
+		c.Auth.Token = "synthetic-private-token-for-config-tests-only"
+		c.Portal.PacksDir = t.TempDir()
+		c.Portal.Origin = "http://127.0.0.1:3090"
+		c.Portal.SessionTTL = c.Preview.SessionTTL
+		c.Portal.MaxPackBytes = 1000
+		c.Portal.LoginLimit = 10
+		c.Portal.LoginWindow = c.Preview.PollInterval
+		if err := c.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		c.Portal.ParticipantsEnabled = true
+		if c.Validate() == nil {
+			t.Fatal("participant decisions inferred without explicit settings")
+		}
+		c.Portal.EntryMode = "link"
+		c.Portal.InvitationMode = "none"
+		c.Portal.ParticipantReports = "allow"
+		c.Portal.AssetsDir = "assets"
+		c.Portal.PollInterval = c.Preview.PollInterval
+		c.Portal.ModelLabel = "fixture"
+		if err := c.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		c.Portal.Origin = "http://public.example"
+		if c.Validate() == nil {
+			t.Fatal("insecure public origin accepted")
+		}
+	})
 	t.Run("captures inline prompt versions", func(t *testing.T) {
 		c, err := Load(fixture(t))
 		if err != nil {

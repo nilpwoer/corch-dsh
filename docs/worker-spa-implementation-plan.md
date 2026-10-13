@@ -1,12 +1,12 @@
 # Worker 托管访谈 SPA 与题包闭环实施方案
 
-本文是待实施方案参考，供开发与验收使用，不表示所列配置、路由、存储或业务能力已实现。当前授权只包含编写、提交和推送本文；业务实现、合并和部署不在本次范围内。本文按用户指定以中文保存在此路径，未建立英文对照或翻译配对记录。
+本文记录已授权的云端实施范围和仍待确认的产品选项。开发目标为 nilpwoer/corch-dsh 的独立分支；业务代码通过本次验收后获准推送开发分支；PR、合并和公网部署没有获得授权。本文按用户指定以中文保存在此路径，未建立英文对照或翻译配对记录。
 
 ## 1. 结论与实施前提
 
 完整需求属于中等改动：静态母版托管和按 ID 读取 JSON 较小，主要工作在 worker 的多题包适配、真实会话、回答幂等、AI 追问、恢复和报告。优先把运行逻辑放在 worker，DSH 只补必要的类型、解析、导出和访谈策略设置，不重写母版外观，也不替换已有主持人审核与发布操作。没有经验证的工时估算。
 
-实施必须先取得用户现有访谈 worker 的完整版本，并在云端建立可复现基线。不能把 DSH 内部的 workflow-worker-thread 或 code-runtime-worker-thread 当作访谈 HTTP worker，也不能仅凭本文完成现有 worker 的最终改动评估。
+实施基线已从 fork 的 codex/go-teaching-worker 取得，提交为 2e2c1433f27a632eb5506d96e998c06403d8f72e。不能把 DSH 内部的 workflow-worker-thread 或 code-runtime-worker-thread 当作访谈 HTTP worker，也不能仅凭本文完成现有 worker 的最终改动评估。
 
 ### 1.1 证据与版本来源
 
@@ -17,12 +17,12 @@
 | 同次本地未跟踪文件 | worker/portal-handoff.md | 仅为未实施提案，不作为已实现功能依据，不自动纳入云端分支 |
 | 本次远端引用查询 | main 与上述云端 HEAD 一致；未返回 codex/go-teaching-worker 分支 | 只证明查询时该名称没有返回远端引用，不推断其他分支是否存在，也不自动合并 worker |
 
-后续开发全部在云端。先通过用户认可的推送或文件交付方式取得 worker 源码，记录版本，再核对本地评估描述与云端实际文件；差异必须修正到实施任务中。本文文档分支以 main 为基线，不包含 worker 代码。
+开发全部在云端；feat/worker-spa-portal 以已取得的 worker 提交为基线并保留规划文档。已推送的文档分支和 main 保持不动。本地评估描述必须与云端源码复核，不从缺 worker 的 main 重写现有实现。
 
 ### 1.2 已确认需求
 
 - worker 根路由托管项目现有默认访谈 SPA 母版，兼容现有母版文件路径。
-- 主持人按原 DSH 工作流程生成、审核、发布题包，再用文件工具人工上传导出文件；worker 启动配置决定题包目录，不开发上传 UI。
+- 主持人按原 DSH 工作流程生成、审核、导出题包；worker 启动配置决定题包目录，支持人工文件上传和 Web 管理端上传。Web 管理端管理题包与报告，账号从现有 MySQL 读取，初始化用户名为 admin，不强制首次改密；不硬编码、记录或传播真实初始密码，不扩展复杂 RBAC。
 - 必须接通真实答题、AI 追问及报告；静态展示、浏览器暂存和假提交不能算完整闭环。
 - AI 依据访谈目标、专家背景、主问题和回答历史决定是否追问，不强制 required_slots，不把槽位缺失当作必需追问条件。
 - followUp 保留为可选提示；追问次数由题包设置，不要求管理员在服务器中为每个包配置次数。
@@ -58,7 +58,7 @@ DSH 的 [frontend-static](../packages/host/frontend-static/src/index.ts) 与 [we
 
 ### 2.2 本地评估提供的 worker 事实
 
-以下路径只标识本地评估的源码位置；这些文件在本文 main 基线中不存在，实施前必须复核，不能照抄成可运行命令。
+以下机制已在取得的 worker 基线复核，路径位于独立 worker/ 模块；它们不在原 main 基线中。
 
 - worker/internal/config/config.go：preview 使用 assets_dir 和单个 pack_file，严格解析 YAML；preview 限制回环 IP，且只在 api/both 模式启用。
 - worker/internal/service/preview.go：mountPreview 在启动时读一次单包，根路径重定向母版并带 worker=1，未提供目录索引。
@@ -74,7 +74,7 @@ DSH 的 [frontend-static](../packages/host/frontend-static/src/index.ts) 与 [we
 | 已有 HTTP worker 返回母版，按 ID 提供 JSON | 小 | 母版自包含且读取路径明确，但需核实真实 worker 路由 |
 | 多题包目录索引、DTO 兼容、安全读取、人工发布流程 | 小到中 | 涉及外部文件输入、ID 映射、版本和发布原子性 |
 | 会话绑定、真实回答、AI 追问、恢复与报告 | 中 | 需要跨请求状态和失败恢复，且现有槽位及单包假设均需调整 |
-| 重写 DSH 工作台、重做 SPA、增加在线上传平台 | 大且不在本方案内 | 用户要求保留现有流程，本需求不要求这些改造 |
+| 重写 DSH 工作台、重做 SPA、引入复杂账号平台 | 大且不在本方案内 | 保留流程与母版，仅增加已授权的最小管理登录、题包上传及报告界面 |
 
 ## 3. Worker 配置、目录与题包接入
 
@@ -223,10 +223,49 @@ worker 验证模型输出结构、action、追问文本和证据引用是否对�
 - AI 判断：足够回答可以直接继续，含糊回答可有针对性追问；不依赖 required_slots；次数来自包；模型错误不会丢答案或虚报成功，提示注入文本不改变系统权限和次数。
 - 报告与恢复：报告证据引用真实回答版本，推断和缺口明确；报告等待/失败与成功区分；受众权限符合确认结果，持久化和恢复按已批准实现验证。
 
-业务实现后的检查按实际改动选择 worker 的 Go 测试、真实 HTTP/页面集成、DSH 导出测试、必要 GUI 和模型验收；先确认仓库实际命令，本文不提供未经核实的 worker 测试命令。本次只编写文档，没有运行项目或验证上述业务测试。
+业务实现后的检查按实际改动选择 worker 的 Go 测试、真实 HTTP/页面集成、DSH 导出测试、必要 GUI 和模型验收；先确认仓库实际命令，本文不提供未经核实的 worker 测试命令。实现验证使用隔离 MySQL 和可控模型；实际运行结果另见开发交付记录。真实模型、生产部署和真实凭据初始化不包含在自动化验证中。
 
 ## 9. 本次范围与后续交付
 
-本次交付只有文档，不包含业务实现、上传 UI、自动同步发布、worker 分支合并、生产部署或 PR。实施完成后另行提供源码版本、实际文件改动、API/DTO 定义、可复现部署说明、已执行测试证据和尚未通过的验收项。
+当前授权包含云端业务实现、Web 管理登录/退出、数据库账号、题包上传和管理、报告 API 与页面、访谈闭环、DSH 最小导出以及测试和文档。业务代码验收后可提交并推送到 fork 的开发分支；自动同步发布、分支合并、生产部署或 PR 不在授权范围内；真实凭据设置需要另外确认和安全输入。交付需提供实际文件改动、协议、测试结果和尚未通过的验收项。
 
-待确认决策保留为待确认，不以提交本文替代用户批准。现有本地 worker 与 main 的差异必须通过云端源码取得与复核解决；未跟踪提案不等于已实现代码，文档推送成功也不等于业务闭环已完成。
+待确认决策保留为待确认，不以提交本文替代用户批准。worker 源码已在云端取得，后续更新仍须核实其版本；未跟踪提案不等于已实现代码，文档推送成功也不等于业务闭环已完成。
+
+## 10. 明确可配置的实施协议
+
+portal 与 preview 分开，preview 的回环限制保持。管理端为 /admin/，账号与会话使用 MySQL 的 tw_accounts 和 tw_admin_sessions；受访者不需要注册。数据库结构显式从版本 1 升级到版本 2，初始化 admin 只接受 admin_password_hash，既有数据库密码不被配置覆盖。
+
+hash-password --output <新建私有文件> 只从 stdin 读取输入，用带随机盐的 PBKDF2-HMAC-SHA256 强哈希写入新文件，不打印密码或哈希、不覆盖旧文件。实际密码输入与持久设置需单独授权；测试使用合成值。没有明文默认密码或强制首次改密流程。
+
+participants_enabled 默认关闭；开启前必须显式选择 entry_mode（link/list）、invitation_mode（code/none）和 participant_reports（allow/deny）。这些支持选项不是替用户决定默认策略。题包 interviewPolicy 明确记录 scope（per_question/interview）与 maxFollowups，未配置不能创建访谈会话；0 禁止追加问题，服务器不为每包补默认次数。
+
+上传先校验再通过同目录原子操作发布，相同键不同内容拒绝覆盖。会话保存题包副本、版本、完整哈希和策略；移除目录题包不改变已绑定会话。管理端和受访者 Cookie 分开，报告按显式配置控制受访者输出；管理端可读取报告任务及证据并下载 JSON。报告管理当前列举最近 200 个任务。
+
+DSH 的 SPA 预览增加访谈目标、追问范围、次数和 JSON 下载入口，不改变原发布按钮和主持人确认流程。导出包含公开 ID、完整版本、followUp、sourceRefs 和显式策略；本地预览、JSON 下载与实际服务器上传是分别可观察的操作。Worker 模式保留母版样式、文本与选项、导航、语音入口、暂存、追问和回看交互。
+
+## 11. 云端验收记录与限制
+
+实现基线为 fork 的 codex/go-teaching-worker 提交 2e2c1433f27a632eb5506d96e998c06403d8f72e，开发分支为 feat/worker-spa-portal。本次验收在云端执行，未访问用户本地，也未修改环境预置仓库。
+
+Go 1.25.14 从官方发布列表取得并验证 SHA-256，解压在 /tmp；Go 缓存也在 /tmp。前端依赖按既有锁文件以 frozen-lockfile 和 ignore-scripts 安装，没有更改锁文件。MySQL 8.4 在独立 Docker 容器中绑定回环随机端口，使用随机临时数据库密码；验收创建并删除随机名称数据库。管理账号仅使用合成测试输入，未使用用户提供的真实密码。Chromium 放在 /tmp，浏览器与真实 Go/MySQL 对接，模型接口和语音识别为可控测试替身。
+
+| 命令 | 结果及证据范围 |
+| --- | --- |
+| worker 中 go test ./... -count=1 | 28 个通过测试事件，两个集成入口因无参数明确跳过；后者另行运行，不混称覆盖 |
+| worker 中 go test -race ./internal/... -count=1 | 内部包检查通过，包含并发不同内容上传的互斥验证 |
+| worker 中 go vet ./... | 通过 |
+| worker 中 go test . -count=1 -v -args -mysql-config <临时隔离配置> -portal-browser | 根包 5 个顶层测试及进程验收的 14 个子场景通过；包含一条实际 Chromium 交互流程 |
+| node node_modules/typescript/bin/tsc -b packages/client/ui-polus-teaching-reform/tsconfig.json | 包及引用构建通过 |
+| node node_modules/vitest/vitest.mjs run packages/client/ui-polus-teaching-reform/tests/publication.client.spec.ts --maxWorkers=2 --coverage --coverage.include=packages/client/ui-polus-teaching-reform/src/client/publication.ts | 3 个测试通过；导出模块语句、分支、函数、行覆盖率均为 100% |
+| 通过 scripts/run-oxlint.ts 检查新增 publication.ts 和 publication.client.spec.ts | 通过 |
+| 通过 scripts/verify-md-links.ts、verify-md-wrap.ts、verify-agent-note-format.ts | 相对链接 2040 文件、段落格式 2003 文件、Agent Note 格式 600 文件检查通过 |
+| scoped verify-translation-pairing：worker README 与两份相关 Agent Note | 三组一致；完整 corpus 不是本项结论 |
+| git diff --check | 通过 |
+
+数据库及 HTTP 验收覆盖：版本 1 到 2 的迁移保留旧数据；管理员密码强哈希且重启不覆盖；账号/访谈 Cookie 隔离、退出撤销、准确来源及跨会话拒绝；上传大小、格式、重复字段、目录穿越、符号链接、半成品、并发和幂等；固定题包副本删除/重启后仍可恢复；报告证据与可见性控制。无槽位模型输出只含 status/reason 也可接受；题包每题上限优先于服务器旧值；两个任务竞争整场最后一次追问时只发布一条。
+
+浏览器验收覆盖真实登录、上传、纠正题包链接、邀请、单选、语音测试入口、暂存后刷新、实际 HTTP 回答提交、报告下载及退出。下载保留访谈、题包绑定、执行版本和证据信息；未将预览成功、JSON 下载或假提交作为公网发布成功。
+
+完整 test:gui 为 3978 通过、53 失败、4 跳过，16 个失败文件；没有宣称整仓回归绿色。未修改的 CurriculumWorkbench.module.css 滚动条断言在独立 worker 基线副本中复现。Workbench 的既有 lint 从基线 56 项变为当前 53 项，新增导出模块 lint 通过；其他 GUI 失败没有逐项独立复测。完整 doc-sync 在启动文档构建与 doc-typecheck 后长时间未完成，以正常中断结束；局部文档检查不替代它。
+
+真实模型兼容性/判断质量、真实麦克风、完整 DSH 浏览器组装、生产代理部署及真实凭据初始化未验收。报告管理当前列举最近 200 个任务，未发送草稿仍在浏览器。入口列表、邀请方式、受访者报告可见性及追问范围没有替用户决定；协议支持显式选择，未配置的受访者路由不启用。推送开发分支不代表合并、部署或这些未决项已获批准。

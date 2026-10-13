@@ -3,3 +3,5 @@
 /config.local.yaml
 /coverage.out
 /local-runtime/
+
+*.password-hash

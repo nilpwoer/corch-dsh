@@ -74,7 +74,15 @@ func (m *fakeModel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var output any
 	switch {
 	case strings.Contains(system, "分析实践专家回答"):
-		output = domain.Analysis{Status: "incomplete", CoveredSlots: []string{}, MissingSlots: []string{"evidence"}, Reason: "需要质量记录的具体例子"}
+		var input struct {
+			Question domain.Question `json:"question"`
+		}
+		_ = json.Unmarshal([]byte(req.Messages[1].Content), &input)
+		missing := []string{}
+		if len(input.Question.RequiredSlots) > 0 {
+			missing = []string{"evidence"}
+		}
+		output = domain.Analysis{Status: "incomplete", CoveredSlots: []string{}, MissingSlots: missing, Reason: "需要质量记录的具体例子"}
 	case strings.Contains(system, "生成一条中性"):
 		if m.failCompose.Load() > 0 {
 			m.failCompose.Add(-1)

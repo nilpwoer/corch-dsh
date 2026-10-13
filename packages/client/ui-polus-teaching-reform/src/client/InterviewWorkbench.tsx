@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'rea
 import tinyPinyin from 'tiny-pinyin'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import css from './InterviewWorkbench.module.css'
+import { createPublication, type InterviewPolicy } from './publication.ts'
 import { InterviewSettings } from './InterviewSettings.tsx'
 import { getEnabledGlobalReferenceDocuments } from './InterviewSettings.tsx'
 import type { ExpertMaterial, TeachingReformProps } from './types.ts'
@@ -13,7 +14,15 @@ type InterviewProfile = { name: string; industry: string; role: string; years: s
 type GenerationStatus = 'idle' | 'running' | 'done' | 'failed'
 type QuestionPackMeta = { packId: string; version: number; generatedAt: string; sourceSessionId: string; checksum: string; globalReferences?: readonly { id: string; title: string; version: number; contentHash: string }[] }
 type InvitationMeta = { code: string; createdAt: string; status: 'active' | 'revoked' }
-type PersistedInterview = { record: InterviewItem; profile?: InterviewProfile; questions?: readonly MockQuestion[]; questionPackMeta?: QuestionPackMeta; invitation?: InvitationMeta }
+type PublicationSettings = { goal: string; scope: '' | InterviewPolicy['scope']; count: string }
+type PersistedInterview = {
+  publication?: PublicationSettings
+  record: InterviewItem
+  profile?: InterviewProfile
+  questions?: readonly MockQuestion[]
+  questionPackMeta?: QuestionPackMeta
+  invitation?: InvitationMeta
+}
 const INTERVIEW_STORAGE_KEY = 'dsh.practice-expert-interviews.v2'
 // Public static SPA origin for the isolated Tencent COS test bucket. Keep this
 // separate from window.location.origin: the host workbench runs on 127.0.0.1,
@@ -71,7 +80,12 @@ function persistInterviews(): void {
     const questions = generatedQuestionPacks.get(record.id)
     const questionPackMeta = generatedQuestionPackMeta.get(record.id)
     const invitation = generatedInvitations.get(record.id)
-    return { record, ...(profile === undefined ? {} : { profile }), ...(questions === undefined ? {} : { questions }), ...(questionPackMeta === undefined ? {} : { questionPackMeta }), ...(invitation === undefined ? {} : { invitation }) }
+    const publication = generatedPublicationSettings.get(record.id)
+    return {
+      record, ...(publication === undefined ? {} : { publication }), ...(profile === undefined ? {} : { profile }),
+      ...(questions === undefined ? {} : { questions }), ...(questionPackMeta === undefined ? {} : { questionPackMeta }),
+      ...(invitation === undefined ? {} : { invitation }),
+    }
   })
   try {
     window.localStorage.setItem(INTERVIEW_STORAGE_KEY, JSON.stringify(rows))
@@ -119,9 +133,14 @@ export function rebindInterviewSession(previousId: string, nextId: string): void
   const questions = generatedQuestionPacks.get(previousId)
   const meta = generatedQuestionPackMeta.get(previousId)
   const invitation = generatedInvitations.get(previousId)
+  const publication = generatedPublicationSettings.get(previousId)
   if (profile !== undefined) { generatedProfiles.delete(previousId); generatedProfiles.set(nextId, profile) }
   if (questions !== undefined) { generatedQuestionPacks.delete(previousId); generatedQuestionPacks.set(nextId, questions) }
   if (meta !== undefined) { generatedQuestionPackMeta.delete(previousId); generatedQuestionPackMeta.set(nextId, meta) }
+  if (publication !== undefined) {
+    generatedPublicationSettings.delete(previousId)
+    generatedPublicationSettings.set(nextId, publication)
+  }
   if (invitation !== undefined) { generatedInvitations.delete(previousId); generatedInvitations.set(nextId, invitation) }
   interviewRecords = interviewRecords.map(item => item.id === previousId ? { ...item, id: nextId } : item)
   selectedInterviewId = nextId
@@ -239,6 +258,9 @@ void MOCK_QUESTIONS
 const generatedProfiles = new Map<string, InterviewProfile>(persistedInterviews.flatMap(item => item.profile === undefined ? [] : [[item.record.id, item.profile] as const]))
 const generatedQuestionPacks = new Map<string, readonly MockQuestion[]>(persistedInterviews.flatMap(item => item.questions === undefined ? [] : [[item.record.id, ensureQuestionSources(item.questions)] as const]))
 const generatedQuestionPackMeta = new Map<string, QuestionPackMeta>(persistedInterviews.flatMap(item => item.questionPackMeta === undefined ? [] : [[item.record.id, item.questionPackMeta] as const]))
+const generatedPublicationSettings = new Map<string, PublicationSettings>(persistedInterviews.flatMap((item) => {
+  return item.publication === undefined ? [] : [[item.record.id, item.publication] as const]
+}))
 const generatedInvitations = new Map<string, InvitationMeta>(persistedInterviews.flatMap(item => item.invitation === undefined ? [] : [[item.record.id, item.invitation] as const]))
 
 function createInvitationCode(): string {
@@ -574,12 +596,22 @@ function QuestionsTab({ questions, packMeta, pending, initiallyConfirmed, onConf
     onDeleteQuestion(item.id)
     if (editingId === item.id) cancelEdit()
   }
-  return <><div className={css.intro}><span className={css.eyebrow}>STEP 02 · QUESTION SET</span><h2>问题包已经生成，等你确认</h2><p>共 {activeQuestions.length} 个有效问题，覆盖授权、经历校准、职责发现、任务深挖 A—J、阶段总结与最终回看。</p>{packMeta && <div className={css.packMeta}>问题包 {packMeta.packId} · v{packMeta.version} · {activeQuestions.length} 题 · 校验码 {packMeta.checksum}</div>}</div>{pending && <div className={css.overwriteNotice}><div><strong>检测到新问题包 v{pending.meta.version}</strong><p>当前问题包 v{packMeta?.version ?? pending.meta.version - 1} 将保留为历史版本。新版本共 {pending.questions.length} 题，确认后才会覆盖当前问题包。</p></div><div className={css.questionActions}><button type="button" className={css.button} onClick={onDiscardPending}>取消覆盖</button><button type="button" className={css.primaryButton} onClick={onConfirmPending}>确认覆盖</button></div></div>}<div className={css.questionList}>{activeQuestions.map(item => <details className={css.questionCard} key={item.id} open={item.id === 'Q01' || item.id === 'Q02' || item.id === editingId}><summary className={css.questionSummary}><span><strong>{item.id} · {item.title}</strong><small>{item.type}</small></span><span className={css.tag}>{item.id >= 'Q07' && item.id <= 'Q16' ? '任务深挖' : '核心'}</span></summary>{editingId === item.id && draft !== null ? <div className={css.editForm}><label className={css.editField}><span>问题标题</span><input value={draft.title} onChange={(event) => { setDraft({ ...draft, title: event.currentTarget.value }) }} /></label><label className={css.editField}><span>问题正文</span><textarea value={draft.question} onChange={(event) => { setDraft({ ...draft, question: event.currentTarget.value }) }} /></label><label className={css.editField}><span>辅助选项 / 说明</span><textarea value={draft.helper ?? ''} onChange={(event) => { setDraft({ ...draft, helper: event.currentTarget.value }) }} /></label><label className={css.editField}><span>追问</span><textarea value={draft.followUp ?? ''} onChange={(event) => { setDraft({ ...draft, followUp: event.currentTarget.value }) }} /></label>{draft.options && <label className={css.editField}><span>选项（每行一个）</span><textarea value={draft.options.join('\n')} onChange={(event) => { setDraft({ ...draft, options: event.currentTarget.value.split('\n') }) }} /></label>}<div className={`${css.questionActions} ${css.questionActionsSpread}`}><div className={css.questionActions}><button type="button" className={css.primaryButton} onClick={saveEdit}>保存修改</button><button type="button" className={css.ghostButton} onClick={cancelEdit}>取消编辑</button></div><button type="button" className={css.dangerButton} onClick={() => { removeQuestion(item) }}>删除问题</button></div></div> : <><p>{item.question}</p>{item.options && <div className={css.questionOptions}>{item.options.map(option => <span className={css.tag} key={option}>{option}</span>)}</div>}{item.helper && <div className={css.questionMeta}><b>辅助选项 / 说明</b>{item.helper}</div>}{item.followUp && <div className={css.questionMeta}><b>追问</b>{item.followUp}</div>}{sourceOpenId === item.id && <QuestionSources refs={item.sourceRefs} />}<div className={`${css.questionActions} ${css.questionActionsSpread}`}><div className={css.questionActions}><button type="button" className={css.button} onClick={() => { beginEdit(item) }}>编辑问题</button><button type="button" className={sourceOpenId === item.id ? css.sourceButtonActive : css.ghostButton} aria-expanded={sourceOpenId === item.id} onClick={() => { setSourceOpenId(sourceOpenId === item.id ? null : item.id) }}>{sourceOpenId === item.id ? '收起来源' : '查看来源'}</button></div><button type="button" className={css.dangerButton} onClick={() => { removeQuestion(item) }}>删除问题</button></div></>}</details>)}</div><div className={css.notice}>选项只帮助专家回忆，不代表标准答案；“其他”和“不适用/不确定”会始终保留。每个追问最多连续 2 次，专家可以暂不回答。删除问题会生成当前问题包的未发布修改，确认后才会影响 SPA。</div><div className={css.footer}><span className={css.muted}>{confirmed ? '已确认 · SPA 已可发布' : '待主持人确认后发布 SPA'}</span><div className={css.questionActions}><button type="button" className={confirmed ? css.button : css.primaryButton} onClick={() => { setConfirmed(true) }}>{confirmed ? '已确认问题包' : '确认问题并生成 SPA'}</button>{confirmed && <><button type="button" className={css.primaryButton} onClick={onPublishSpa}>发布并打开 SPA</button><button type="button" className={css.ghostButton} onClick={onOpenSpa}>查看工作台预览</button></>}</div></div></>
+  return <><div className={css.intro}><span className={css.eyebrow}>STEP 02 · QUESTION SET</span><h2>问题包已经生成，等你确认</h2><p>共 {activeQuestions.length} 个有效问题，覆盖授权、经历校准、职责发现、任务深挖 A—J、阶段总结与最终回看。</p>{packMeta && <div className={css.packMeta}>问题包 {packMeta.packId} · v{packMeta.version} · {activeQuestions.length} 题 · 校验码 {packMeta.checksum}</div>}</div>{pending && <div className={css.overwriteNotice}><div><strong>检测到新问题包 v{pending.meta.version}</strong><p>当前问题包 v{packMeta?.version ?? pending.meta.version - 1} 将保留为历史版本。新版本共 {pending.questions.length} 题，确认后才会覆盖当前问题包。</p></div><div className={css.questionActions}><button type="button" className={css.button} onClick={onDiscardPending}>取消覆盖</button><button type="button" className={css.primaryButton} onClick={onConfirmPending}>确认覆盖</button></div></div>}<div className={css.questionList}>{activeQuestions.map(item => <details className={css.questionCard} key={item.id} open={item.id === 'Q01' || item.id === 'Q02' || item.id === editingId}><summary className={css.questionSummary}><span><strong>{item.id} · {item.title}</strong><small>{item.type}</small></span><span className={css.tag}>{item.id >= 'Q07' && item.id <= 'Q16' ? '任务深挖' : '核心'}</span></summary>{editingId === item.id && draft !== null ? <div className={css.editForm}><label className={css.editField}><span>问题标题</span><input value={draft.title} onChange={(event) => { setDraft({ ...draft, title: event.currentTarget.value }) }} /></label><label className={css.editField}><span>问题正文</span><textarea value={draft.question} onChange={(event) => { setDraft({ ...draft, question: event.currentTarget.value }) }} /></label><label className={css.editField}><span>辅助选项 / 说明</span><textarea value={draft.helper ?? ''} onChange={(event) => { setDraft({ ...draft, helper: event.currentTarget.value }) }} /></label><label className={css.editField}><span>追问</span><textarea value={draft.followUp ?? ''} onChange={(event) => { setDraft({ ...draft, followUp: event.currentTarget.value }) }} /></label>{draft.options && <label className={css.editField}><span>选项（每行一个）</span><textarea value={draft.options.join('\n')} onChange={(event) => { setDraft({ ...draft, options: event.currentTarget.value.split('\n') }) }} /></label>}<div className={`${css.questionActions} ${css.questionActionsSpread}`}><div className={css.questionActions}><button type="button" className={css.primaryButton} onClick={saveEdit}>保存修改</button><button type="button" className={css.ghostButton} onClick={cancelEdit}>取消编辑</button></div><button type="button" className={css.dangerButton} onClick={() => { removeQuestion(item) }}>删除问题</button></div></div> : <><p>{item.question}</p>{item.options && <div className={css.questionOptions}>{item.options.map(option => <span className={css.tag} key={option}>{option}</span>)}</div>}{item.helper && <div className={css.questionMeta}><b>辅助选项 / 说明</b>{item.helper}</div>}{item.followUp && <div className={css.questionMeta}><b>追问</b>{item.followUp}</div>}{sourceOpenId === item.id && <QuestionSources refs={item.sourceRefs} />}<div className={`${css.questionActions} ${css.questionActionsSpread}`}><div className={css.questionActions}><button type="button" className={css.button} onClick={() => { beginEdit(item) }}>编辑问题</button><button type="button" className={sourceOpenId === item.id ? css.sourceButtonActive : css.ghostButton} aria-expanded={sourceOpenId === item.id} onClick={() => { setSourceOpenId(sourceOpenId === item.id ? null : item.id) }}>{sourceOpenId === item.id ? '收起来源' : '查看来源'}</button></div><button type="button" className={css.dangerButton} onClick={() => { removeQuestion(item) }}>删除问题</button></div></>}</details>)}</div><div className={css.notice}>选项只帮助专家回忆，不代表标准答案；“其他”和“不适用/不确定”会始终保留。追问次数由导出题包设置，专家可以暂不回答。删除问题会生成当前问题包的未发布修改，确认后才会影响 SPA。</div><div className={css.footer}><span className={css.muted}>{confirmed ? '已确认 · SPA 已可发布' : '待主持人确认后发布 SPA'}</span><div className={css.questionActions}><button type="button" className={confirmed ? css.button : css.primaryButton} onClick={() => { setConfirmed(true) }}>{confirmed ? '已确认问题包' : '确认问题并生成 SPA'}</button>{confirmed && <><button type="button" className={css.primaryButton} onClick={onPublishSpa}>发布并打开 SPA</button><button type="button" className={css.ghostButton} onClick={onOpenSpa}>查看工作台预览</button></>}</div></div></>
 }
 
 let activeInterviewFieldnoteId = 'FN-DRAFT'
 
-function SpaTab({ profile, questions, invitation, onPublishSpa }: { profile: InterviewProfile; questions: readonly MockQuestion[]; invitation: InvitationMeta; onPublishSpa: (open?: boolean) => string | null }) {
+type SpaTabProps = {
+  profile: InterviewProfile
+  questions: readonly MockQuestion[]
+  invitation: InvitationMeta
+  onPublishSpa: (open?: boolean) => string | null
+  publicationSettings: PublicationSettings
+  onPublicationSettings: (value: PublicationSettings) => void
+  onExport: () => void
+}
+
+function SpaTab({ profile, questions, invitation, onPublishSpa, publicationSettings, onPublicationSettings, onExport }: SpaTabProps) {
   const [stage, setStage] = useState(0)
   const [spaUrl, setSpaUrl] = useState('')
   const [qrDataUrl, setQrDataUrl] = useState('')
@@ -598,7 +630,31 @@ function SpaTab({ profile, questions, invitation, onPublishSpa }: { profile: Int
     const value = label === '分享文案' ? shareText.replace(spaUrl, prepared) : prepared
     try { await navigator.clipboard.writeText(value); setCopied(label); window.setTimeout(() => setCopied(null), 1600) } catch { setCopied('复制失败') }
   }
-  return <><div className={css.intro}><span className={css.eyebrow}>STEP 03 · SPA PREVIEW</span><h2>访谈 SPA 已具备发布条件</h2><p>正式访谈在独立 SPA 中完成，专家不会进入插件工作台。先保存当前问题包，再复制链接或打开 SPA。</p></div><div className={css.preview}><div className={css.previewTop}><span className={css.metaLabel}>{profile.name || '实践专家'} · {profile.role || profile.industry || '待补充'}</span><span className={css.pill}>可发布</span></div><div className={css.previewBody}><h3 className={css.previewTitle}>专注回答，呈现真实经验</h3><p className={css.muted}>单题模式 · 进度提示 · 语音输入 · 可暂不回答 · 提交确认</p><div className={css.stageRow}>{['背景确认', '核心职责', '真实案例', '回看确认'].map((item, index) => <button type="button" key={item} className={index === stage ? `${css.stage} ${css.stageActive}` : css.stage} onClick={() => { setStage(index) }}>{String(index + 1).padStart(2, '0')} · {item}</button>)}</div><div className={css.quote}>{questions[0]?.question ?? '问题包尚未生成。'}</div><div className={css.field}><label>专家回答区域</label><textarea placeholder="正式 SPA 中由专家填写；此处仅为发布前预览……" readOnly /></div><div className={css.inviteCard}><div><span className={css.eyebrow}>专家访谈口令</span><strong>{invitation.code}</strong><p>6位数字口令不过期；专家首次激活后，SPA会话有效72小时。重新生成口令后，原口令失效。</p></div><button type="button" className={css.button} onClick={() => { void navigator.clipboard?.writeText(invitation.code); setCopied('口令'); window.setTimeout(() => setCopied(null), 1600) }}>{copied === '口令' ? '已复制口令' : '复制口令'}</button></div><div className={css.shareCard}><div className={css.shareInfo}><span className={css.eyebrow}>可分享访谈链接</span><code>{spaUrl}</code><div className={css.questionActions}><button type="button" className={css.button} onClick={() => { void copy('链接') }}>{copied === '链接' ? '已复制链接' : '复制链接'}</button><button type="button" className={css.button} onClick={() => { void copy('分享文案') }}>{copied === '分享文案' ? '已复制文案' : '复制分享文案'}</button></div></div>{qrDataUrl !== '' && <img className={css.qrCode} src={qrDataUrl} alt="SPA 访谈二维码" />}</div><div className={css.footer}><button type="button" className={css.ghostButton} onClick={() => { onPublishSpa(true) }}>发布并打开 SPA</button><button type="button" className={css.primaryButton} onClick={() => { onPublishSpa(false) }}>保存并生成链接</button></div></div></div></>
+  const exportControls = <div className={css.card}>
+    <h3>Worker 题包导出</h3>
+    <label className={css.editField}>访谈目标
+      <textarea value={publicationSettings.goal} onChange={(event) => {
+        onPublicationSettings({ ...publicationSettings, goal: event.currentTarget.value })
+      }} />
+    </label>
+    <label className={css.editField}>追问计数范围
+      <select value={publicationSettings.scope} onChange={(event) => {
+        onPublicationSettings({ ...publicationSettings, scope: event.currentTarget.value as PublicationSettings['scope'] })
+      }}>
+        <option value="">请选择</option>
+        <option value="per_question">每个主问题</option>
+        <option value="interview">整场访谈</option>
+      </select>
+    </label>
+    <label className={css.editField}>最多追问次数（0 禁止追加追问）
+      <input type="number" min="0" step="1" value={publicationSettings.count} onChange={(event) => {
+        onPublicationSettings({ ...publicationSettings, count: event.currentTarget.value })
+      }} />
+    </label>
+    <button type="button" className={css.primaryButton} onClick={onExport}>下载 JSON 题包</button>
+    <p>下载后在 Worker 管理端上传。导出或本机预览成功不代表远端发布完成。</p>
+  </div>
+  return <>{exportControls}<div className={css.intro}><span className={css.eyebrow}>STEP 03 · SPA PREVIEW</span><h2>访谈 SPA 已具备发布条件</h2><p>正式访谈在独立 SPA 中完成，专家不会进入插件工作台。先保存当前问题包，再复制链接或打开 SPA。</p></div><div className={css.preview}><div className={css.previewTop}><span className={css.metaLabel}>{profile.name || '实践专家'} · {profile.role || profile.industry || '待补充'}</span><span className={css.pill}>可发布</span></div><div className={css.previewBody}><h3 className={css.previewTitle}>专注回答，呈现真实经验</h3><p className={css.muted}>单题模式 · 进度提示 · 语音输入 · 可暂不回答 · 提交确认</p><div className={css.stageRow}>{['背景确认', '核心职责', '真实案例', '回看确认'].map((item, index) => <button type="button" key={item} className={index === stage ? `${css.stage} ${css.stageActive}` : css.stage} onClick={() => { setStage(index) }}>{String(index + 1).padStart(2, '0')} · {item}</button>)}</div><div className={css.quote}>{questions[0]?.question ?? '问题包尚未生成。'}</div><div className={css.field}><label>专家回答区域</label><textarea placeholder="正式 SPA 中由专家填写；此处仅为发布前预览……" readOnly /></div><div className={css.inviteCard}><div><span className={css.eyebrow}>专家访谈口令</span><strong>{invitation.code}</strong><p>6位数字口令不过期；专家首次激活后，SPA会话有效72小时。重新生成口令后，原口令失效。</p></div><button type="button" className={css.button} onClick={() => { void navigator.clipboard?.writeText(invitation.code); setCopied('口令'); window.setTimeout(() => setCopied(null), 1600) }}>{copied === '口令' ? '已复制口令' : '复制口令'}</button></div><div className={css.shareCard}><div className={css.shareInfo}><span className={css.eyebrow}>可分享访谈链接</span><code>{spaUrl}</code><div className={css.questionActions}><button type="button" className={css.button} onClick={() => { void copy('链接') }}>{copied === '链接' ? '已复制链接' : '复制链接'}</button><button type="button" className={css.button} onClick={() => { void copy('分享文案') }}>{copied === '分享文案' ? '已复制文案' : '复制分享文案'}</button></div></div>{qrDataUrl !== '' && <img className={css.qrCode} src={qrDataUrl} alt="SPA 访谈二维码" />}</div><div className={css.footer}><button type="button" className={css.ghostButton} onClick={() => { onPublishSpa(true) }}>发布并打开 SPA</button><button type="button" className={css.primaryButton} onClick={() => { onPublishSpa(false) }}>保存并生成链接</button></div></div></div></>
 }
 
 export function InterviewWorkbench(props: InterviewProps): ReactNode {
@@ -612,6 +668,17 @@ export function InterviewWorkbench(props: InterviewProps): ReactNode {
   const [profile, setProfile] = useState<InterviewProfile>(initialProfile)
   const [questionPack, setQuestionPack] = useState<readonly MockQuestion[]>(generatedQuestionPacks.get(selectedInterviewId) ?? [])
   const [questionPackMeta, setQuestionPackMeta] = useState<QuestionPackMeta | undefined>(generatedQuestionPackMeta.get(selectedInterviewId))
+  const [publicationSettings, setPublicationSettings] = useState<PublicationSettings>(
+    generatedPublicationSettings.get(selectedInterviewId) ?? { goal: '', scope: '', count: '' },
+  )
+  useEffect(() => {
+    setPublicationSettings(generatedPublicationSettings.get(selectedInterviewId) ?? { goal: '', scope: '', count: '' })
+  }, [props.sessionId])
+  const savePublicationSettings = (value: PublicationSettings): void => {
+    setPublicationSettings(value)
+    generatedPublicationSettings.set(selectedInterviewId, value)
+    persistInterviews()
+  }
   const [pendingQuestionPack, setPendingQuestionPack] = useState<{ questions: readonly MockQuestion[]; meta: QuestionPackMeta } | undefined>()
   const fieldnoteId = interviewRecords.find(item => item.id === selectedInterviewId)?.fieldnoteId ?? `FN-${selectedInterviewId.replace(/^new-/, '')}`
   activeInterviewFieldnoteId = fieldnoteId
@@ -716,9 +783,30 @@ export function InterviewWorkbench(props: InterviewProps): ReactNode {
     if (open) window.open(publicUrl, '_blank', 'noopener,noreferrer')
     return publicUrl
   }
+  const exportQuestionPack = (): void => {
+    try {
+      const policy = publicationSettings.scope === '' || publicationSettings.count.trim() === ''
+        ? undefined
+        : { scope: publicationSettings.scope, maxFollowups: Number(publicationSettings.count) }
+      const publication = createPublication({
+        fieldnoteId, publicFieldnoteId: toPublicFieldnoteId(fieldnoteId), goal: publicationSettings.goal, profile,
+        questions: questionPack.filter(item => !item.deleted).map(({ deletedAt: _deletedAt, ...question }) => question),
+        questionPackMeta, invitation: ensureInvitation(selectedInterviewId), interviewPolicy: policy,
+      }, new Date().toISOString())
+      const blob = new Blob([JSON.stringify(publication, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = `${publication.publicFieldnoteId}-v${publication.questionPackMeta.version}.json`
+      anchor.click()
+      window.setTimeout(() => { URL.revokeObjectURL(url) }, 0)
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : '题包导出失败。')
+    }
+  }
   const statusText = generationStatus === 'running' ? 'Agent 生成中' : generationStatus === 'done' ? '问题包待确认' : generationStatus === 'failed' ? '生成失败' : '准备录入'
   const activeQuestionCount = questionPack.filter(item => !item.deleted).length
-  return <div className={css.workbench}><header className={css.header}><div><span className={css.eyebrow}>实践专家访谈工作台</span><h1>{isNewInterview ? '新建实践专家访谈' : `${profile.industry} · ${profile.role}访谈`}</h1><p>插件负责准备问题包与发布 SPA；专家的实际访谈在 SPA 中完成。</p></div><span className={css.pill}>{statusText}</span></header><nav className={css.tabs} aria-label="专家访谈工作台标签页">{tabs.map(([id, label]) => <button type="button" key={id} className={tab === id ? css.tabActive : css.tab} disabled={id !== 'profile' && generationStatus !== 'done' && questionPack.length === 0} onClick={() => { setTab(id) }}>{label}</button>)}</nav><main className={css.content}><div className={css.contentTop}><div><span className={css.eyebrow}>{isNewInterview ? 'NEW INTERVIEW · 待录入' : `${fieldnoteId} · ${profile.name}`}</span></div><span className={css.mockLabel}>{generationStatus === 'done' || questionPack.length > 0 ? 'AGENT DRAFT' : isNewInterview ? 'NEW DRAFT' : 'PREPARATION'}</span></div>{tab === 'profile' && <ProfileTab initialProfile={initialProfile} onGenerate={generate} generating={generationStatus === 'running'} error={generationError} onPreviewMaterial={(material) => { props.openExpertMaterialPreview?.(props.sessionId, material) }} />}{tab === 'overview' && <><div className={css.intro}><span className={css.eyebrow}>WORKSPACE OVERVIEW</span><h2>把一次访谈，整理成可回看的实践证据</h2><p>当前条目围绕{profile.industry}行业{profile.role}，覆盖经历校准、核心职责、真实案例与专家回看。</p></div><div className={css.grid3}><div className={css.card}><h3>专家信息</h3><p>{profile.name} · {profile.role}<br />{profile.industry} · {profile.stage}<br />{profile.years}从业经验</p></div><div className={css.card}><h3>问题包</h3><p>{activeQuestionCount || 0} 个有效问题<br />开放回忆 + 选项辅助<br />{generationStatus === 'done' || questionPack.length > 0 ? '等待主持人确认' : '尚未生成'}<br />{questionPackMeta ? `v${questionPackMeta.version} · ${questionPackMeta.checksum}` : ''}</p></div><div className={css.card}><h3>SPA 单页</h3><p>Fieldnote ID：{fieldnoteId}<br />单题模式 · 进度提示<br />确认后按 ID 发布</p></div></div><div className={css.summary}><h3>下一步</h3><p>先确认专家背景并生成问题包。Agent 任务会同步出现在右侧对话区；问题包确认后才能发布 SPA。</p><div className={css.footer}><span className={css.muted}>{generationStatus === 'running' ? '正在等待 Agent 返回…' : '准备就绪'}</span><button type="button" className={css.primaryButton} disabled={generationStatus !== 'done' && questionPack.length === 0} onClick={() => { setTab('questions') }}>查看问题包</button></div></div></>}{tab === 'questions' && <QuestionsTab questions={questionPack} packMeta={questionPackMeta} pending={pendingQuestionPack} onConfirmPending={confirmPendingQuestionPack} onDiscardPending={discardPendingQuestionPack} onUpdateQuestion={updateQuestion} onDeleteQuestion={deleteQuestion} onOpenSpa={() => { setTab('spa') }} onPublishSpa={publishSpa} />}{tab === 'spa' && <SpaTab profile={profile} questions={questionPack.filter(item => !item.deleted)} invitation={ensureInvitation(selectedInterviewId)} onPublishSpa={publishSpa} />}</main></div>
+  return <div className={css.workbench}><header className={css.header}><div><span className={css.eyebrow}>实践专家访谈工作台</span><h1>{isNewInterview ? '新建实践专家访谈' : `${profile.industry} · ${profile.role}访谈`}</h1><p>插件负责准备问题包与发布 SPA；专家的实际访谈在 SPA 中完成。</p></div><span className={css.pill}>{statusText}</span></header><nav className={css.tabs} aria-label="专家访谈工作台标签页">{tabs.map(([id, label]) => <button type="button" key={id} className={tab === id ? css.tabActive : css.tab} disabled={id !== 'profile' && generationStatus !== 'done' && questionPack.length === 0} onClick={() => { setTab(id) }}>{label}</button>)}</nav><main className={css.content}><div className={css.contentTop}><div><span className={css.eyebrow}>{isNewInterview ? 'NEW INTERVIEW · 待录入' : `${fieldnoteId} · ${profile.name}`}</span></div><span className={css.mockLabel}>{generationStatus === 'done' || questionPack.length > 0 ? 'AGENT DRAFT' : isNewInterview ? 'NEW DRAFT' : 'PREPARATION'}</span></div>{tab === 'profile' && <ProfileTab initialProfile={initialProfile} onGenerate={generate} generating={generationStatus === 'running'} error={generationError} onPreviewMaterial={(material) => { props.openExpertMaterialPreview?.(props.sessionId, material) }} />}{tab === 'overview' && <><div className={css.intro}><span className={css.eyebrow}>WORKSPACE OVERVIEW</span><h2>把一次访谈，整理成可回看的实践证据</h2><p>当前条目围绕{profile.industry}行业{profile.role}，覆盖经历校准、核心职责、真实案例与专家回看。</p></div><div className={css.grid3}><div className={css.card}><h3>专家信息</h3><p>{profile.name} · {profile.role}<br />{profile.industry} · {profile.stage}<br />{profile.years}从业经验</p></div><div className={css.card}><h3>问题包</h3><p>{activeQuestionCount || 0} 个有效问题<br />开放回忆 + 选项辅助<br />{generationStatus === 'done' || questionPack.length > 0 ? '等待主持人确认' : '尚未生成'}<br />{questionPackMeta ? `v${questionPackMeta.version} · ${questionPackMeta.checksum}` : ''}</p></div><div className={css.card}><h3>SPA 单页</h3><p>Fieldnote ID：{fieldnoteId}<br />单题模式 · 进度提示<br />确认后按 ID 发布</p></div></div><div className={css.summary}><h3>下一步</h3><p>先确认专家背景并生成问题包。Agent 任务会同步出现在右侧对话区；问题包确认后才能发布 SPA。</p><div className={css.footer}><span className={css.muted}>{generationStatus === 'running' ? '正在等待 Agent 返回…' : '准备就绪'}</span><button type="button" className={css.primaryButton} disabled={generationStatus !== 'done' && questionPack.length === 0} onClick={() => { setTab('questions') }}>查看问题包</button></div></div></>}{tab === 'questions' && <QuestionsTab questions={questionPack} packMeta={questionPackMeta} pending={pendingQuestionPack} onConfirmPending={confirmPendingQuestionPack} onDiscardPending={discardPendingQuestionPack} onUpdateQuestion={updateQuestion} onDeleteQuestion={deleteQuestion} onOpenSpa={() => { setTab('spa') }} onPublishSpa={publishSpa} />}{tab === 'spa' && <SpaTab profile={profile} questions={questionPack.filter(item => !item.deleted)} invitation={ensureInvitation(selectedInterviewId)} onPublishSpa={publishSpa} publicationSettings={publicationSettings} onPublicationSettings={savePublicationSettings} onExport={exportQuestionPack} />}</main></div>
 }
 
 export function InterviewDetails(props: InterviewProps): ReactNode {

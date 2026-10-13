@@ -11,9 +11,11 @@ import (
 )
 
 type Question struct {
-	ID            string   `json:"id"`
-	Text          string   `json:"text"`
-	RequiredSlots []string `json:"required_slots"`
+	ID            string          `json:"id"`
+	Text          string          `json:"text"`
+	RequiredSlots []string        `json:"required_slots"`
+	FollowUp      string          `json:"followUp,omitempty"`
+	SourceRefs    json.RawMessage `json:"sourceRefs,omitempty"`
 }
 type Answer struct {
 	QuestionID string `json:"question_id"`
@@ -27,17 +29,57 @@ type Profile struct {
 	Role       string `json:"role"`
 	Stage      string `json:"stage"`
 	Experience string `json:"experience"`
+	Years      string `json:"years,omitempty"`
 }
 
 // Snapshot 的版本由调用方单调递增；同版本不能对应不同内容。
 type Snapshot struct {
-	InterviewID         string     `json:"interview_id"`
-	InputVersion        int64      `json:"input_version"`
-	QuestionPackVersion int64      `json:"question_pack_version"`
-	Profile             Profile    `json:"profile"`
-	Questions           []Question `json:"questions"`
-	Answers             []Answer   `json:"answers"`
+	InterviewID         string       `json:"interview_id"`
+	InputVersion        int64        `json:"input_version"`
+	QuestionPackVersion int64        `json:"question_pack_version"`
+	Profile             Profile      `json:"profile"`
+	Questions           []Question   `json:"questions"`
+	Answers             []Answer     `json:"answers"`
+	Pack                *PackContext `json:"pack,omitempty"`
 }
+
+// FollowupPolicy is explicit package-owned policy; a missing count is distinct from zero.
+type FollowupPolicy struct {
+	Scope        string `json:"scope"`
+	MaxFollowups *int   `json:"maxFollowups"`
+}
+
+func (p FollowupPolicy) Validate() error {
+	if (p.Scope != "per_question" && p.Scope != "interview") || p.MaxFollowups == nil || *p.MaxFollowups < 0 {
+		return Fail("INVALID_FOLLOWUP_POLICY", 400)
+	}
+	return nil
+}
+
+type PackContext struct {
+	Key    string         `json:"key"`
+	PackID string         `json:"packId"`
+	Hash   string         `json:"hash"`
+	Goal   string         `json:"goal"`
+	Policy FollowupPolicy `json:"policy"`
+}
+
+// FollowupLimit counts published questions, not failed model requests or retries.
+func FollowupLimit(in Snapshot, history []Followup, questionID string, legacyLimit int) (int, int) {
+	limit, scope := legacyLimit, "per_question"
+	if in.Pack != nil {
+		limit = *in.Pack.Policy.MaxFollowups
+		scope = in.Pack.Policy.Scope
+	}
+	count := 0
+	for _, f := range history {
+		if scope == "interview" || f.QuestionID == questionID {
+			count++
+		}
+	}
+	return count, limit
+}
+
 type Submit struct {
 	Kind       string   `json:"kind"`
 	QuestionID string   `json:"question_id,omitempty"`
@@ -50,8 +92,8 @@ type Followup struct {
 }
 type Analysis struct {
 	Status       string   `json:"status"`
-	CoveredSlots []string `json:"covered_slots"`
-	MissingSlots []string `json:"missing_slots"`
+	CoveredSlots []string `json:"covered_slots,omitempty"`
+	MissingSlots []string `json:"missing_slots,omitempty"`
 	Reason       string   `json:"reason"`
 }
 type FollowupResult struct {
@@ -120,6 +162,14 @@ func (s Submit) Validate() error {
 		return bad()
 	}
 	in := s.Snapshot
+	if in.Pack != nil {
+		if err := in.Pack.Policy.Validate(); err != nil {
+			return err
+		}
+		if !identifier.MatchString(in.Pack.Key) || len(in.Pack.Hash) != 64 || strings.TrimSpace(in.Pack.PackID) == "" {
+			return bad()
+		}
+	}
 	if !identifier.MatchString(in.InterviewID) || in.InputVersion < 1 || in.QuestionPackVersion < 1 || len(in.Questions) < 1 || len(in.Questions) > 100 {
 		return bad()
 	}
@@ -168,8 +218,12 @@ func (s Submit) Validate() error {
 	return nil
 }
 
-// Decode 拒绝未知字段、多段 JSON 和尾随内容。
+// Decode 拒绝未知或重复字段、多段 JSON、尾随内容和过深嵌套。
 func Decode(data []byte, dest any) error {
+	check := json.NewDecoder(bytes.NewReader(data))
+	if err := uniqueFields(check, 0); err != nil {
+		return err
+	}
 	d := json.NewDecoder(bytes.NewReader(data))
 	d.DisallowUnknownFields()
 	if err := d.Decode(dest); err != nil {
@@ -179,6 +233,45 @@ func Decode(data []byte, dest any) error {
 		return fmt.Errorf("JSON 必须恰好包含一个值")
 	}
 	return nil
+}
+
+func uniqueFields(d *json.Decoder, depth int) error {
+	if depth > 256 {
+		return fmt.Errorf("JSON nesting is too deep")
+	}
+	token, err := d.Token()
+	if err != nil {
+		return err
+	}
+	delim, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	if delim == '{' {
+		seen := map[string]bool{}
+		for d.More() {
+			key, err := d.Token()
+			if err != nil {
+				return err
+			}
+			name := key.(string)
+			if seen[name] {
+				return fmt.Errorf("duplicate JSON field")
+			}
+			seen[name] = true
+			if err := uniqueFields(d, depth+1); err != nil {
+				return err
+			}
+		}
+	} else if delim == '[' {
+		for d.More() {
+			if err := uniqueFields(d, depth+1); err != nil {
+				return err
+			}
+		}
+	}
+	_, err = d.Token()
+	return err
 }
 
 func ValidateAnalysis(a Analysis, q Question) error {

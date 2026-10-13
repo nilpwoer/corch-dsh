@@ -28,6 +28,26 @@ type Config struct {
 	Providers map[string]Provider `yaml:"providers"`
 	Prompts   map[string]Pipeline `yaml:"prompts"`
 	Preview   Preview             `yaml:"preview"`
+	Portal    Portal              `yaml:"portal"`
+}
+
+// Portal hosts authenticated package management independently of loopback preview.
+type Portal struct {
+	Enabled             bool          `yaml:"enabled"`
+	AssetsDir           string        `yaml:"assets_dir"`
+	PacksDir            string        `yaml:"packs_dir"`
+	Origin              string        `yaml:"origin"`
+	SessionTTL          time.Duration `yaml:"session_ttl"`
+	MaxPackBytes        int64         `yaml:"max_pack_bytes"`
+	AdminPasswordHash   string        `yaml:"admin_password_hash" json:"-"`
+	LoginLimit          int           `yaml:"login_limit"`
+	LoginWindow         time.Duration `yaml:"login_window"`
+	ParticipantsEnabled bool          `yaml:"participants_enabled"`
+	EntryMode           string        `yaml:"entry_mode"`
+	InvitationMode      string        `yaml:"invitation_mode"`
+	ParticipantReports  string        `yaml:"participant_reports"`
+	PollInterval        time.Duration `yaml:"poll_interval"`
+	ModelLabel          string        `yaml:"model_label"`
 }
 
 // Preview 是仅供本机联调的同源页面入口，不承担公开访谈身份认证。
@@ -137,6 +157,25 @@ func (c Config) Validate() error {
 		}
 		if c.Preview.AssetsDir == "" || c.Preview.PackFile == "" || c.Preview.SessionTTL <= 0 || c.Preview.PollInterval <= 0 || strings.TrimSpace(c.Preview.ModelLabel) == "" {
 			return bad("preview 的页面目录、问题包、会话时长、轮询间隔和模型标识必填")
+		}
+	}
+	if c.Portal.Enabled {
+		if strings.HasPrefix(strings.ToLower(c.Auth.Token), "replace-") {
+			return bad("portal requires a private backend token, not the example placeholder")
+		}
+		u, err := url.Parse(c.Portal.Origin)
+		if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path != "" || u.Scheme != "https" && u.Scheme != "http" {
+			return bad("portal.origin must be an explicit HTTP(S) origin")
+		}
+		if u.Scheme == "http" && u.Hostname() != "localhost" && (net.ParseIP(u.Hostname()) == nil || !net.ParseIP(u.Hostname()).IsLoopback()) {
+			return bad("portal requires HTTPS outside loopback")
+		}
+		if c.Mode == "worker" || c.Preview.Enabled || c.Portal.PacksDir == "" || c.Portal.SessionTTL <= 0 || c.Portal.LoginLimit < 1 || c.Portal.LoginWindow <= 0 || c.Portal.MaxPackBytes <= 0 || c.Portal.MaxPackBytes > c.Server.MaxBodyBytes {
+			return bad("portal requires api/both mode, a separate package directory and valid session/body limits; preview cannot share its routes")
+		}
+		p := c.Portal
+		if p.ParticipantsEnabled && (p.AssetsDir == "" || p.PollInterval <= 0 || p.ModelLabel == "" || (p.EntryMode != "link" && p.EntryMode != "list") || (p.InvitationMode != "code" && p.InvitationMode != "none") || (p.ParticipantReports != "allow" && p.ParticipantReports != "deny")) {
+			return bad("participant routes require explicit entry_mode, invitation_mode, participant_reports, assets and polling settings")
 		}
 	}
 	if c.Server.ReadTimeout <= 0 || c.Server.WriteTimeout <= 0 || c.Server.ShutdownTimeout <= 0 || c.Server.MaxBodyBytes <= 0 {

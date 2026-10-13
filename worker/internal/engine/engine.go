@@ -18,8 +18,12 @@ import (
 
 type Engine struct {
 	Store *store.Store
-	Model *model.Client
+	Model stageClient
 	Log   *slog.Logger
+}
+
+type stageClient interface {
+	Stage(context.Context, store.Task, config.Release, config.Queue, string, string, any, any) error
 }
 
 func (e *Engine) Run(ctx context.Context) {
@@ -157,15 +161,25 @@ func (e *Engine) Process(ctx context.Context, t store.Task, in store.Input, r co
 		if a.Skipped {
 			return domain.FollowupResult{Status: "skipped", AllowSkip: true}, nil
 		}
-		if len(history) >= r.Pipeline.MaxFollowups {
+		count, limit := domain.FollowupLimit(sub.Snapshot, in.Followups, q.ID, r.Pipeline.MaxFollowups)
+		if count >= limit {
 			return domain.FollowupResult{Status: "needs_review", AllowSkip: true, Reason: "FOLLOWUP_LIMIT"}, nil
 		}
 		payload := struct {
-			Profile  domain.Profile    `json:"profile"`
-			Question domain.Question   `json:"question"`
-			Answer   domain.Answer     `json:"answer"`
-			History  []domain.Followup `json:"previous_followups"`
-		}{sub.Snapshot.Profile, q, a, history}
+			Profile  domain.Profile      `json:"profile"`
+			Question domain.Question     `json:"question"`
+			Answer   domain.Answer       `json:"answer"`
+			History  []domain.Followup   `json:"previous_followups"`
+			Pack     *domain.PackContext `json:"pack,omitempty"`
+			Answers  []domain.Answer     `json:"answer_history,omitempty"`
+		}{sub.Snapshot.Profile, q, a, history, sub.Snapshot.Pack, nil}
+		if sub.Snapshot.Pack != nil {
+			for _, answer := range sub.Snapshot.Answers {
+				if answer.Confirmed {
+					payload.Answers = append(payload.Answers, answer)
+				}
+			}
+		}
 		var analysis domain.Analysis
 		if err := e.Model.Stage(ctx, t, r, options, "analyze", r.Pipeline.Analyze, payload, &analysis); err != nil {
 			return nil, err
@@ -209,10 +223,11 @@ func (e *Engine) Process(ctx context.Context, t store.Task, in store.Input, r co
 	}
 	var report domain.Report
 	payload := struct {
-		Profile   domain.Profile    `json:"profile"`
-		Evidence  []domain.Evidence `json:"evidence"`
-		Followups []domain.Followup `json:"followups"`
-	}{sub.Snapshot.Profile, evidence.Evidence, in.Followups}
+		Profile   domain.Profile      `json:"profile"`
+		Evidence  []domain.Evidence   `json:"evidence"`
+		Followups []domain.Followup   `json:"followups"`
+		Pack      *domain.PackContext `json:"pack,omitempty"`
+	}{sub.Snapshot.Profile, evidence.Evidence, in.Followups, sub.Snapshot.Pack}
 	if err := e.Model.Stage(ctx, t, r, options, "compose", r.Pipeline.Compose, payload, &report); err != nil {
 		return nil, err
 	}
