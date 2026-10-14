@@ -1,0 +1,29 @@
+# Windows 版 Corch DSH 桌面客户端
+
+[English](README.md) | 中文
+
+## 使用便携客户端
+
+需要 Windows10/11 x64。把 ZIP 完整解压到可写目录，双击 **Corch DSH.exe**。包内包含 Node.js、Electron、Web 界面、专家访谈插件和已打补丁的 better-sidebar 提供器；启动时不安装系统组件，也不通过 pnpm 下载依赖。
+
+客户端在可执行文件旁创建独立 `data` 目录，保存 Electron 浏览器配置、DSH 设置和凭据、会话、工作目录及日志。替换程序时保留这个目录。目录内含私人数据，请勿随故障报告上传。不要让多个副本同时使用同一数据目录。`Corch DSH.exe --data-dir C:\absolute\private-folder` 可指定独立配置目录；不要指向现有浏览器目录或 DSH_HOME。
+
+进入“设置 → 模型”，通过已有 DSH 模型和凭据服务配置提供商及 API Key。包内不包含密钥或模型账号。专家访谈入口已内置；请在访谈设置中显式填写 Worker 地址。已部署的服务填写 `https://114.132.201.209`。发布会打开 Worker 自身域名下的桌面弹窗，由你本人登录管理账号并确认，收到匹配回执后才将版本标记为已发布。
+
+关闭客户端会停止它自己的本机后端，不影响其他 DSH 安装或服务。HTTP 只监听 `127.0.0.1`，首次启动由系统分配端口，随后保留端口以维持浏览器存储。若其他程序占用该端口，客户端会记录启动失败，不接管或关闭该程序。启动日志位于 `data/backend.log`；启动失败会写入 `data/startup-error.txt`。麦克风授权需要原生确认；真实硬件和模型质量仍需单独验收。
+
+应用未签名，没有自动更新功能。Windows 可能显示未知发布者或 SmartScreen 提示。包内保留 Electron 和 Node 上游许可。请从维护者取得完整更新包，并在解压前核对公布的 SHA256。
+
+## 构建参考
+
+使用 Windows x64、受支持的 Node.js、pnpm11.7.0 和 Windows PowerShell/tar。先运行仓库正常构建，再执行：
+
+```powershell
+pnpm --filter @polus-ai/corch-dsh-desktop run package:win --out C:\build\Corch-DSH
+```
+
+输出目录必须不存在。打包器核验固定版本的官方 Electron44.7.2 和 Node24.18.0 压缩包，在仅含发布文件的工作区镜像中按冻结 pnpm 锁文件安装生产依赖，再将工作区包物化到便携闭包，拒绝包内符号链接及私人配置，产出 ZIP、SHA256 和逐文件构建清单。`--cache` 指定压缩包缓存；`--closure` 可提供已核验的冻结桌面闭包以离线组装。该选项仍检查必要构建产物并扫描载荷；维护者需保证闭包与源码、锁文件匹配。
+
+`node --test apps/desktop/policy.test.mjs` 检查弹窗限制、环境隔离及导航。桌面验收必须以独立数据目录启动实际打包的可执行文件，加载真实插件，检查模型设置页和隔离 Worker 发布握手，并核验后端关闭。回环提供商测试只证明请求路由和凭据连接，不代表真实模型质量或麦克风验收。
+
+[桌面设计记录](../../.agents/notes/implemented/feature/2026-10-14-windows-desktop-client.zh.md) 说明生命周期与打包取舍。桌面不新增模型提示词或工具行为，这些效果由现有 bundle 负责。
