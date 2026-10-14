@@ -4,6 +4,8 @@ English | [中文](README.zh.md)
 
 The client plugin prepares expert profiles and versioned question packages, then publishes a confirmed package to an explicitly configured Teaching Worker. Existing interview data stays in the browser; the Worker owns participant sessions, execution settings and saved reports.
 
+The profile mounts this package's [bundle patch](cordis.patch.yml) alongside an installed `dsh-better-sidebar` provider. The default Web bundle does not mount this workbench. The real Loader acceptance uses `dsh-better-sidebar@0.17.1` with a temporary profile and host session.
+
 ## Publish and share
 
 In interview settings, save the Worker origin under **Worker 发布**. Public targets require HTTPS; HTTP is accepted only for loopback development. The address must contain no credentials, path, query or fragment. No target is inferred or silently configured.
@@ -34,4 +36,4 @@ Generation appends to existing session history; earlier unchanged request prefix
 
 ## Known Limitations and Deferred Work
 
-- Direct publication currently accepts a loopback DSH origin and requires an allowed popup plus an existing Worker management login. It adds no persistent publishing credential and does not relax Worker CORS or authentication. Browser fixtures exercise synthetic data and composition events; native operating-system IME, microphone and live-provider acceptance remain separate checks.
+- Direct publication currently accepts a loopback DSH origin and requires an allowed popup plus an existing Worker management login. It adds no persistent publishing credential and does not relax Worker CORS or authentication. The [real Loader acceptance](../../../apps/web/tests/worker-publication.e2e.ts) requires `DSH_WORKER_SIDEBAR_PACKAGE` pointing to the installed sidebar package and `DSH_WORKER_PUBLISH_FIXTURE` pointing to a private disposable Worker handoff; without those inputs, its corresponding checks skip. It uses synthetic data and no model calls. Native operating-system IME, microphone and live-provider acceptance remain separate checks.

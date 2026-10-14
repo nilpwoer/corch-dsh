@@ -4,6 +4,8 @@
 
 该客户端插件准备专家资料和版本化题包，再将已确认题包发布到显式配置的 Teaching Worker。 既有访谈资料保留在浏览器中；Worker 管理参与者会话、执行配置和已保存报告。
 
+Profile 需要同时挂载本包的 [bundle 补丁](cordis.patch.yml)和已安装的 `dsh-better-sidebar` 服务。默认 Web bundle 不挂载本工作台。真实 Loader 验收使用 `dsh-better-sidebar@0.17.1`、一次性 profile 和宿主会话。
+
 ## 发布与分享
 
 在访谈设置的 **Worker 发布** 中保存 Worker origin。公开目标必须使用 HTTPS；只有回环开发地址 可使用 HTTP。地址不能包含凭据、路径、查询或片段。系统不推断或静默配置目标。
@@ -36,4 +38,4 @@ SPA 预览仅包含访谈口令和分享链接。链接携带不可变题包键�
 
 ## 已知限制与延后工作
 
-- 直接发布目前仅接受回环 DSH origin，需要允许弹窗并使用既有 Worker 管理员登录。此功能不创建 持久发布凭据，也不放宽 Worker CORS 或认证。浏览器测试使用合成数据和 composition 事件； 操作系统原生输入法、麦克风和真实模型仍需另行验收。
+- 直接发布目前仅接受回环 DSH origin，需要允许弹窗并使用既有 Worker 管理员登录。此功能不创建持久发布凭据，也不放宽 Worker CORS 或认证。[真实 Loader 验收](../../../apps/web/tests/worker-publication.e2e.ts)需要用 `DSH_WORKER_SIDEBAR_PACKAGE` 指向已安装的侧栏插件、用 `DSH_WORKER_PUBLISH_FIXTURE` 指向一次性 Worker 的私有交接文件；缺少这些输入时，相应检查会跳过。验收使用合成数据，不调用模型。操作系统原生输入法、麦克风和真实模型仍需另行验收。
