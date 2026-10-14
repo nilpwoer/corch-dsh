@@ -14,6 +14,8 @@ The repository CLI uses the existing loopback Host session API with a new conver
 
 The Worker local import command uses OS publication-directory permissions and the existing parser, runnable-snapshot validation and atomic no-replace publisher. Dry-run validates without creating files, identical imports are idempotent, and conflicts fail. The command neither creates HTTP administrator sessions nor loads database/provider configuration; a separate tool binary does not require a service restart.
 
+The Node CLI is checked by the Client aggregate because its shared question-pack modules belong to the Client project; it remains a Node entry point. Its transport subprocess tests stay in the Host aggregate. The dedicated CLI check is available through its own TypeScript configuration.
+
 ## Alternatives considered
 
 **Owned-process SDK:** the official SDK launches its own runtime rather than attaching to the configured Web Host. Reusing the existing Host avoids copying credentials or competing over its home state.

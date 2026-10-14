@@ -109,6 +109,7 @@
     "packages/*/*/tests/**/*.client.spec.tsx",
     "packages/client/tsdown.client.ts",
     "scripts/*.client.spec.ts",
+    "scripts/teaching-pack.ts",
     "scripts/client-bundle-css.spec.ts",
     "packages/typert/generator/tests/fixtures/**",
     "scripts/client-bundle-purity.spec.ts"

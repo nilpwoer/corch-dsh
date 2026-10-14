@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-10-14-teaching-pack-cli.md
-2026-10-14-teaching-pack-cli.md: ab4f11527f044173981807ee80444b72456df09d
-2026-10-14-teaching-pack-cli.zh.md: 78230ded2bebf5d3ff961e399897412e28abd07f
+2026-10-14-teaching-pack-cli.md: c733b57767abb458143aaa7b6e6960b1dc048fec
+2026-10-14-teaching-pack-cli.zh.md: b66f2068509756974c0dd5d46aa4f17356901e9f
