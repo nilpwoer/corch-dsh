@@ -220,5 +220,19 @@ func mountPreview(mux *http.ServeMux, s *store.Store) error {
 		}
 		respond(w, 200, public(task))
 	}, true))
+	for _, format := range []string{"view", "pdf"} {
+		mux.HandleFunc("GET /browser/tasks/{id}/"+format, local(func(w http.ResponseWriter, r *http.Request) {
+			task, err := s.Get(r.Context(), r.PathValue("id"))
+			if err != nil {
+				failure(w, err)
+				return
+			}
+			if task.InterviewID != identity(r) {
+				failure(w, domain.Fail("NOT_FOUND", 404))
+				return
+			}
+			serveSavedReport(w, r, task, format)
+		}, true))
+	}
 	return nil
 }

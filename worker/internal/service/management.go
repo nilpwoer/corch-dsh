@@ -213,5 +213,15 @@ func mountManagement(mux *http.ServeMux, c config.Portal, backend managementBack
 		}
 		respond(w, 200, public(task))
 	}, true))
+	for _, format := range []string{"view", "pdf"} {
+		mux.HandleFunc("GET /admin/api/reports/{id}/"+format, protect(func(w http.ResponseWriter, r *http.Request) {
+			task, err := backend.Get(r.Context(), r.PathValue("id"))
+			if err != nil {
+				failure(w, err)
+				return
+			}
+			serveSavedReport(w, r, task, format)
+		}, true))
+	}
 	return nil
 }

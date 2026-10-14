@@ -353,5 +353,28 @@ func mountPortal(mux *http.ServeMux, c config.Portal, backend participantBackend
 		}
 		respond(w, 200, entry.Pack.ParticipantView())
 	}, true))
+	for _, format := range []string{"view", "pdf"} {
+		mux.HandleFunc("GET /portal/api/tasks/{id}/"+format, protect(func(w http.ResponseWriter, r *http.Request) {
+			row, err := backend.ParticipantIdentity(r.Context(), token(r))
+			if err != nil {
+				failure(w, err)
+				return
+			}
+			task, err := backend.Get(r.Context(), r.PathValue("id"))
+			if err != nil {
+				failure(w, err)
+				return
+			}
+			if task.InterviewID != row.InterviewID {
+				failure(w, domain.Fail("NOT_FOUND", 404))
+				return
+			}
+			if c.ParticipantReports != "allow" {
+				failure(w, domain.Fail("REPORT_ACCESS_DENIED", 403))
+				return
+			}
+			serveSavedReport(w, r, task, format)
+		}, true))
+	}
 	return nil
 }

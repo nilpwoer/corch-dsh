@@ -203,10 +203,8 @@ export async function mountWorkerInterview(app) {
   const reportHtml = task => {
     if (task.status !== 'succeeded') return `<div class="worker-status ${task.status === 'failed' ? 'worker-error' : ''}">报告 v${task.report_version} · ${esc(task.status === 'failed' ? errorText(task.error_code) : task.status)}</div>`
     if (portal && !context.can_view_reports) return '<div class="worker-status">报告已保存，由访谈管理端查看。</div>'
-    const output = task.output
-    const cites = ids => (ids || []).map(id => `<a href="#evidence-${esc(task.id)}-${esc(id)}">[${esc(id)}]</a>`).join(' ')
-    const labels = { fact: '专家事实', interpretation: '分析解释', needs_verification: '待核实' }
-    return `<article class="panel report"><div class="kind">报告 v${task.report_version} · 答案版本 ${output.input_version} · ${esc(task.release_version)}</div><h2>${esc(output.report.title)}</h2>${output.report.sections.map(section => `<h3>${esc(section.title)}</h3>${section.statements.map(item => `<p><span class="kind">${esc(labels[item.kind] || item.kind)}</span>${esc(item.text)} ${cites(item.evidence_ids)}</p>`).join('')}`).join('')}${output.report.task_cards.map(card => `<h3>典型任务：${esc(card.title)}</h3>${[['触发条件', card.trigger], ['工作场景', card.context], ['步骤', card.steps.join('\n')], ['关键判断', card.judgments.join('\n')], ['工具', card.tools.join('、')], ['协作', card.collaboration], ['质量依据', card.quality_evidence], ['边界', card.boundaries]].filter(([, value]) => value).map(([label, value]) => `<p><strong>${label}：</strong>${esc(value)}</p>`).join('')}<p>${cites(card.evidence_ids)}</p>`).join('')}${output.report.needs_verification.length ? `<h3>尚待核实</h3><ul>${output.report.needs_verification.map(text => `<li>${esc(text)}</li>`).join('')}</ul>` : ''}<h3>原文证据</h3>${output.evidence.map(item => `<blockquote id="evidence-${esc(task.id)}-${esc(item.id)}"><strong>${esc(item.id)} · ${esc(item.question_id)}</strong><p>${esc(item.quote)}</p></blockquote>`).join('')}</article>`
+    const base = `${portal ? '/portal/api/tasks/' : '/browser/tasks/'}${encodeURIComponent(task.id)}`
+    return `<article class="panel report"><div class="actions"><a class="btn" href="${base}/pdf" download>下载 PDF</a><a class="btn" href="${base}/view" target="_blank" rel="noopener">单独打开报告</a></div><iframe title="报告 v${task.report_version} 网页预览" src="${base}/view" loading="lazy" sandbox="allow-same-origin allow-downloads" referrerpolicy="no-referrer" style="width:100%;height:900px;border:0;margin-top:16px"></iframe></article>`
   }
   function render() {
     if (composingInput) { renderPending = true; return }

@@ -112,6 +112,20 @@ func Handler(s *store.Store) (http.Handler, error) {
 		}
 		respond(w, 200, public(task))
 	}))
+	for _, format := range []string{"view", "pdf"} {
+		mux.HandleFunc("GET /v1/tasks/{id}/"+format, auth(func(w http.ResponseWriter, r *http.Request) {
+			if _, err := uuid.Parse(r.PathValue("id")); err != nil {
+				failure(w, domain.Fail("INVALID_TASK_ID", 400))
+				return
+			}
+			task, err := s.Get(r.Context(), r.PathValue("id"))
+			if err != nil {
+				failure(w, err)
+				return
+			}
+			serveSavedReport(w, r, task, format)
+		}))
+	}
 	mux.HandleFunc("GET /v1/interviews/{id}/tasks", auth(func(w http.ResponseWriter, r *http.Request) {
 		tasks, err := s.List(r.Context(), r.PathValue("id"))
 		if err != nil {
