@@ -14,6 +14,7 @@ import (
 
 	"github.com/fanzy531/corch-dsh/worker/internal/config"
 	"github.com/fanzy531/corch-dsh/worker/internal/domain"
+	"github.com/fanzy531/corch-dsh/worker/internal/runtimecfg"
 	driver "github.com/go-sql-driver/mysql"
 	"github.com/google/uuid"
 	"gorm.io/driver/mysql"
@@ -27,6 +28,9 @@ var schema string
 
 //go:embed portal-schema.sql
 var portalSchema string
+
+//go:embed runtime-schema.sql
+var runtimeSchema string
 
 type Store struct {
 	DB     *gorm.DB
@@ -217,18 +221,21 @@ func (s *Store) migrate(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	if len(versions) > 1 || len(versions) == 1 && versions[0] != 1 && versions[0] != 2 {
+	if len(versions) > 1 || len(versions) == 1 && versions[0] != 1 && versions[0] != 2 && versions[0] != 3 {
 		return fmt.Errorf("不支持的 Worker 数据库结构版本")
 	}
-	if len(versions) == 1 && versions[0] == 2 {
+	if len(versions) == 1 && versions[0] == 3 {
 		return nil
 	}
 	if !s.Config.Database.AutoMigrate {
 		return fmt.Errorf("数据库尚未初始化")
 	}
-	ddl := portalSchema
+	ddl := runtimeSchema
+	if len(versions) == 1 && versions[0] == 1 {
+		ddl = portalSchema + "\n" + runtimeSchema
+	}
 	if len(versions) == 0 {
-		ddl = schema + "\n" + portalSchema
+		ddl = schema + "\n" + portalSchema + "\n" + runtimeSchema
 	}
 	for _, statement := range strings.Split(ddl, ";") {
 		if strings.TrimSpace(statement) != "" {
@@ -238,9 +245,9 @@ func (s *Store) migrate(ctx context.Context, name string) error {
 		}
 	}
 	if len(versions) == 1 {
-		_, err = conn.ExecContext(ctx, "UPDATE tw_schema SET version=2 WHERE version=1")
+		_, err = conn.ExecContext(ctx, "UPDATE tw_schema SET version=3")
 	} else {
-		_, err = conn.ExecContext(ctx, "INSERT INTO tw_schema(version) VALUES (2)")
+		_, err = conn.ExecContext(ctx, "INSERT INTO tw_schema(version) VALUES (3)")
 	}
 	return err
 }
@@ -306,6 +313,54 @@ func (s *Store) Enqueue(ctx context.Context, key string, sub domain.Submit) (Tas
 		var live interview
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id=?", snap.InterviewID).Take(&live).Error; err != nil {
 			return err
+		}
+		frozen, err := frozenRuntime(tx, snap.InterviewID)
+		if err != nil {
+			return err
+		}
+		if frozen == nil {
+			var snapshots int64
+			if err := tx.Table("tw_snapshots").Where("interview_id=?", live.ID).Count(&snapshots).Error; err != nil {
+				return err
+			}
+			var participants int64
+			if err := tx.Model(&ParticipantSession{}).Where("interview_id=?", live.ID).Count(&participants).Error; err != nil {
+				return err
+			}
+			value := runtimecfg.Resolve(s.Config, runtimecfg.Settings{}, runtimecfg.Settings{}, nil)
+			if snapshots == 0 && participants == 0 {
+				var err error
+				value, _, _, err = s.readResolvedRuntime(tx, nil)
+				if err != nil {
+					return err
+				}
+				if err := tx.Model(&interview{}).Where("id=?", live.ID).Update("followup_release", encode(value.Followup)).Error; err != nil {
+					return err
+				}
+			} else {
+				// Existing interviews keep retained releases; new admin defaults never rewrite them.
+				if err := json.Unmarshal(live.FollowupRelease, &value.Followup); err != nil {
+					return err
+				}
+				var previous Task
+				err := tx.Where("interview_id=? AND kind='report'", live.ID).Order("report_version,id").Take(&previous).Error
+				if err == nil {
+					if err := json.Unmarshal(previous.ReleaseData, &value.Report); err != nil {
+						return err
+					}
+				} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+					return err
+				}
+			}
+			value.Hash = ""
+			value.Hash = config.Hash(value)
+			if !value.Valid() {
+				return domain.Fail("INVALID_FROZEN_RUNTIME", 500)
+			}
+			if err := tx.Create(&interviewRuntime{InterviewID: snap.InterviewID, Contents: encode(value)}).Error; err != nil {
+				return err
+			}
+			frozen = &value
 		}
 		if snap.InputVersion < live.InputVersion {
 			return domain.Fail("INPUT_VERSION_CONFLICT", 409)
@@ -373,16 +428,11 @@ func (s *Store) Enqueue(ctx context.Context, key string, sub domain.Submit) (Tas
 		for _, f := range history {
 			in.Followups = append(in.Followups, domain.Followup{QuestionID: f.QuestionID, InputVersion: f.InputVersion, Text: f.Text})
 		}
-		release := s.Config.Release(sub.Kind)
+		release := frozen.Report
 		if sub.Kind == "followup" {
-			if err := json.Unmarshal(live.FollowupRelease, &release); err != nil {
-				return err
-			}
-			if !release.ValidHash() {
-				return domain.Fail("INVALID_RELEASE", 500)
-			}
+			release = frozen.Followup
 		}
-		task = Task{ID: taskID, InterviewID: live.ID, Kind: sub.Kind, FollowupKey: followupKey, Input: encode(in), ReleaseData: encode(release), Status: "queued", MaxAttempts: s.Config.Queue.MaxAttempts, Options: encode(s.Config.Queue)}
+		task = Task{ID: taskID, InterviewID: live.ID, Kind: sub.Kind, FollowupKey: followupKey, Input: encode(in), ReleaseData: encode(release), Status: "queued", MaxAttempts: frozen.Options.MaxAttempts, Options: encode(frozen.Options)}
 		if sub.Kind == "report" {
 			task.ReportVersion = live.ReportVersion
 		}

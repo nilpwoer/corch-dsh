@@ -139,7 +139,7 @@ func TestPortalAcceptance(t *testing.T) {
 	}
 	ready()
 	var schemaVersion int
-	if err := legacyDB.QueryRow("SELECT version FROM tw_schema").Scan(&schemaVersion); err != nil || schemaVersion != 2 {
+	if err := legacyDB.QueryRow("SELECT version FROM tw_schema").Scan(&schemaVersion); err != nil || schemaVersion != 3 {
 		t.Fatal("version 1 migration failed")
 	}
 	var preserved int

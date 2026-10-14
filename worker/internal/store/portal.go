@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"time"
@@ -94,12 +95,13 @@ func (s *Store) Reports(ctx context.Context) ([]Task, error) {
 }
 
 type ParticipantSession struct {
-	TokenHash   string          `json:"-"`
-	InterviewID string          `json:"interview_id"`
-	PackKey     string          `json:"pack_key"`
-	PackHash    string          `json:"pack_hash"`
-	PackData    json.RawMessage `json:"-"`
-	ExpiresAt   time.Time       `json:"-"`
+	TokenHash     string                 `json:"-"`
+	InterviewID   string                 `json:"interview_id"`
+	PackKey       string                 `json:"pack_key"`
+	PackHash      string                 `json:"pack_hash"`
+	PackData      json.RawMessage        `json:"-"`
+	ExpiresAt     time.Time              `json:"-"`
+	RuntimePolicy *domain.FollowupPolicy `json:"-" gorm:"-"`
 }
 
 func (ParticipantSession) TableName() string { return "tw_participant_sessions" }
@@ -118,7 +120,22 @@ func (s *Store) NewParticipantSession(ctx context.Context, entry published.Entry
 		return "", ParticipantSession{}, err
 	}
 	row := ParticipantSession{TokenHash: sessionHash(token), InterviewID: uuid.NewString(), PackKey: entry.Key, PackHash: entry.Hash, PackData: data}
-	err = s.DB.WithContext(ctx).Exec("INSERT INTO tw_participant_sessions(token_hash,interview_id,pack_key,pack_hash,pack_data,expires_at) VALUES (?,?,?,?,?,UTC_TIMESTAMP(6)+INTERVAL ? MICROSECOND)", row.TokenHash, row.InterviewID, row.PackKey, row.PackHash, row.PackData, s.Config.Portal.SessionTTL.Microseconds()).Error
+	err = s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		frozen, _, _, err := s.readResolvedRuntime(tx, &entry)
+		if err != nil {
+			return err
+		}
+		effective := entry
+		effective.Pack.Policy = frozen.Policy
+		if _, err := effective.Snapshot(row.InterviewID); err != nil {
+			return err
+		}
+		if err := tx.Exec("INSERT INTO tw_participant_sessions(token_hash,interview_id,pack_key,pack_hash,pack_data,expires_at) VALUES (?,?,?,?,?,UTC_TIMESTAMP(6)+INTERVAL ? MICROSECOND)", row.TokenHash, row.InterviewID, row.PackKey, row.PackHash, row.PackData, s.Config.Portal.SessionTTL.Microseconds()).Error; err != nil {
+			return err
+		}
+		row.RuntimePolicy = frozen.Policy
+		return tx.Create(&interviewRuntime{InterviewID: row.InterviewID, Contents: encode(frozen)}).Error
+	}, &sql.TxOptions{Isolation: sql.LevelRepeatableRead})
 	return token, row, err
 }
 func (s *Store) ParticipantIdentity(ctx context.Context, token string) (ParticipantSession, error) {
@@ -129,6 +146,15 @@ func (s *Store) ParticipantIdentity(ctx context.Context, token string) (Particip
 	err := s.DB.WithContext(ctx).Where("token_hash=? AND expires_at>UTC_TIMESTAMP(6)", sessionHash(token)).Take(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return row, domain.Fail("INTERVIEW_SESSION_REQUIRED", 401)
+	}
+	if err == nil {
+		frozen, frozenErr := frozenRuntime(s.DB.WithContext(ctx), row.InterviewID)
+		if frozenErr != nil {
+			return row, frozenErr
+		}
+		if frozen != nil {
+			row.RuntimePolicy = frozen.Policy
+		}
 	}
 	return row, err
 }

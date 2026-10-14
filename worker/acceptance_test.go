@@ -598,8 +598,16 @@ func TestProcessAcceptance(t *testing.T) {
 			t.Fatal("report version did not advance")
 		}
 		status, data := call("GET", "/v1/tasks/"+regenerated.ID, "", nil, testToken)
-		if status != 200 || !bytes.Contains(data, []byte(`"release_version":"report-v2"`)) {
+		if status != 200 || !bytes.Contains(data, []byte(`"release_version":"report-v1"`)) {
 			t.Fatalf("version: %s", data)
+		}
+		fresh := input("version_fresh_interview")
+		fresh.Kind, fresh.QuestionID = "report", ""
+		freshReport := settled(submit(fresh, "version-fresh-report").ID)
+		expectSuccess(freshReport)
+		status, data = call("GET", "/v1/tasks/"+freshReport.ID, "", nil, testToken)
+		if status != 200 || !bytes.Contains(data, []byte(`"release_version":"report-v2"`)) {
+			t.Fatalf("new interview did not use updated report release: %s", data)
 		}
 		if old := settled(original.ID); !bytes.Equal(old.Output, original.Output) {
 			t.Fatal("prior report overwritten")

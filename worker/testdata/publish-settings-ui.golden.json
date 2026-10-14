@@ -1,0 +1,23 @@
+{
+  "confirmation": "合成专家 · FN-browser-publish-v7 · v7 · 3 题",
+  "share_sections": ["专家访谈口令", "分享链接"],
+  "share": {
+    "package_key": "FN-browser-publish-v7",
+    "query_contains_invitation": false,
+    "prefilled_invitation": "000000",
+    "automatic_entry": false
+  },
+  "package_settings": {
+    "title": "题包访谈设置",
+    "scope": "整个访谈合计",
+    "count": "0",
+    "followup_inherits": false,
+    "report_inherits": true
+  },
+  "new_version": {
+    "package_key": "FN-browser-publish-v8",
+    "initial_followups": 2,
+    "settings_revision": 0,
+    "report_prompt": "合成全局报告分析"
+  }
+}

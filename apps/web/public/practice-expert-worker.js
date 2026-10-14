@@ -7,6 +7,12 @@ export async function mountWorkerInterview(app) {
   const portal = window.__TEACHING_PORTAL__ === true
   const base = portal ? '/portal/api' : '/browser'
   const requestedPack = new URLSearchParams(location.search).get('fieldnoteId') || ''
+  const sharedFragment = new URLSearchParams(location.hash.slice(1))
+  const sharedCode = portal ? (sharedFragment.get('code') || '').slice(0,128) : ''
+  if (portal && sharedFragment.has('code')) {
+    sharedFragment.delete('code')
+    history.replaceState(null, '', location.pathname + location.search + (sharedFragment.size ? '#' + sharedFragment.toString() : ''))
+  }
   let recognition = null
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
   const lifetime = new AbortController()
@@ -29,6 +35,7 @@ export async function mountWorkerInterview(app) {
     if (failure.data?.entry_mode === 'list' && !requestedPack) packs = await api('/browser/packs')
     const needsCode = failure.data?.invitation_mode !== 'none'
     app.innerHTML = `<main class="main"><section class="panel auth-card"><h2>实践专家访谈</h2><p>请选择主持人提供的访谈，不需要注册账号。</p><form id="portal-start"><label for="portal-key">访谈题包</label>${packs.length ? `<select id="portal-key">${packs.map(p => `<option value="${esc(p.key)}">${esc(p.fieldnoteId)} · v${p.version}</option>`).join('')}</select>` : `<input id="portal-key" value="${esc(requestedPack)}" required placeholder="主持人提供的题包标识">`}${needsCode ? '<label for="portal-code">访谈口令</label><input id="portal-code" type="password" autocomplete="off" required>' : ''}<button class="btn primary">开始访谈</button><p id="portal-error" role="alert"></p></form></section></main>`
+    if (needsCode && sharedCode) document.querySelector('#portal-code').value = sharedCode
     document.querySelector('#portal-start').onsubmit = async event => {
       event.preventDefault()
       try {

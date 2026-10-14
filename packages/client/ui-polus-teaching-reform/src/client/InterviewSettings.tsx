@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import css from './InterviewSettings.module.css'
+import { readWorkerOrigin, saveWorkerOrigin } from './workerPublishing.ts'
 import { hydrateCorpusDocuments, seedCorpusDocuments } from './globalReferenceCorpus.ts'
 import { buildInterviewPromptTemplate, INTERVIEW_SYSTEM_PROMPT_STORAGE_KEY } from './interviewPrompt.ts'
 
@@ -10,7 +11,7 @@ export type { GlobalReferenceDocument } from './interviewTypes.ts'
 import type { GlobalReferenceDocument } from './interviewTypes.ts'
 
 export type InterviewSettingsProps = { onClose?: () => void; onPreviewDocument?: (document: GlobalReferenceDocument) => void }
-type SettingsTab = 'references' | 'prompt' | 'followUp'
+type SettingsTab = 'references' | 'prompt' | 'worker'
 
 const UPDATED_EVENT = 'interview-global-reference-pool-updated'
 
@@ -60,6 +61,8 @@ export async function loadGlobalReferenceDocumentsForGeneration(): Promise<Globa
 export function InterviewSettings({ onClose, onPreviewDocument }: InterviewSettingsProps): ReactNode {
   const [documents, setDocuments] = useState<GlobalReferenceDocument[]>(() => readGlobalReferenceDocuments())
   const [activeTab, setActiveTab] = useState<SettingsTab>('references')
+  const [workerOrigin, setWorkerOrigin] = useState(readWorkerOrigin)
+  const [workerMessage, setWorkerMessage] = useState('')
   const [showArchived, setShowArchived] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draft, setDraft] = useState<Pick<GlobalReferenceDocument, 'title' | 'markdown'> | null>(null)
@@ -191,7 +194,7 @@ export function InterviewSettings({ onClose, onPreviewDocument }: InterviewSetti
       {onClose !== undefined && <button type="button" className={css.ghostButton} onClick={onClose}>返回访谈</button>}
     </header>
     <main className={css.content}>
-      <nav className={css.settingsTabs} aria-label="访谈设置分类">{([['references', '全局基础文献池'], ['prompt', '系统提示词'], ['followUp', '追问逻辑']] as const).map(([id, label]) => <button type="button" key={id} className={activeTab === id ? css.settingsTabActive : css.settingsTab} onClick={() => { setActiveTab(id) }}>{label}</button>)}</nav>
+      <nav className={css.settingsTabs} aria-label="访谈设置分类">{([['references', '全局基础文献池'], ['prompt', '系统提示词'], ['worker', 'Worker 发布']] as const).map(([id, label]) => <button type="button" key={id} className={activeTab === id ? css.settingsTabActive : css.settingsTab} onClick={() => { setActiveTab(id) }}>{label}</button>)}</nav>
       {activeTab === 'references' && <section className={css.section}>
         <div className={css.sectionHeader}><div><h2>全局基础文献池</h2><p>当前有 {activeCount} 份启用文献。生成问题包时将读取启用且未归档的文献，并记录版本快照。</p></div><div className={css.actions}><button type="button" className={css.ghostButton} onClick={() => { setShowArchived(value => !value) }}>{showArchived ? '隐藏已归档' : '显示已归档'}</button></div></div>
         <div className={css.notice}><strong>作用范围</strong><span>这里的文献规定访谈方法、问题框架和来源标准；每个项目的专家信息与上传资料仍单独生效。</span></div>
@@ -203,7 +206,7 @@ export function InterviewSettings({ onClose, onPreviewDocument }: InterviewSetti
       </section>}
       {activeTab === 'references' && draft !== null && <section className={css.editor} aria-label={editingDocument === undefined ? '添加文献' : '编辑文献'}><div className={css.sectionHeader}><div><h2>{editingDocument === undefined ? '添加基础文献' : '编辑基础文献'}</h2><p>{editingDocument === undefined ? '保存后将以 v1 加入全局文献池。' : `保存后生成 v${(editingDocument.version ?? 0) + 1}，旧版本不会影响已生成的问题包。`}</p></div><div className={css.actions}><label className={css.ghostButton}>导入 Markdown 文件<input className={css.hiddenInput} type="file" accept=".md,.markdown,.txt,text/markdown,text/plain" onChange={(event) => { void importMarkdownFile(event.currentTarget.files?.[0]); event.currentTarget.value = '' }} /></label><button type="button" className={css.ghostButton} onClick={cancelEdit}>取消</button></div></div>{error !== null && <div className={css.error} role="alert">{error}</div>}<label className={css.field}><span>文献名称</span><input value={draft.title} placeholder="例如：实践专家访谈法与任务分析框架" onChange={(event) => { setDraft({ ...draft, title: event.currentTarget.value }); setError(null) }} /></label><label className={css.field}><span>Markdown 内容</span><textarea value={draft.markdown} placeholder="# 文献标题\n\n请输入或粘贴已确认的基础文献内容……" onChange={(event) => { setDraft({ ...draft, markdown: event.currentTarget.value }); setError(null) }} /></label><div className={css.editorFooter}><span>仅 Markdown 内容会进入问题包生成上下文。</span><button type="button" className={css.primaryButton} onClick={saveDraft}>保存文献</button></div></section>}
       {activeTab === 'prompt' && <section className={css.configPanel}><div className={css.sectionHeader}><div><h2>系统提示词</h2><p>这是全局问题包生成模板。修改并保存后，下一次生成问题包时会自动应用；专家信息、专家补充资料和全局基础文献池仍由系统运行时注入。</p></div></div><div className={css.promptContext}>变量说明：<code>{'{{expert.*}}'}</code> 为当前专家字段，<code>{'{{expert.materials}}'}</code> 为专家补充资料，<code>{'{{global_reference_pool}}'}</code> 为全局基础文献池。请保留这些变量，否则对应内容无法注入。</div><label className={css.field}><span>{promptLoading ? '正在加载模板…' : `全局模板 · ${promptPreview.length.toLocaleString()} 字符`}</span><textarea className={css.promptEditor} value={promptPreview} onChange={(event) => { setPromptPreview(event.currentTarget.value); setPromptSaved(false) }} aria-label="全局问题包生成系统提示词模板" /></label><div className={css.editorFooter}><span>保存后仅影响后续新生成的问题包，不会改写已经生成的问题包。</span><div className={css.actions}><button type="button" className={css.ghostButton} onClick={resetPrompt}>恢复默认</button><button type="button" className={css.primaryButton} disabled={promptLoading || promptPreview.trim() === ''} onClick={savePrompt}>{promptSaved ? '已保存' : '保存并应用'}</button></div></div></section>}
-      {activeTab === 'followUp' && <section className={css.configPanel}><div className={css.sectionHeader}><div><h2>追问逻辑</h2><p>配置回答不完整时的补充提问策略。本轮仅展示 UI，尚未改变现有追问行为。</p></div><span className={css.readonlyBadge}>预览模式</span></div><div className={css.configGrid}><label className={css.field}><span>最多连续追问次数</span><select defaultValue="2"><option value="1">1 次</option><option value="2">2 次（默认）</option><option value="3">3 次</option></select></label><label className={css.field}><span>回答过短阈值</span><select defaultValue="short"><option value="short">少于 20 字</option><option value="medium">少于 50 字</option><option value="off">不按字数判断</option></select></label></div><div className={css.ruleList}>{['没有具体案例 → 请求一个真实案例', '只有结论没有过程 → 追问关键步骤与判断', '没有结果或质量标准 → 追问如何确认完成', '任务边界不清 → 追问触发条件与责任边界'].map(rule => <label className={css.ruleRow} key={rule}><input type="checkbox" defaultChecked disabled /><span>{rule}</span></label>)}</div><div className={css.editorFooter}><span>追问策略保存与 Agent 通信将在后续版本接入。</span><button type="button" className={css.primaryButton} disabled>保存设置</button></div></section>}
+      {activeTab === 'worker' && <section className={css.configPanel}><div className={css.sectionHeader}><div><h2>Worker 发布目标</h2><p>发布窗口使用 Worker 自己的管理员登录，不在 DSH 保存密码或令牌。</p></div></div><label className={css.field}><span>Worker 服务地址</span><input value={workerOrigin} placeholder="https://worker.example.com" onChange={(event) => { setWorkerOrigin(event.currentTarget.value); setWorkerMessage('') }} /></label><div className={css.editorFooter}><span>只保存目标地址。追问次数和访谈提示词在 Worker 管理端设置。</span><button type="button" className={css.primaryButton} onClick={() => { try { setWorkerOrigin(saveWorkerOrigin(workerOrigin)); setWorkerMessage('已保存 Worker 发布地址') } catch (error) { setWorkerMessage(error instanceof Error ? error.message : '地址无效') } }}>保存地址</button></div><p role="status">{workerMessage}</p></section>}
     </main>
   </div>
 }

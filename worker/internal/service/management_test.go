@@ -12,10 +12,19 @@ import (
 
 	"github.com/fanzy531/corch-dsh/worker/internal/config"
 	"github.com/fanzy531/corch-dsh/worker/internal/domain"
+	"github.com/fanzy531/corch-dsh/worker/internal/published"
+	"github.com/fanzy531/corch-dsh/worker/internal/runtimecfg"
 	"github.com/fanzy531/corch-dsh/worker/internal/store"
 )
 
 type fakeManagement struct{ active bool }
+
+func (f *fakeManagement) ReadRuntimeSettings(context.Context, *published.Entry) (store.SettingsView, error) {
+	return store.SettingsView{}, nil
+}
+func (f *fakeManagement) SaveRuntimeSettings(context.Context, *published.Entry, int64, runtimecfg.Settings) (store.SettingsView, error) {
+	return store.SettingsView{}, nil
+}
 
 func (f *fakeManagement) AuthenticateAccount(_ context.Context, user, password string) error {
 	if user != "admin" || password != "synthetic-test-only" {

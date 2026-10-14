@@ -27,12 +27,20 @@ type participantBackend interface {
 	Get(context.Context, string) (store.Task, error)
 }
 
-func participantEntry(row store.ParticipantSession) (published.Entry, error) {
+func participantOriginalEntry(row store.ParticipantSession) (published.Entry, error) {
 	var p published.Pack
 	if err := json.Unmarshal(row.PackData, &p); err != nil {
 		return published.Entry{}, domain.Fail("INVALID_SESSION_DATA", 500)
 	}
 	return published.Entry{Key: row.PackKey, Pack: p, Hash: row.PackHash}, nil
+}
+
+func participantEntry(row store.ParticipantSession) (published.Entry, error) {
+	entry, err := participantOriginalEntry(row)
+	if err == nil && row.RuntimePolicy != nil {
+		entry.Pack.Policy = row.RuntimePolicy
+	}
+	return entry, err
 }
 
 // mountPortal uses only explicitly configured participant policies, retaining the separate preview restriction.
@@ -156,10 +164,6 @@ func mountPortal(mux *http.ServeMux, c config.Portal, backend participantBackend
 		return matches[0], nil
 	}
 	newSession := func(w http.ResponseWriter, r *http.Request, entry published.Entry) {
-		if _, err := entry.Snapshot("validation"); err != nil {
-			failure(w, err)
-			return
-		}
 		value, row, err := backend.NewParticipantSession(r.Context(), entry)
 		if err != nil {
 			failure(w, err)
@@ -259,7 +263,7 @@ func mountPortal(mux *http.ServeMux, c config.Portal, backend participantBackend
 			failure(w, err)
 			return
 		}
-		entry, err := participantEntry(row)
+		entry, err := participantOriginalEntry(row)
 		if err != nil {
 			failure(w, err)
 			return

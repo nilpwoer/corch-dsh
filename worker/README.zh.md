@@ -22,15 +22,15 @@ MySQL 可访问时，`GET /health` 返回 HTTP 200 和 `ready: true`。其他接
 
 ## 配置
 
-[config.example.yaml](config.example.yaml) 包含完整配置。未知字段、缺失必填值和无效限制会导致启动失败。所有运行参数，包括凭据和提示词，均从 `serve -c` 指定的 YAML 读取，不读取环境变量。`config.local.yaml` 已被 Git 忽略。配置在启动时读取，修改后重启生效。
+[config.example.yaml](config.example.yaml) 包含完整配置。未知字段、缺失必填值和无效限制会导致启动失败。启动参数（包括凭据和模型选择）从 `serve -c` 指定的 YAML 读取，不读取环境变量。管理端业务提示词和题包策略覆盖单独保存在 MySQL。`config.local.yaml` 已被 Git 忽略。配置在启动时读取，修改后重启生效。
 
 | 分组 | 设置及行为 |
 |---|---|
 | `mode` | `both` 同时提供 API 和执行任务；`api` 只接收和查询任务；`worker` 只消费任务并提供健康检查。共同部署的进程使用各自的监听地址，并访问同一个数据库。 |
 | `server` | 监听地址、读写及关闭超时、HTTP 请求体上限。 |
-| `database` | 直接填写的 `dsn`、首次建表、连接池大小、连接生命周期、连接及读写超时。`auto_migrate` 初始化结构版本 2，或明确将版本 1 升级并加入 portal 表；其他版本拒绝。 |
+| `database` | 直接填写的 `dsn`、首次建表、连接池大小、连接生命周期、连接及读写超时。`auto_migrate` 初始化结构版本 3，或为版本 1/2 增量添加 portal/runtime 表；其他版本拒绝。 |
 | `auth` | 直接填写的后端共享 `token`；令牌至少 32 个字符。所有运行模式均必填。 |
-| `queue` | 追问和报告分别设置并发数，以及轮询、租约、心跳、任务超时、尝试次数、重试间隔、输入输出字节上限。限制随任务保存；并发数和轮询间隔属于各运行进程。 |
+| `queue` | 追问和报告分别设置并发数，以及轮询、租约、心跳、任务超时、尝试次数、重试间隔、输入输出字节上限。执行限制按访谈冻结并复制到任务；并发数和轮询间隔属于各运行进程。 |
 | `providers` | 命名接口地址、直接填写的 `api_key` 和请求超时。仅 API 模式允许模型密钥为空；消费者要求每个已配置模型都有密钥。 |
 | `prompts.followup` | 版本、模型参数、旧后端追问上限、分析提示词和生成提示词。Portal 会话使用题包策略而非此上限。 |
 | `prompts.report` | 独立版本和模型、证据提取及报告生成提示词。`max_followups` 为零。 |
@@ -44,7 +44,7 @@ MySQL 可访问时，`GET /health` 返回 HTTP 200 和 `ready: true`。其他接
 
 提示词可在既有 JSON 字段内调整追问判断、措辞、报告侧重点和章节标题。输出字段、校验规则、任务状态和两阶段执行顺序由 Go 代码定义；调整这些内容需要修改代码并更新验收。配置不引入任意工作流。
 
-访谈沿用首个任务接收时选定的追问版本，避免访谈中途改变提问规则。报告任务使用接收请求的 API 进程所配置的报告版本。使用新的幂等键，可针对相同的冻结答案生成新编号报告，既有报告仍可查询。若要求新任务版本一致，API 副本应部署相同版本。
+每次访谈的追问和报告 release 均按[管理配置与访谈冻结](#management-settings-and-interview-freezing)保存。使用新的幂等键，可针对相同冻结答案和执行配置生成新编号报告，既有报告仍可查询。若要求新访谈版本一致，API 副本应使用相同启动配置。
 
 ### 报告校验
 
@@ -134,9 +134,9 @@ hash-password --output <新建私有文件> 从标准输入读取密码，以随
 
 受访者路由只有在明确开启 participants_enabled 并填写 entry_mode（link/list）、invitation_mode（code/none）、participant_reports（allow/deny）、资产、轮询及模型标识后才启用。这些是可选择的协议选项，不代表用户批准默认产品策略。管理与访谈使用不同的 HttpOnly、SameSite=Strict Cookie，服务端校验有效期，变更请求校验准确来源。管理退出撤销数据库会话；login_limit 和 login_window 配置各进程登录预算。
 
-根路径 / 与既有 /practice-expert-interview-spa.html 使用原母版并选择 worker 入口；/portal/api 负责受访者请求，不存在的 API/JSON 返回错误而非 HTML。link 模式不公开题包列表。链接可将不可变上传键作为 fieldnoteId；多版本别名要求明确版本键，不自动选择最新文件。code 模式在服务器校验既有口令，不下发给浏览器。上传文件保持为私有发布对象，受访者视图排除邀请信息与主持人资料。
+根路径 / 与既有 /practice-expert-interview-spa.html 使用原母版并选择 worker 入口；/portal/api 负责受访者请求，不存在的 API/JSON 返回错误而非 HTML。link 模式不公开题包列表。链接可将不可变上传键作为 fieldnoteId；多版本别名要求明确版本键，不自动选择最新文件。code 模式在服务器校验提交的口令；参与者 API 不返回已保存口令。明确分享的口令片段会从浏览器历史中移除，只预填进入表单，不自动提交。上传文件保持为私有发布对象，受访者视图排除邀请信息与主持人资料。
 
-DSH 的 SPA 预览增加目标、明确的追问范围/次数和 JSON 导出，保留主持人确认及原发布流程。发布包保留 followUp 和 sourceRefs；后者是问题设计来源，不是专家回答证据。interviewPolicy 包含 scope（per_question/interview）和非负 maxFollowups，0 禁止追加问题。旧题包可检查，但未补齐目标与策略时不能创建 portal 会话，不推断服务器逐包默认值。
+[DSH 工作台](../packages/client/ui-polus-teaching-reform/README.zh.md#publish-and-share)通过 Worker 自有管理窗口发布已确认的 JSON。题包保留 `followUp` 和 `sourceRefs`；来源描述题目设计，不是专家答案证据。`interviewPolicy` 包含 `scope: per_question | interview` 和非负 `maxFollowups`；零表示禁用追加追问。旧题包在参与者进入前必须具有目标及明确策略，策略可来自发布文件或保存的题包覆盖。不推断服务器端每题包默认值。
 
 上传先解析和限制大小，再进行同文件系统原子发布，禁止覆盖。相同键相同内容重试成功，不同内容使用新键。拒绝路径形式的键、越界符号链接、非法正式文件和未完成上传。会话在 MySQL 保存题包副本、版本、私有完整哈希及策略，目录删除或替换不改变活跃会话；浏览器绑定哈希排除邀请信息，避免暴露短口令的快速摘要。
 
@@ -157,6 +157,28 @@ DSH 的 SPA 预览增加目标、明确的追问范围/次数和 JSON 导出，�
 
 匿名读取返回 401，访问其他参与者的报告返回 404，参与者可见性拒绝返回 403，未完成或失败报告返回 409。渲染校验已保存的报告和证据，转义 HTML，响应设置为私有且不缓存；不更新报告或调用模型。PDF 嵌入[已授权中文字体](internal/reportview/fonts/README.zh.md)，长文按 A4 分页换行，包含证据链接和页码。不支持的字形导致渲染失败，避免静默丢字；HTML 保留原文。
 
-生产环境只需编译后的 Worker、原有两个 SPA 资源文件以及随附的[许可声明](licenses/README.zh.md)。字体和报告 HTML 已嵌入，不需要浏览器、Python、外部 PDF 服务或新增配置。回滚沿用相同数据库结构和报告历史版本。
+生产环境只需编译后的 Worker、原有两个 SPA 资源文件以及随附的[许可声明](licenses/README.zh.md)。字体和报告 HTML 已嵌入，不需要浏览器、Python、外部 PDF 服务或新增配置。PDF 渲染本身不改变结构或报告历史版本；应用回退需遵守[结构迁移与回退](#schema-migration-and-rollback)。
 
 `TestReportPreviewAcceptance` 在 API-only 模式下创建临时数据库，直接保存合成报告而不调用模型。`-report-browser-handoff <私有路径>` 通过 SSH 回环隧道执行[真实浏览器检查](tests/report-preview.browser.mjs)，在 150 秒内用 `.done` 文件返回 `PASS`。交接文件仅包含合成测试会话凭据，必须保留在 Git 外。独立 PDF 检查校验中文全文完整性、字体嵌入、页面边界及证据跳转目标。
+
+<a id="management-settings-and-interview-freezing"></a>
+
+### 管理配置与访谈冻结
+
+`GET`/`PUT /admin/api/settings` 管理全局业务提示词；`GET`/`PUT /admin/api/packs/{key}/settings` 管理题包覆盖和策略。沿用既有管理会话及精确 origin 写入检查。更新需携带当前 `revision`、题包 `publication_hash` 和 `settings`；修订冲突返回 409。可编辑字段为追问、报告的 `analyze` 和 `compose` 业务文本，以及题包 `policy`。模型及服务字段会被拒绝，Go 中的输出 schema 和引用校验始终执行。
+
+不启用覆盖时，业务提示词按 YAML → 全局 → 题包继承。题包策略继承不可变发布文件的策略，除非明确覆盖。相同发布重试保留设置，新版本具有独立覆盖。删除题包后用不同字节替换相同键，不会静默重绑定已有设置。
+
+参与者进入时，将两类 pipeline release、公开服务与模型配置、执行预算和有效策略冻结到 `tw_interview_runtime`；仅使用后端 API 的访谈在首次提交时冻结。后续任务、重试和报告版本在重启后仍沿用该记录。凭据保留在运行中的 YAML。并发数和轮询仍属于进程配置。管理端修改仅影响新访谈；上传不修改设置或进行中的访谈。
+
+旧访谈保留已保存的追问 release 和最早记录的报告 release。若没有历史报告 release，首次恢复任务捕获服务启动时的报告基线，忽略新的管理端提示词覆盖。从未记录过的历史配置无法重建。旧参与者策略保留在其发布副本中；新建会话时解析当前设置。
+
+发布桥仅接受规范的回环 DSH origin、准确的 opener 窗口及随机 nonce。窗口显示题包键、专家、版本和题目数量，需要经过认证的用户明确确认。完成后仅向该 origin 返回匹配的键及哈希，Worker 打开参与者地址。管理员凭据和后端令牌不返回 DSH。管理页禁止框架嵌入并采用仅允许自身资源的内容策略。浏览器 CORS 和既有认证保持不变。
+
+<a id="schema-migration-and-rollback"></a>
+
+### 结构迁移与回退
+
+结构版本 3 新增 `tw_runtime_settings` 和 `tw_interview_runtime`；版本 1/2 仅在启用 `database.auto_migrate` 时升级。既有访谈、任务、调用和报告行会保留。仅支持结构版本 2 的旧二进制拒绝版本 3，因此只切换可执行文件不能完成回退。
+
+批准部署前，应同时备份数据库、私有配置和题包目录，并在隔离环境验证恢复。需协调更新 DSH 客户端构建、Worker 二进制和 SPA 静态资源。回退到结构版本 2 的发布需要在维护窗口恢复匹配的数据库备份，会丢失备份后的写入；若需保留升级后的写入，则需经过验证的兼容回退版本。不要手动降低结构版本标记。快照及恢复凭据由操作人员私下提供。

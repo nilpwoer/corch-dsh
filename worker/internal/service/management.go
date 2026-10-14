@@ -14,11 +14,18 @@ import (
 	"github.com/fanzy531/corch-dsh/worker/internal/config"
 	"github.com/fanzy531/corch-dsh/worker/internal/domain"
 	"github.com/fanzy531/corch-dsh/worker/internal/published"
+	"github.com/fanzy531/corch-dsh/worker/internal/runtimecfg"
 	"github.com/fanzy531/corch-dsh/worker/internal/store"
 )
 
 //go:embed management.html
 var managementPage []byte
+
+//go:embed management.js
+var managementScript []byte
+
+//go:embed management.css
+var managementStyle []byte
 
 type managementBackend interface {
 	AuthenticateAccount(context.Context, string, string) error
@@ -27,6 +34,8 @@ type managementBackend interface {
 	LogoutAdmin(context.Context, string) error
 	Reports(context.Context) ([]store.Task, error)
 	Get(context.Context, string) (store.Task, error)
+	ReadRuntimeSettings(context.Context, *published.Entry) (store.SettingsView, error)
+	SaveRuntimeSettings(context.Context, *published.Entry, int64, runtimecfg.Settings) (store.SettingsView, error)
 }
 
 // mountManagement keeps administrator cookies and routes separate from interview sessions.
@@ -67,9 +76,23 @@ func mountManagement(mux *http.ServeMux, c config.Portal, backend managementBack
 	page := func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; frame-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 		_, _ = w.Write(managementPage)
 	}
 	mux.HandleFunc("GET /admin/{$}", page)
+	for _, asset := range []struct {
+		path, kind string
+		body       []byte
+	}{{"/admin/management.js", "text/javascript; charset=utf-8", managementScript}, {"/admin/management.css", "text/css; charset=utf-8", managementStyle}} {
+		mux.HandleFunc("GET "+asset.path, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", asset.kind)
+			w.Header().Set("Cache-Control", "no-store")
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			_, _ = w.Write(asset.body)
+		})
+	}
 	mux.HandleFunc("GET /admin", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/admin/", http.StatusSeeOther) })
 	var loginMu sync.Mutex
 	loginCount := 0
@@ -152,6 +175,56 @@ func mountManagement(mux *http.ServeMux, c config.Portal, backend managementBack
 			respond(w, 200, map[string]any{"packs": rows, "invalid_files": bad})
 		})
 	}, true))
+	settingsHandler := func(pack bool, save bool) http.HandlerFunc {
+		return protect(func(w http.ResponseWriter, r *http.Request) {
+			var entry *published.Entry
+			if pack {
+				d, err := published.OpenDirectory(c.PacksDir, c.MaxPackBytes)
+				if err != nil {
+					failure(w, err)
+					return
+				}
+				defer d.Close()
+				value, err := d.Read(r.PathValue("key"))
+				if err != nil {
+					failure(w, domain.Fail("NOT_FOUND", 404))
+					return
+				}
+				entry = &value
+			}
+			var view store.SettingsView
+			var err error
+			if save {
+				var input struct {
+					Revision        int64               `json:"revision"`
+					Settings        runtimecfg.Settings `json:"settings"`
+					PublicationHash string              `json:"publication_hash,omitempty"`
+				}
+				r.Body = http.MaxBytesReader(w, r.Body, 262144)
+				raw, readErr := io.ReadAll(r.Body)
+				if readErr != nil || r.Header.Get("Content-Type") != "application/json" || domain.Decode(raw, &input) != nil || input.Revision < 0 {
+					failure(w, domain.Fail("INVALID_SETTINGS", 400))
+					return
+				}
+				if entry != nil && input.PublicationHash != entry.Hash {
+					failure(w, domain.Fail("SETTINGS_PUBLICATION_CHANGED", 409))
+					return
+				}
+				view, err = backend.SaveRuntimeSettings(r.Context(), entry, input.Revision, input.Settings)
+			} else {
+				view, err = backend.ReadRuntimeSettings(r.Context(), entry)
+			}
+			if err != nil {
+				failure(w, err)
+				return
+			}
+			respond(w, 200, view)
+		}, true)
+	}
+	mux.HandleFunc("GET /admin/api/settings", settingsHandler(false, false))
+	mux.HandleFunc("PUT /admin/api/settings", settingsHandler(false, true))
+	mux.HandleFunc("GET /admin/api/packs/{key}/settings", settingsHandler(true, false))
+	mux.HandleFunc("PUT /admin/api/packs/{key}/settings", settingsHandler(true, true))
 	mux.HandleFunc("POST /admin/api/packs/{key}", protect(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Content-Type") != "application/json" {
 			failure(w, domain.Fail("JSON_REQUIRED", 415))
