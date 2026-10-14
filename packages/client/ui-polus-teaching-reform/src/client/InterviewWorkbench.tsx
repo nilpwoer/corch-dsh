@@ -3,16 +3,15 @@ import tinyPinyin from 'tiny-pinyin'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import css from './InterviewWorkbench.module.css'
 import { createPublication, type InterviewPolicy } from './publication.ts'
+import { parseAgentQuestionPack, validateQuestionPack, checksumQuestionPack, createQuestionPackMeta, type InterviewQuestion as MockQuestion, type QuestionSourceRef, type QuestionPackMeta } from './questionPack.ts'
 import { InterviewSettings } from './InterviewSettings.tsx'
 import { getEnabledGlobalReferenceDocuments } from './InterviewSettings.tsx'
-import type { ExpertMaterial, TeachingReformProps } from './types.ts'
+import type { ExpertMaterial, InterviewProfile, TeachingReformProps } from './types.ts'
 
 type InterviewProps = TeachingReformProps
 type InterviewTab = 'overview' | 'profile' | 'questions' | 'spa'
 type InterviewItem = { id: string; fieldnoteId: string; title: string; expert: string; industry: string; status: string; updated: string }
-type InterviewProfile = { name: string; industry: string; role: string; years: string; stage: string; experience: string; materials?: readonly ExpertMaterial[] }
 type GenerationStatus = 'idle' | 'running' | 'done' | 'failed'
-type QuestionPackMeta = { packId: string; version: number; generatedAt: string; sourceSessionId: string; checksum: string; globalReferences?: readonly { id: string; title: string; version: number; contentHash: string }[] }
 type InvitationMeta = { code: string; createdAt: string; status: 'active' | 'revoked' }
 type PublicationSettings = { goal: string; scope: '' | InterviewPolicy['scope']; count: string }
 type PersistedInterview = {
@@ -60,7 +59,8 @@ function readPersistedInterviews(): PersistedInterview[] {
     const value = JSON.parse(window.localStorage.getItem(INTERVIEW_STORAGE_KEY) ?? '[]') as unknown
     if (!Array.isArray(value)) return []
     const rows = value.filter(item => typeof item === 'object' && item !== null && 'record' in item) as PersistedInterview[]
-    const realRows = rows.filter(item => !REMOVED_MOCK_INTERVIEW_IDS.has(item.record.id) && !REMOVED_MOCK_INTERVIEW_TITLES.has(item.record.title))
+    const realRows = rows.filter(item =>
+      !REMOVED_MOCK_INTERVIEW_IDS.has(item.record.id) && !REMOVED_MOCK_INTERVIEW_TITLES.has(item.record.title))
     if (realRows.length !== rows.length) window.localStorage.setItem(INTERVIEW_STORAGE_KEY, JSON.stringify(realRows))
     return realRows
   } catch { return [] }
@@ -150,29 +150,6 @@ export function rebindInterviewSession(previousId: string, nextId: string): void
 
 const EMPTY_PROFILE: InterviewProfile = { name: '', industry: '', role: '', years: '', stage: '', experience: '', materials: [] }
 
-type MockQuestion = {
-  id: string
-  title: string
-  type: string
-  question: string
-  helper?: string
-  followUp?: string
-  options?: readonly string[]
-  sourceRefs?: readonly QuestionSourceRef[]
-  deleted?: boolean
-  deletedAt?: string
-}
-
-type QuestionSourceRef = {
-  sourceType: string
-  title: string
-  locator?: string
-  excerpt?: string
-  rationale?: string
-  confidence?: 'high' | 'medium' | 'low'
-  requiresConfirmation?: boolean
-}
-
 const SOURCE_TYPE_LABELS: Record<string, string> = {
   project_goal: '项目目标',
   expert_profile: '专家资料',
@@ -183,28 +160,6 @@ const SOURCE_TYPE_LABELS: Record<string, string> = {
   job_description: '岗位样本',
   domain_knowledge: '行业知识补充',
   model_inference: '模型推断',
-}
-
-function normalizeSourceRefs(value: unknown): readonly QuestionSourceRef[] | undefined {
-  if (!Array.isArray(value)) return undefined
-  const refs = value.flatMap((item) => {
-    if (typeof item !== 'object' || item === null) return []
-    const row = item as Record<string, unknown>
-    const title = String(row.title ?? '').trim()
-    if (title === '') return []
-    const sourceType = String(row.sourceType ?? 'model_inference').trim() || 'model_inference'
-    const confidence = row.confidence === 'high' || row.confidence === 'medium' || row.confidence === 'low' ? row.confidence : undefined
-    return [{
-      sourceType,
-      title,
-      ...(row.locator === undefined ? {} : { locator: String(row.locator) }),
-      ...(row.excerpt === undefined ? {} : { excerpt: String(row.excerpt) }),
-      ...(row.rationale === undefined ? {} : { rationale: String(row.rationale) }),
-      ...(confidence === undefined ? {} : { confidence }),
-      ...(row.requiresConfirmation === undefined ? {} : { requiresConfirmation: Boolean(row.requiresConfirmation) }),
-    } satisfies QuestionSourceRef]
-  })
-  return refs.length > 0 ? refs : undefined
 }
 
 function fallbackSourceRefs(): readonly QuestionSourceRef[] {
@@ -255,13 +210,25 @@ const MOCK_QUESTIONS: readonly MockQuestion[] = [
 ]
 void MOCK_QUESTIONS
 
-const generatedProfiles = new Map<string, InterviewProfile>(persistedInterviews.flatMap(item => item.profile === undefined ? [] : [[item.record.id, item.profile] as const]))
-const generatedQuestionPacks = new Map<string, readonly MockQuestion[]>(persistedInterviews.flatMap(item => item.questions === undefined ? [] : [[item.record.id, ensureQuestionSources(item.questions)] as const]))
-const generatedQuestionPackMeta = new Map<string, QuestionPackMeta>(persistedInterviews.flatMap(item => item.questionPackMeta === undefined ? [] : [[item.record.id, item.questionPackMeta] as const]))
+const generatedProfiles = new Map<string, InterviewProfile>(
+  persistedInterviews.flatMap(
+    item => item.profile === undefined ? [] : [[item.record.id, item.profile] as const]),
+)
+const generatedQuestionPacks = new Map<string, readonly MockQuestion[]>(
+  persistedInterviews.flatMap(
+    item => item.questions === undefined ? [] : [[item.record.id, ensureQuestionSources(item.questions)] as const]),
+)
+const generatedQuestionPackMeta = new Map<string, QuestionPackMeta>(
+  persistedInterviews.flatMap(
+    item => item.questionPackMeta === undefined ? [] : [[item.record.id, item.questionPackMeta] as const]),
+)
 const generatedPublicationSettings = new Map<string, PublicationSettings>(persistedInterviews.flatMap((item) => {
   return item.publication === undefined ? [] : [[item.record.id, item.publication] as const]
 }))
-const generatedInvitations = new Map<string, InvitationMeta>(persistedInterviews.flatMap(item => item.invitation === undefined ? [] : [[item.record.id, item.invitation] as const]))
+const generatedInvitations = new Map<string, InvitationMeta>(
+  persistedInterviews.flatMap(
+    item => item.invitation === undefined ? [] : [[item.record.id, item.invitation] as const]),
+)
 
 function createInvitationCode(): string {
   return String(Math.floor(Math.random() * 1_000_000)).padStart(6, '0')
@@ -276,186 +243,11 @@ function ensureInvitation(id: string): InvitationMeta {
   return invitation
 }
 
-type ParsedQuestionPack = { questions: readonly MockQuestion[]; declaredPackId?: string }
-
-function checksumQuestionPack(questions: readonly MockQuestion[]): string {
-  const source = JSON.stringify(questions)
-  let hash = 2166136261
-  for (let index = 0; index < source.length; index += 1) {
-    hash ^= source.charCodeAt(index)
-    hash = Math.imul(hash, 16777619)
-  }
-  return (hash >>> 0).toString(16).padStart(8, '0')
-}
-
-function checksumText(source: string): string {
-  let hash = 2166136261
-  for (let index = 0; index < source.length; index += 1) {
-    hash ^= source.charCodeAt(index)
-    hash = Math.imul(hash, 16777619)
-  }
-  return (hash >>> 0).toString(16).padStart(8, '0')
-}
-
-const ALLOWED_SOURCE_TYPES = new Set(['project_goal', 'expert_profile', 'uploaded_document', 'methodology', 'global_reference', 'official_standard', 'job_description', 'domain_knowledge', 'model_inference'])
-
-function validateQuestionPack(questions: readonly MockQuestion[]): string | null {
-  if (questions.length < 3) return '问题数量不足，至少需要 3 个问题。'
-  const ids = questions.map(item => item.id)
-  const unique = new Set(ids)
-  if (unique.size !== ids.length) return '问题编号存在重复，无法确认对应关系。'
-  for (let index = 0; index < ids.length; index += 1) {
-    const expected = `Q${String(index + 1).padStart(2, '0')}`
-    if (ids[index] !== expected) return `问题编号不连续：第 ${index + 1} 个问题应为 ${expected}，实际为 ${ids[index] ?? '空'}。`
-    const refs = questions[index]?.sourceRefs
-    if (refs === undefined || refs.length === 0) return `${expected} 缺少 sourceRefs，无法确认问题生成依据。请让 Agent 按协议重新生成。`
-    for (const [refIndex, ref] of refs.entries()) {
-      if (!ALLOWED_SOURCE_TYPES.has(ref.sourceType) || ref.title.trim() === '' || !ref.rationale?.trim() || ref.confidence === undefined) {
-        return `${expected} 的 sourceRefs[${refIndex}] 缺少 sourceType、title、rationale 或 confidence。请让 Agent 按协议重新生成。`
-      }
-    }
-  }
-  return null
-}
-
-function normalizeStructuredQuestions(value: unknown): ParsedQuestionPack | null {
-  if (typeof value !== 'object' || value === null || !Array.isArray((value as { questions?: unknown }).questions)) return null
-  const rawQuestions = (value as { questions: unknown[] }).questions
-  const questions = rawQuestions.map((item, index) => {
-    const row = typeof item === 'object' && item !== null ? item as Record<string, unknown> : {}
-    const options = Array.isArray(row.options) ? row.options.map((option) => {
-      if (typeof option === 'object' && option !== null) {
-        const entry = option as Record<string, unknown>
-        const label = String(entry.label ?? '').trim()
-        const description = String(entry.description ?? '').trim()
-        return label === '' ? description : description === '' ? label : `${label}（${description}）`
-      }
-      return String(option)
-    }).filter(Boolean) : undefined
-    const normalizePromptField = (field: unknown): string | undefined => {
-      if (field === undefined || field === null) return undefined
-      if (Array.isArray(field)) {
-        const lines = field.map((entry) => {
-          if (typeof entry === 'object' && entry !== null) {
-            const value = entry as Record<string, unknown>
-            const trigger = String(value.trigger ?? '').trim()
-            const next = String(value.next ?? '').trim()
-            return trigger === '' ? next : next === '' ? trigger : `${trigger} → ${next}`
-          }
-          return String(entry).trim()
-        }).filter(Boolean)
-        return lines.length === 0 ? undefined : lines.join('\n')
-      }
-      const text = String(field).trim()
-      return text === '' ? undefined : text
-    }
-    const sourceRefs = normalizeSourceRefs(row.sourceRefs)
-    const helper = normalizePromptField(row.helper)
-    const followUp = normalizePromptField(row.followUp)
-    return {
-      id: `Q${String(index + 1).padStart(2, '0')}`,
-      title: String(row.title ?? `问题 ${index + 1}`),
-      type: String(row.type ?? '开放式叙述'),
-      question: String(row.question ?? ''),
-      ...(sourceRefs === undefined ? {} : { sourceRefs }),
-      ...(options !== undefined && options.length > 0 ? { options } : {}),
-      ...(helper === undefined ? {} : { helper }),
-      ...(followUp === undefined ? {} : { followUp }),
-    } satisfies MockQuestion
-  })
-  return { questions, ...(typeof (value as { packId?: unknown }).packId === 'string' ? { declaredPackId: (value as { packId: string }).packId } : {}) }
-}
-
-/** Extract every top-level JSON object from a response that may contain prose,
- * model reasoning, markdown fences, or more than one object.  Taking only the
- * first object is unsafe because DSH may put a small diagnostic object before
- * the actual question-pack JSON. */
-function extractJsonObjects(text: string): string[] {
-  const objects: string[] = []
-  let start = -1
-  let depth = 0
-  let inString = false
-  let escaped = false
-  for (let index = 0; index < text.length; index += 1) {
-    const char = text[index]
-    if (inString) {
-      if (escaped) escaped = false
-      else if (char === '\\') escaped = true
-      else if (char === '"') inString = false
-      continue
-    }
-    if (char === '"') { inString = true; continue }
-    if (char === '{') {
-      if (depth === 0) start = index
-      depth += 1
-    } else if (char === '}' && depth > 0) {
-      depth -= 1
-      if (depth === 0 && start >= 0) {
-        objects.push(text.slice(start, index + 1))
-        start = -1
-      }
-    }
-  }
-  return objects
-}
-
-function parseAgentQuestionPack(text: string): ParsedQuestionPack | null {
-  const normalized = text.replaceAll('\r', '').replace(/```(?:markdown)?/gi, '')
-  const jsonBlock = text.match(/```json\s*([\s\S]*?)```/i)?.[1]
-  const embeddedJsons = extractJsonObjects(normalized)
-  // Prefer objects that look like the required contract, while retaining the
-  // full text and fenced block for backwards-compatible markdown responses.
-  const preferredJsons = embeddedJsons.filter(candidate => /["']questions["']\s*:/.test(candidate) && candidate.includes('sourceRefs'))
-  const candidates = [...new Set([
-    ...preferredJsons,
-    jsonBlock,
-    normalized.trim(),
-    ...embeddedJsons,
-  ].filter((candidate): candidate is string => candidate !== undefined && candidate.trim() !== ''))]
-  for (const candidate of candidates) {
-    if (candidate === undefined) continue
-    try {
-      const structured = normalizeStructuredQuestions(JSON.parse(candidate))
-      if (structured !== null && structured.questions.length > 0) return structured
-    } catch { /* fall through to Markdown compatibility parsing */ }
-  }
-  const matches = [...normalized.matchAll(/^\s*(?:#{1,6}\s*)?(?:[-*+]\s*)?(?:\*\*)?Q\s*(\d{1,2})\s*[.．、:：]\s*(?:\*\*)?\s*(.+?)\s*(?:\*\*)?\s*$/gm)]
-  if (matches.length < 3) return null
-  return { questions: matches.map((match, index) => {
-    const number = match[1]!
-    const start = match.index! + match[0].length
-    const end = matches[index + 1]?.index ?? normalized.length
-    const body = normalized.slice(start, end)
-    const lines = body.split('\n').map(line => line.trim()).filter(Boolean)
-    const field = (label: string): string | undefined => {
-      const line = lines.find(value => value.includes(label))
-      if (line === undefined) return undefined
-      return line.replace(/^[-*•\s]+/, '').replace(new RegExp(`^${label}[：:]?\s*`), '').trim()
-    }
-    const question = match[2]!.replace(/^[-*]+\s*/, '').replace(/\*+$/, '').trim()
-    const type = field('回答类型') ?? '开放式叙述'
-    const helper = field('选项辅助')
-    const followUp = field('追问触发')
-    const confirmation = field('专家确认点')
-    const source = field('来源') ?? field('信息来源')
-    const title = question.split(/[——、，,：:？?]/)[0]!.slice(0, 18) || `问题 ${number}`
-    const options = helper === undefined || helper === '无'
-      ? undefined
-      : helper.split(/\s*(?:\/|、|；|;|\||，)\s*/).map(value => value.trim()).filter(value => value !== '' && value !== '无')
-    const sourceRefs: readonly QuestionSourceRef[] | undefined = source === undefined
-      ? undefined
-      : [{ sourceType: 'model_inference', title: source, locator: 'Agent 返回的问题包文本', rationale: '来源由 Agent 在兼容 Markdown 输出中声明，发布前仍需主持人核验。', confidence: 'medium', requiresConfirmation: true }]
-    const parsed: MockQuestion = { id: `Q${number.padStart(2, '0')}`, title, type, question, ...(sourceRefs === undefined ? {} : { sourceRefs }), ...(options !== undefined && options.length > 0 ? { options } : {}) }
-    if (helper !== undefined && helper !== '无') parsed.helper = helper
-    if (followUp !== undefined) parsed.followUp = followUp
-    if (confirmation !== undefined) parsed.helper = parsed.helper === undefined ? `专家确认点：${confirmation}` : `${parsed.helper}；专家确认点：${confirmation}`
-    return parsed
-  }) }
-}
-
 type InterviewSidebarProps = PropsRuntime<'sidebar.workspaces'> & { createInterviewSession?: () => Promise<void>; openInterviewSession?: (id: string, expert?: string) => void; onOpenSettings?: () => void }
 
-export function InterviewSidebar({ wide, reopenDetails = () => undefined, createInterviewSession, openInterviewSession, onOpenSettings }: InterviewSidebarProps): ReactNode {
+export function InterviewSidebar({
+  wide, reopenDetails = () => undefined, createInterviewSession, openInterviewSession, onOpenSettings,
+}: InterviewSidebarProps): ReactNode {
   const [selected, setSelected] = useState(selectedInterviewId)
   const [interviews, setInterviews] = useState(interviewRecords)
   useEffect(() => {
@@ -485,7 +277,9 @@ export function InterviewSidebar({ wide, reopenDetails = () => undefined, create
       <div className={css.sidebarHint}>访谈条目 · {interviews.length} 个项目</div>
       <div className={css.sidebarActions}>
         <button type="button" className={css.newCourseButton} onClick={() => {
-          if (createInterviewSession !== undefined) void createInterviewSession().catch((reason: unknown) => { window.alert(reason instanceof Error ? reason.message : String(reason)) })
+          if (createInterviewSession !== undefined) void createInterviewSession().catch((reason: unknown) => {
+            window.alert(reason instanceof Error ? reason.message : String(reason))
+          })
           else { const id = `new-${Date.now()}`; setSelected(id); selectInterview(id); reopenDetails() }
         }}>＋ 新建专家访谈</button>
         {onOpenSettings !== undefined && <button type="button" className={css.settingsButton} onClick={onOpenSettings}>访谈设置</button>}
@@ -493,7 +287,8 @@ export function InterviewSidebar({ wide, reopenDetails = () => undefined, create
       <div className={css.historyList}>
         {interviews.length === 0 && <div className={css.sidebarMini}>暂无访谈项目<br />请先新建一个真实访谈</div>}
         {interviews.map(item => <button type="button" key={item.id} className={item.id === selected ? css.historyCardActive : css.historyCard} onClick={() => { setSelected(item.id); if (openInterviewSession !== undefined) openInterviewSession(item.id, item.expert); else { selectInterview(item.id); reopenDetails() } }}>
-          <span className={css.historyStatus}>{item.status}</span><strong>{item.title}</strong><small>{item.expert} · {item.industry}</small><em>{item.updated}</em>
+          <span className={css.historyStatus}>{item.status}</span><strong>{item.title}</strong>
+          <small>{item.expert} · {item.industry}</small><em>{item.updated}</em>
         </button>)}
       </div>
     </> : <div className={css.sidebarMini}>专<br />家</div>}
@@ -526,7 +321,13 @@ async function fileToExpertMaterial(file: File): Promise<ExpertMaterial> {
   }
 }
 
-function ProfileTab({ initialProfile, onGenerate, generating, error, onPreviewMaterial }: { initialProfile: InterviewProfile; onGenerate: (profile: InterviewProfile) => void; generating: boolean; error: string | null; onPreviewMaterial?: (material: ExpertMaterial) => void }) {
+function ProfileTab({ initialProfile, onGenerate, generating, error, onPreviewMaterial }: {
+  initialProfile: InterviewProfile
+  onGenerate: (profile: InterviewProfile) => void
+  generating: boolean
+  error: string | null
+  onPreviewMaterial?: (material: ExpertMaterial) => void
+}) {
   const [materials, setMaterials] = useState<readonly ExpertMaterial[]>(initialProfile.materials ?? [])
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
@@ -565,7 +366,22 @@ function QuestionSources({ refs }: { refs: readonly QuestionSourceRef[] | undefi
   return <div className={css.sourcePanel}><div className={css.sourcePanelTitle}>问题生成来源</div>{sourceRefs.length === 0 ? <p className={css.sourceEmpty}>暂无逐题来源记录。该问题需要在下次生成时补充来源，不能将模型推断当作事实。</p> : <div className={css.sourceList}>{sourceRefs.map((source, index) => <div className={css.sourceItem} key={`${source.title}-${index}`}><div className={css.sourceItemHead}><strong>{SOURCE_TYPE_LABELS[source.sourceType] ?? source.sourceType}</strong><span>{source.confidence === undefined ? '待核验' : `置信度：${source.confidence}`}</span></div><div className={css.sourceItemTitle}>{source.title}</div>{source.locator && <div><b>定位：</b>{source.locator}</div>}{source.excerpt && <div><b>摘录：</b>{source.excerpt}</div>}{source.rationale && <div><b>作用：</b>{source.rationale}</div>}{source.requiresConfirmation && <div className={css.sourcePending}>需要主持人/专家确认</div>}</div>)}</div>}</div>
 }
 
-function QuestionsTab({ questions, packMeta, pending, initiallyConfirmed, onConfirmPending, onDiscardPending, onConfirmQuestionPack, onUpdateQuestion, onDeleteQuestion, onOpenSpa, onPublishSpa }: { questions: readonly MockQuestion[]; packMeta: QuestionPackMeta | undefined; pending: { questions: readonly MockQuestion[]; meta: QuestionPackMeta } | undefined; initiallyConfirmed?: boolean; onConfirmPending: () => void; onDiscardPending: () => void; onConfirmQuestionPack?: () => void; onUpdateQuestion: (question: MockQuestion) => void; onDeleteQuestion: (id: string) => void; onOpenSpa: () => void; onPublishSpa: () => void }) {
+function QuestionsTab({
+  questions, packMeta, pending, initiallyConfirmed, onConfirmPending, onDiscardPending,
+  onConfirmQuestionPack, onUpdateQuestion, onDeleteQuestion, onOpenSpa, onPublishSpa,
+}: {
+  questions: readonly MockQuestion[]
+  packMeta: QuestionPackMeta | undefined
+  pending: { questions: readonly MockQuestion[]; meta: QuestionPackMeta } | undefined
+  initiallyConfirmed?: boolean
+  onConfirmPending: () => void
+  onDiscardPending: () => void
+  onConfirmQuestionPack?: () => void
+  onUpdateQuestion: (question: MockQuestion) => void
+  onDeleteQuestion: (id: string) => void
+  onOpenSpa: () => void
+  onPublishSpa: () => void
+}) {
   const persistedStatus = interviewRecords.find(item => item.id === selectedInterviewId)?.status
   const [confirmed, setConfirmed] = useState(initiallyConfirmed ?? (persistedStatus === '已确认问题包' || persistedStatus === '已生成 SPA'))
   const confirmationReported = useRef(confirmed)
@@ -679,7 +495,10 @@ export function InterviewWorkbench(props: InterviewProps): ReactNode {
     generatedPublicationSettings.set(selectedInterviewId, value)
     persistInterviews()
   }
-  const [pendingQuestionPack, setPendingQuestionPack] = useState<{ questions: readonly MockQuestion[]; meta: QuestionPackMeta } | undefined>()
+  const [pendingQuestionPack, setPendingQuestionPack] = useState<{
+    questions: readonly MockQuestion[]
+    meta: QuestionPackMeta
+  } | undefined>()
   const fieldnoteId = interviewRecords.find(item => item.id === selectedInterviewId)?.fieldnoteId ?? `FN-${selectedInterviewId.replace(/^new-/, '')}`
   activeInterviewFieldnoteId = fieldnoteId
   const tabs = [['profile', '专家信息'], ['overview', '概览'], ['questions', '问题包'], ['spa', 'SPA 预览']] as const
@@ -697,14 +516,11 @@ export function InterviewWorkbench(props: InterviewProps): ReactNode {
       const validationError = validateQuestionPack(nextQuestionPack)
       if (validationError !== null) throw new Error(`${validationError} 请让 Agent 重新生成。`)
       const currentMeta = generatedQuestionPackMeta.get(selectedInterviewId)
-      const nextMeta: QuestionPackMeta = {
+      const nextMeta = createQuestionPackMeta({
+        questions: nextQuestionPack, sessionId: String(props.sessionId), generatedAt: new Date().toISOString(),
         packId: parsed.declaredPackId ?? currentMeta?.packId ?? `QP-${new Date().toISOString().slice(0, 10).replaceAll('-', '')}-${selectedInterviewId}`,
-        version: (currentMeta?.version ?? 0) + 1,
-        generatedAt: new Date().toISOString(),
-        sourceSessionId: String(props.sessionId),
-        checksum: checksumQuestionPack(nextQuestionPack),
-        globalReferences: getEnabledGlobalReferenceDocuments().map(document => ({ id: document.id, title: document.title, version: document.version, contentHash: checksumText(document.markdown) })),
-      }
+        version: (currentMeta?.version ?? 0) + 1, references: getEnabledGlobalReferenceDocuments(),
+      })
       if (questionPack.length > 0) {
         setPendingQuestionPack({ questions: nextQuestionPack, meta: nextMeta })
         setGenerationStatus('done')
@@ -747,7 +563,10 @@ export function InterviewWorkbench(props: InterviewProps): ReactNode {
   }
   const updateQuestion = (nextQuestion: MockQuestion): void => {
     const nextQuestionPack = questionPack.map(item => item.id === nextQuestion.id ? cleanQuestionDraft(nextQuestion) : item)
-    const nextMeta = questionPackMeta === undefined ? undefined : { ...questionPackMeta, version: questionPackMeta.version + 1, generatedAt: new Date().toISOString(), checksum: checksumQuestionPack(nextQuestionPack) }
+    const nextMeta = questionPackMeta === undefined ? undefined : {
+      ...questionPackMeta, version: questionPackMeta.version + 1,
+      generatedAt: new Date().toISOString(), checksum: checksumQuestionPack(nextQuestionPack),
+    }
     setQuestionPack(nextQuestionPack)
     if (nextMeta !== undefined) setQuestionPackMeta(nextMeta)
     generatedQuestionPacks.set(selectedInterviewId, nextQuestionPack)
@@ -758,8 +577,12 @@ export function InterviewWorkbench(props: InterviewProps): ReactNode {
   const deleteQuestion = (id: string): void => {
     const activeCount = questionPack.filter(item => !item.deleted).length
     if (activeCount <= 3) return
-    const nextQuestionPack = questionPack.map(item => item.id === id ? { ...item, deleted: true, deletedAt: new Date().toISOString() } : item)
-    const nextMeta = questionPackMeta === undefined ? undefined : { ...questionPackMeta, version: questionPackMeta.version + 1, generatedAt: new Date().toISOString(), checksum: checksumQuestionPack(nextQuestionPack) }
+    const nextQuestionPack = questionPack.map(item =>
+      item.id === id ? { ...item, deleted: true, deletedAt: new Date().toISOString() } : item)
+    const nextMeta = questionPackMeta === undefined ? undefined : {
+      ...questionPackMeta, version: questionPackMeta.version + 1,
+      generatedAt: new Date().toISOString(), checksum: checksumQuestionPack(nextQuestionPack),
+    }
     setQuestionPack(nextQuestionPack)
     if (nextMeta !== undefined) setQuestionPackMeta(nextMeta)
     generatedQuestionPacks.set(selectedInterviewId, nextQuestionPack)
@@ -770,7 +593,10 @@ export function InterviewWorkbench(props: InterviewProps): ReactNode {
   const publishSpa = (open = true): string | null => {
     if (typeof window === 'undefined') return null
     const invitation = ensureInvitation(selectedInterviewId)
-    const payload = JSON.stringify({ fieldnoteId, profile, questions: questionPack.filter(item => !item.deleted), questionPackMeta, invitation, publishedAt: new Date().toISOString() })
+    const payload = JSON.stringify({
+      fieldnoteId, profile, questions: questionPack.filter(item => !item.deleted),
+      questionPackMeta, invitation, publishedAt: new Date().toISOString(),
+    })
     window.localStorage.setItem(`practice-expert-interview:${fieldnoteId}`, payload)
     // Keep an alias under the URL-safe ID so the public SPA can load the
     // project without exposing Chinese characters in its address.
@@ -821,6 +647,7 @@ export function InterviewDetails(props: InterviewProps): ReactNode {
       window.removeEventListener('interview-selected', close)
     }
   }, [])
-  if (settingsOpen) return <InterviewSettings onClose={() => { setSettingsOpen(false) }} {...(props.openGlobalReferencePreview === undefined ? {} : { onPreviewDocument: props.openGlobalReferencePreview })} />
+  if (settingsOpen) return <InterviewSettings onClose={() => { setSettingsOpen(false) }}
+    {...(props.openGlobalReferencePreview === undefined ? {} : { onPreviewDocument: props.openGlobalReferencePreview })} />
   return <InterviewWorkbench key={selectedInterviewId} {...props} />
 }

@@ -12,8 +12,12 @@ const input = {
 test('export retains policy, public alias, hints and sources without deleted questions', () => {
   const p = createPublication(input, '2026-10-13')
   assert.equal(p.questions.length, 1)
-  assert.equal(p.questions[0].followUp, '可选提示')
-  assert.equal(p.questions[0].sourceRefs?.[0].title, '问题设计来源')
+  const question = p.questions[0]
+  assert.ok(question)
+  assert.equal(question.followUp, '可选提示')
+  const source = question.sourceRefs?.[0]
+  assert.ok(source)
+  assert.equal(source.title, '问题设计来源')
   assert.equal(p.interviewPolicy.maxFollowups, 0)
   assert.equal(p.publicFieldnoteId, 'FN-public')
   assert.equal(p.questionPackMeta.version, 2)
@@ -37,6 +41,8 @@ test('export rejects invalid form values and missing metadata before producing a
   }
   assert.throws(() => createPublication({ ...input, questions: [] }, 'now'))
   const p = createPublication({ ...input, questions: [{ ...input.questions[0], deleted: false, deletedAt: 'old metadata' }] }, 'now')
-  assert.ok(!('deleted' in p.questions[0]))
-  assert.ok(!('deletedAt' in p.questions[0]))
+  const question = p.questions[0]
+  assert.ok(question)
+  assert.ok(!('deleted' in question))
+  assert.ok(!('deletedAt' in question))
 })

@@ -30,6 +30,7 @@ func newCommand() *cobra.Command {
 	serve.Flags().StringVarP(&path, "config", "c", "", "YAML 配置文件路径")
 	_ = serve.MarkFlagRequired("config")
 	root.AddCommand(serve)
+	root.AddCommand(newImportPackCommand())
 	var output string
 	hashCommand := &cobra.Command{Use: "hash-password", Short: "Hash a password read from stdin into a new private file", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		raw, err := io.ReadAll(io.LimitReader(cmd.InOrStdin(), 1026))

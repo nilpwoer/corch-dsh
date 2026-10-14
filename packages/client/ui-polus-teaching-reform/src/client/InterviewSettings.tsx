@@ -1,24 +1,13 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import css from './InterviewSettings.module.css'
-import { hydrateCorpusDocuments, seedCorpusDocuments, type ReferenceTier } from './globalReferenceCorpus.ts'
+import { hydrateCorpusDocuments, seedCorpusDocuments } from './globalReferenceCorpus.ts'
 import { buildInterviewPromptTemplate, INTERVIEW_SYSTEM_PROMPT_STORAGE_KEY } from './interviewPrompt.ts'
 
 /** The reusable methodology/reference layer shared by all interviews. */
 export const GLOBAL_REFERENCE_STORAGE_KEY = 'dsh.practice-expert-global-reference-pool.v1'
 
-export type GlobalReferenceDocument = {
-  id: string
-  title: string
-  markdown: string
-  version: number
-  updatedAt: string
-  enabled: boolean
-  archivedAt?: string
-  tier?: ReferenceTier
-  sourceFile?: string
-  origin?: 'bundled-corpus' | 'user'
-  summary?: string
-}
+export type { GlobalReferenceDocument } from './interviewTypes.ts'
+import type { GlobalReferenceDocument } from './interviewTypes.ts'
 
 export type InterviewSettingsProps = { onClose?: () => void; onPreviewDocument?: (document: GlobalReferenceDocument) => void }
 type SettingsTab = 'references' | 'prompt' | 'followUp'
@@ -156,14 +145,16 @@ export function InterviewSettings({ onClose, onPreviewDocument }: InterviewSetti
     const now = new Date().toISOString()
     const next = editingDocument === undefined
       ? [{ id: createId(), title, markdown, version: 1, updatedAt: now, enabled: true }, ...documents]
-      : documents.map(item => item.id === editingDocument.id ? { ...item, title, markdown, version: item.version + 1, updatedAt: now } : item)
+      : documents.map(item => item.id === editingDocument.id
+        ? { ...item, title, markdown, version: item.version + 1, updatedAt: now } : item)
     setDocuments(next)
     writeGlobalReferenceDocuments(next)
     cancelEdit()
   }
 
   const toggleDocument = (document: GlobalReferenceDocument): void => {
-    const next = documents.map(item => item.id === document.id ? { ...item, enabled: !item.enabled, updatedAt: new Date().toISOString() } : item)
+    const next = documents.map(item => item.id === document.id
+      ? { ...item, enabled: !item.enabled, updatedAt: new Date().toISOString() } : item)
     setDocuments(next)
     writeGlobalReferenceDocuments(next)
   }

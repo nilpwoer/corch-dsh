@@ -1,6 +1,6 @@
-import type { GlobalReferenceDocument } from './InterviewSettings.tsx'
+import type { GlobalReferenceDocument, ReferenceTier } from './interviewTypes.ts'
 
-export type ReferenceTier = 'S' | 'A' | 'B'
+export type { ReferenceTier } from './interviewTypes.ts'
 
 type CorpusEntry = {
   id: string
@@ -25,11 +25,14 @@ const CORPUS_ROWS: readonly CorpusTuple[] = [
   ['GREF-A4', 'A', '职业院校学生职业能力测评的实证研究', 'GREF-A4-2012.md', '职业能力测评的实证研究与质量评价案例。'],
   ['GREF-A5', 'A', '国际职业教育科学研究手册（上册）', 'GREF-A5-2014.md', '国际TVET体系、政策法规与跨文化比较研究。'],
   ['GREF-A6', 'A', '国际职业教育科学研究手册（下册）', 'GREF-A6-2017.md', 'BAG、EXWOWO、职业资格研究与工作过程知识方法。'],
-  ['GREF-B1', 'B', '以实践为导向的职业教育—中德农村职业教育合作课程方案', 'GREF-B1-2004.md', '农业机械化、农学、林果、园艺和畜牧养殖等真实课程方案案例。'],
+  ['GREF-B1', 'B', '以实践为导向的职业教育—中德农村职业教育合作课程方案',
+    'GREF-B1-2004.md', '农业机械化、农学、林果、园艺和畜牧养殖等真实课程方案案例。'],
   ['GREF-B2', 'B', '职业教育与培训学习新概念（第 1 版）', 'GREF-B2-2003.md', '行动导向与工作过程系统化课程的早期理论与历史背景。'],
 ]
 
-export const GLOBAL_REFERENCE_CORPUS: readonly CorpusEntry[] = CORPUS_ROWS.map(([id, tier, title, file, summary]) => ({ id, tier, title, file, summary }))
+export const GLOBAL_REFERENCE_CORPUS: readonly CorpusEntry[] = CORPUS_ROWS.map(
+  ([id, tier, title, file, summary]) => ({ id, tier, title, file, summary }),
+)
 
 /** Runtime-safe compact extraction of the two requested handoff documents. */
 export const CORE_METHOD_RULES = `

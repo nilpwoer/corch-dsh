@@ -1,5 +1,5 @@
-import type { GlobalReferenceDocument } from './InterviewSettings.tsx'
-import type { InterviewProfile } from './types.ts'
+import type { GlobalReferenceDocument } from './interviewTypes.ts'
+import type { InterviewProfile } from './interviewTypes.ts'
 import { CORE_METHOD_RULES, generationExcerpt } from './globalReferenceCorpus.ts'
 
 export const INTERVIEW_SYSTEM_PROMPT_STORAGE_KEY = 'dsh.practice-expert-system-prompt.v1'
@@ -37,13 +37,25 @@ export function readInterviewSystemPromptTemplate(): string {
 }
 
 export function buildInterviewPrompt(profile: InterviewProfile, references: readonly GlobalReferenceDocument[]): string {
+  return buildInterviewPromptFromTemplate(profile, references, readInterviewSystemPromptTemplate())
+}
+
+/** Build a prompt from explicit inputs, without reading browser preferences.
+ * @param profile - Confirmed profile or explicitly identified synthetic test profile.
+ * @param references - Only documents actually supplied to the generation.
+ * @param template - Explicit methodology template to render.
+ * @returns the rendered, loggable model input.
+ */
+export function buildInterviewPromptFromTemplate(
+  profile: InterviewProfile, references: readonly GlobalReferenceDocument[], template: string,
+): string {
   const referenceText = references.length === 0
     ? '当前全局基础文献池为空。不得虚构文献来源。'
     : `全局基础文献池（仅用于访谈方法、问题框架和来源标准，不代表当前专家事实；S级核心文献优先，A/B级按需参考）：\n${references.map(document => `--- ${document.tier ?? '用户'}级 · ${document.id} · ${document.title} · v${document.version} ---\n${generationExcerpt(document)}`).join('\n')}`
   const materialsText = profile.materials?.length
     ? profile.materials.map(material => `--- ${material.name} ---\n${material.markdown}`).join('\n')
     : '本次没有上传专家资料。'
-  return readInterviewSystemPromptTemplate()
+  return template
     .replaceAll('{{expert.name}}', profile.name)
     .replaceAll('{{expert.industry}}', profile.industry)
     .replaceAll('{{expert.role}}', profile.role)
