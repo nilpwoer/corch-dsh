@@ -76,6 +76,7 @@ prompts:
       temperature: 0.2
       response_format: json_object
     max_followups: 0
+    max_corrections: 2
     analyze: |
       从已确认的实践专家访谈回答中提取证据。跳过项不作为事实证据。
       每条证据包含唯一 id、question_id 和 quote。

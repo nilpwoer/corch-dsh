@@ -178,7 +178,7 @@ func Serve(ctx context.Context, c config.Config, log *slog.Logger) error {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
-			e := engine.Engine{Store: s, Model: &model.Client{Store: s}, Log: log}
+			e := engine.Engine{Store: s, Model: &model.Client{Store: s, Config: c}, Log: log}
 			e.Run(runCtx)
 		}()
 	}

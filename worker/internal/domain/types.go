@@ -315,39 +315,8 @@ func ValidateEvidence(e EvidenceResult, in Snapshot) error {
 	return nil
 }
 func ValidateReport(r Report, e EvidenceResult) error {
-	bad := func() error { return Fail("INVALID_REPORT_CITATION", 422) }
-	ids := map[string]bool{}
-	for _, item := range e.Evidence {
-		ids[item.ID] = true
-	}
-	valid := func(cites []string, required bool) bool {
-		if required && len(cites) == 0 || len(cites) > 100 {
-			return false
-		}
-		for _, id := range cites {
-			if !ids[id] {
-				return false
-			}
-		}
-		return true
-	}
-	if strings.TrimSpace(r.Title) == "" || len(r.Title) > 1500 || len(r.Sections) < 1 || len(r.Sections) > 30 || len(r.TaskCards) > 100 || len(r.NeedsVerification) > 100 {
-		return bad()
-	}
-	for _, s := range r.Sections {
-		if s.Title == "" || len(s.Statements) > 100 {
-			return bad()
-		}
-		for _, st := range s.Statements {
-			if st.Kind != "fact" && st.Kind != "interpretation" && st.Kind != "needs_verification" || strings.TrimSpace(st.Text) == "" || !valid(st.EvidenceIDs, st.Kind == "fact") {
-				return bad()
-			}
-		}
-	}
-	for _, card := range r.TaskCards {
-		if strings.TrimSpace(card.Title) == "" || !valid(card.EvidenceIDs, true) {
-			return bad()
-		}
+	if len(ReportIssues(r, e)) > 0 {
+		return Fail("INVALID_REPORT_CITATION", 422)
 	}
 	return nil
 }

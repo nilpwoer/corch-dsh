@@ -35,6 +35,31 @@ const answerText = "负责方案审查，以验收记录确认质量。"
 
 var mysqlConfigPath = flag.String("mysql-config", "", "MySQL 验收配置文件路径，仅用于读取 database.dsn")
 var updateGolden = flag.Bool("update-golden", false, "更新模型消息及输出快照")
+var suppliedWorkerBinary = flag.String("worker-binary", "", "Prebuilt Worker for isolated process acceptance when Go is unavailable")
+
+func acceptanceBinary(t *testing.T, root string) string {
+	t.Helper()
+	if *suppliedWorkerBinary != "" {
+		path, err := filepath.Abs(*suppliedWorkerBinary)
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(path)
+		if err != nil || !info.Mode().IsRegular() {
+			t.Fatal("prebuilt Worker must be an existing regular file")
+		}
+		return path
+	}
+	binary := filepath.Join(root, "teaching-worker")
+	if runtime.GOOS == "windows" {
+		binary += ".exe"
+	}
+	command := exec.Command("go", "build", "-o", binary, ".")
+	if out, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("build: %v %s", err, out)
+	}
+	return binary
+}
 
 type capturedRequest struct {
 	Messages []struct {
@@ -222,14 +247,7 @@ func TestProcessAcceptance(t *testing.T) {
 	c.Queue.MaxRetryDelay = 200 * time.Millisecond
 	c.Server.ShutdownTimeout = time.Second
 	root := t.TempDir()
-	binary := filepath.Join(root, "teaching-worker")
-	if runtime.GOOS == "windows" {
-		binary += ".exe"
-	}
-	build := exec.Command("go", "build", "-o", binary, ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build: %v\n%s", err, out)
-	}
+	binary := acceptanceBinary(t, root)
 	var api, worker *process
 	defer func() { api.stop(); worker.stop() }()
 	writeConfig := func(mode string, cfg config.Config) string {

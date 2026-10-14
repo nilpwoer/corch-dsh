@@ -104,11 +104,12 @@ type Model struct {
 	Thinking       string   `yaml:"thinking" json:"thinking,omitempty"`
 }
 type Pipeline struct {
-	Version      string `yaml:"version" json:"version"`
-	Model        Model  `yaml:"model" json:"model"`
-	MaxFollowups int    `yaml:"max_followups" json:"max_followups"`
-	Analyze      string `yaml:"analyze" json:"analyze"`
-	Compose      string `yaml:"compose" json:"compose"`
+	Version        string `yaml:"version" json:"version"`
+	Model          Model  `yaml:"model" json:"model"`
+	MaxFollowups   int    `yaml:"max_followups" json:"max_followups"`
+	MaxCorrections int    `yaml:"max_corrections,omitempty" json:"max_corrections,omitempty"`
+	Analyze        string `yaml:"analyze" json:"analyze"`
+	Compose        string `yaml:"compose" json:"compose"`
 }
 
 // Release 不包含密钥；入队保存完整内容，重试不读取新的提示词。
@@ -207,6 +208,9 @@ func (c Config) Validate() error {
 		}
 		if kind == "report" && p.MaxFollowups != 0 {
 			return bad("report.max_followups 必须为 0")
+		}
+		if p.MaxCorrections < 0 || p.MaxCorrections > 3 || kind != "report" && p.MaxCorrections != 0 {
+			return bad("max_corrections 仅用于 report，范围为 0..3")
 		}
 		m := p.Model
 		if m.Thinking != "" && m.Thinking != "enabled" && m.Thinking != "disabled" {

@@ -46,6 +46,10 @@ Prompts can change questioning criteria, wording, report emphasis and section ti
 
 An interview keeps the follow-up release selected when its first task is accepted, so an active interview does not change questioning rules midway. Report tasks use the submitting API process's configured report release. A new idempotency key creates another numbered report over the same frozen answers; existing reports remain available. Deploy API replicas with matching releases when new tasks need consistent versions.
 
+### Report validation
+
+Report stages validate exact evidence quotes and report citations before saving checkpoints. Facts and task cards require known evidence IDs; empty evidence permits only `needs_verification` statements and no task cards. `prompts.report.max_corrections` accepts 0–3 additional calls per stage (default 0; example 2), captured in the release. Corrections retain invalid responses in the call audit and return validation field paths to the model. Assign a new report version when changing this budget. Validation establishes provenance; semantic support still needs report review. See the [decision record](../.agents/notes/implemented/feature/2026-10-14-worker-report-citations.md).
+
 ## API and caller responsibilities
 
 | Request | Result |
@@ -114,11 +118,11 @@ go vet ./...
 go build -o teaching-worker.exe .
 ```
 
-The acceptance account must be able to create/drop temporary databases. Process acceptance skips explicitly without `-mysql-config`; that flag reads only `database.dsn` from the named YAML. Tests create an isolated temporary database, build the executable and launch separate API/consumer processes, covering lease recovery, stale-result fencing, concurrent consumers, idempotency, stage reuse, prompt immutability, report regeneration and browser-session isolation. [testdata/flow.golden.json](testdata/flow.golden.json) records assembled model messages and outputs. Tests use a controlled endpoint and never use the file's real model key; live provider compatibility and report quality require separate acceptance with real interviews and credentials.
+The acceptance account must be able to create/drop temporary databases. Process acceptance skips explicitly without `-mysql-config`; that flag reads only `database.dsn` from the named YAML. Tests create an isolated temporary database, build the executable (or use an explicit `-worker-binary`) and launch separate API/consumer processes, covering lease recovery, stale-result fencing, concurrent consumers, idempotency, stage reuse, prompt immutability, report regeneration and browser-session isolation. [testdata/flow.golden.json](testdata/flow.golden.json) records assembled model messages and outputs. Tests use a controlled endpoint and never use the file's real model key; live provider compatibility and report quality require separate acceptance with real interviews and credentials.
 
 ## Portal management and participant sessions
 
-For credential-free automation through an already configured DSH Host, see [Teaching-pack CLI](../docs/teaching-pack-cli.md) ([中文](../docs/teaching-pack-cli.zh.md)). `import-pack --dry-run` validates a publication against an explicit directory and size limit without loading service configuration or connecting to MySQL; removing `--dry-run` uses the same atomic no-replace publisher as administrator upload. Run a separate tool binary with existing OS directory permissions to avoid replacing or restarting the service.
+For credential-free automation through an already configured DSH Host, see [Teaching-pack CLI](../docs/teaching-pack-cli.md). `import-pack --dry-run` validates a publication against an explicit directory and size limit without loading service configuration or connecting to MySQL; removing `--dry-run` uses the same atomic no-replace publisher as administrator upload. Run a separate tool binary with existing OS directory permissions to avoid replacing or restarting the service.
 
 Set `portal.enabled` explicitly and configure an existing `packs_dir`, public `origin`, session and upload limits, and login rate limits. HTTPS is required outside loopback. Visit `/admin/` to log in, upload/list/remove JSON publications, inspect reports and download report JSON. The reports list is bounded to the latest 200 tasks. The management account is read from MySQL; first initialization inserts username `admin` only when a valid `admin_password_hash` is supplied. Portal startup rejects the example backend-token placeholder. An existing password is never overwritten, and first-login password changes are not enforced. There is no participant registration or general RBAC system.
 

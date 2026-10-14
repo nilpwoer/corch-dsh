@@ -222,12 +222,7 @@ func (e *Engine) Process(ctx context.Context, t store.Task, in store.Input, r co
 		return nil, err
 	}
 	var report domain.Report
-	payload := struct {
-		Profile   domain.Profile      `json:"profile"`
-		Evidence  []domain.Evidence   `json:"evidence"`
-		Followups []domain.Followup   `json:"followups"`
-		Pack      *domain.PackContext `json:"pack,omitempty"`
-	}{sub.Snapshot.Profile, evidence.Evidence, in.Followups, sub.Snapshot.Pack}
+	payload := domain.ReportContext{Profile: sub.Snapshot.Profile, Evidence: evidence.Evidence, Followups: in.Followups, Pack: sub.Snapshot.Pack}
 	if err := e.Model.Stage(ctx, t, r, options, "compose", r.Pipeline.Compose, payload, &report); err != nil {
 		return nil, err
 	}

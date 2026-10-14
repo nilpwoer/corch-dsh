@@ -108,11 +108,7 @@ func TestPortalAcceptance(t *testing.T) {
 	c.Prompts["followup"] = pipeline
 
 	root := t.TempDir()
-	binary := filepath.Join(root, "teaching-worker")
-	build := exec.Command("go", "build", "-o", binary, ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build: %v %s", err, out)
-	}
+	binary := acceptanceBinary(t, root)
 	write := func() {
 		raw, err := yaml.Marshal(c)
 		if err != nil {
