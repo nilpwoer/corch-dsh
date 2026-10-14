@@ -27,6 +27,7 @@ import (
 )
 
 var portalBrowser = flag.Bool("portal-browser", false, "Run installed Playwright/Chromium against the real portal process")
+var portalBrowserHandoff = flag.String("portal-browser-handoff", "", "Write a synthetic browser fixture for an external browser and wait for its .done result")
 
 // TestPortalAcceptance uses an isolated MySQL database and real API/consumer process; only the model is controlled.
 func TestPortalAcceptance(t *testing.T) {
@@ -174,26 +175,49 @@ func TestPortalAcceptance(t *testing.T) {
 		t.Fatalf("login: %d %s", status, data)
 	}
 	pack := map[string]any{"schemaVersion": 1, "fieldnoteId": "FN-portal", "publicFieldnoteId": "FN-portal", "goal": "真实任务证据", "questionPackMeta": map[string]any{"packId": "pack-portal", "version": 1}, "profile": domain.Profile{Name: "专家", Role: "审查"}, "questions": []any{map[string]any{"id": "q_task", "title": "质量依据", "type": "开放回忆", "question": "请描述任务质量依据", "followUp": "可选提示"}}, "interviewPolicy": map[string]any{"scope": "per_question", "maxFollowups": 0}, "invitation": map[string]any{"code": "000000", "createdAt": "test-only", "status": "active"}}
+	pack["questions"].([]any)[0].(map[string]any)["sourceRefs"] = []any{map[string]any{"sourceType": "note", "title": "Synthetic reference", "locator": "local:fixture", "excerpt": "Synthetic excerpt", "requiresConfirmation": true}}
 	if status, data := req(manager, "POST", "/admin/api/packs/FN-portal-v1", "", pack); status != 201 {
 		t.Fatalf("upload: %d %s", status, data)
 	}
-	if *portalBrowser {
+	if *portalBrowser || *portalBrowserHandoff != "" {
 		browserPack := map[string]any{}
 		encoded, _ := json.Marshal(pack)
 		_ = json.Unmarshal(encoded, &browserPack)
 		browserPack["fieldnoteId"] = "FN-browser"
 		browserPack["publicFieldnoteId"] = "FN-browser"
 		browserPack["questions"] = []any{map[string]any{"id": "q_task", "title": "质量依据", "type": "授权确认", "question": "请说明质量依据", "options": []string{"选项一", "选项二"}}, map[string]any{"id": "q_other", "title": "其他", "type": "开放回忆", "question": "其他经验"}}
+		browserPack["questions"].([]any)[0].(map[string]any)["sourceRefs"] = pack["questions"].([]any)[0].(map[string]any)["sourceRefs"]
 		encoded, _ = json.Marshal(browserPack)
 		file := filepath.Join(root, "browser-pack.json")
 		if err := os.WriteFile(file, encoded, 0600); err != nil {
 			t.Fatal(err)
 		}
-		command := exec.Command("node", "tests/portal-browser.mjs", baseURL, file)
-		if output, err := command.CombinedOutput(); err != nil {
-			t.Fatalf("browser: %v\n%s", err, output)
+		if *portalBrowserHandoff != "" {
+			handoff, _ := json.Marshal(map[string]string{"origin": baseURL, "pack_file": file})
+			if err := os.WriteFile(*portalBrowserHandoff, handoff, 0600); err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.Now().Add(120 * time.Second)
+			for {
+				result, err := os.ReadFile(*portalBrowserHandoff + ".done")
+				if err == nil {
+					if strings.TrimSpace(string(result)) != "PASS" {
+						t.Fatal("external browser failed")
+					}
+					break
+				}
+				if !os.IsNotExist(err) || time.Now().After(deadline) {
+					t.Fatal("external browser handoff timed out")
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
 		} else {
-			t.Log(string(output))
+			command := exec.Command("node", "tests/portal-browser.mjs", baseURL, file)
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("browser: %v\n%s", err, output)
+			} else {
+				t.Log(string(output))
+			}
 		}
 	}
 	if status, _ := req(expert, "GET", "/portal/api/packs", "", nil); status != 404 {
@@ -332,6 +356,9 @@ func TestPortalAcceptance(t *testing.T) {
 	if status, data := req(manager, "GET", "/admin/api/reports/"+task.ID, "", nil); status != 200 || !bytes.Contains(data, []byte("evidence")) {
 		t.Fatalf("admin report: %d %s", status, data)
 	}
+	t.Run("source_refs_mysql_round_trip_and_legacy_regeneration", func(t *testing.T) {
+		verifySourceRefCompatibility(t, legacyDB, req, expert, session.InterviewID, sub, task)
+	})
 	wholePack := map[string]any{}
 	encodedWhole, _ := json.Marshal(pack)
 	_ = json.Unmarshal(encodedWhole, &wholePack)

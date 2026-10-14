@@ -52,6 +52,8 @@ Report stages validate exact evidence quotes and report citations before saving 
 
 ## API and caller responsibilities
 
+Question `sourceRefs` object keys are serialized deterministically across MySQL storage and session reloads; values and array order remain significant. Historical request and snapshot digests are checked against their complete retained inputs when necessary, preserving legacy records while accepting equivalent retries. See the [serialization decision](../.agents/notes/implemented/feature/2026-10-14-worker-reference-json.md).
+
 | Request | Result |
 |---|---|
 | `POST /v1/tasks` | Accept a `followup` or `report` request; return HTTP 202 and a persisted task. Requires `Content-Type: application/json` and `Idempotency-Key` of 1–200 characters. |
@@ -121,6 +123,8 @@ go build -o teaching-worker.exe .
 The acceptance account must be able to create/drop temporary databases. Process acceptance skips explicitly without `-mysql-config`; that flag reads only `database.dsn` from the named YAML. Tests create an isolated temporary database, build the executable (or use an explicit `-worker-binary`) and launch separate API/consumer processes, covering lease recovery, stale-result fencing, concurrent consumers, idempotency, stage reuse, prompt immutability, report regeneration and browser-session isolation. [testdata/flow.golden.json](testdata/flow.golden.json) records assembled model messages and outputs. Tests use a controlled endpoint and never use the file's real model key; live provider compatibility and report quality require separate acceptance with real interviews and credentials.
 
 ## Portal management and participant sessions
+
+On a remote Linux test host without a browser, `-portal-browser-handoff <private-path>` writes the synthetic browser origin and pack path, then waits up to 120 seconds for `<private-path>.done` containing `PASS`. Run [tests/portal-browser.mjs](tests/portal-browser.mjs) against that isolated origin through an SSH loopback tunnel and return the result; this option never connects to a real model endpoint.
 
 For credential-free automation through an already configured DSH Host, see [Teaching-pack CLI](../docs/teaching-pack-cli.md). `import-pack --dry-run` validates a publication against an explicit directory and size limit without loading service configuration or connecting to MySQL; removing `--dry-run` uses the same atomic no-replace publisher as administrator upload. Run a separate tool binary with existing OS directory permissions to avoid replacing or restarting the service.
 

@@ -52,6 +52,8 @@ MySQL 可访问时，`GET /health` 返回 HTTP 200 和 `ready: true`。其他接
 
 ## API 与调用方职责
 
+题目 `sourceRefs` 对象键在 MySQL 存储及会话恢复前后采用确定的序列化顺序，字段值和数组顺序仍有意义。必要时，请求与快照的历史摘要通过完整的已保存输入比较，保留旧记录并接受等价重试。参见[序列化决策](../.agents/notes/implemented/feature/2026-10-14-worker-reference-json.zh.md)。
+
 | 请求 | 结果 |
 |---|---|
 | `POST /v1/tasks` | 接收 `followup` 或 `report` 请求，返回 HTTP 202 和已持久化任务。需要 `Content-Type: application/json` 及长度为 1–200 字符的 `Idempotency-Key`。 |
@@ -121,6 +123,8 @@ go build -o teaching-worker.exe .
 验收账号需要创建及删除临时数据库的权限。未提供 `-mysql-config` 时，进程验收明确跳过；该参数仅从指定 YAML 读取 `database.dsn`。测试创建独立临时数据库，编译实际可执行文件，分别启动 API 和消费者进程，覆盖租约恢复、旧结果拦截、消费者并发、幂等、阶段复用、提示词不可变、报告重生成和浏览器会话隔离。[testdata/flow.golden.json](testdata/flow.golden.json) 记录组装后的模型消息和输出。测试使用可控模型接口，不使用文件中的真实模型密钥；真实服务商兼容性及报告质量需要结合真实访谈和凭据单独验收。
 
 ## Portal 管理与访谈会话
+
+远程 Linux 测试主机没有浏览器时，`-portal-browser-handoff <私有路径>` 写出合成测试的浏览器来源地址和题包路径，等待最多 120 秒，读取 `<私有路径>.done` 中的 `PASS` 结果。通过 SSH 回环隧道向该隔离地址运行 [tests/portal-browser.mjs](tests/portal-browser.mjs) 后返回结果；该选项不连接真实模型接口。
 
 通过已配置的 DSH Host 自动生成题包时，参见[题包 CLI](../docs/teaching-pack-cli.zh.md)。`import-pack --dry-run` 按显式目录和大小限制校验发布文件，不加载服务配置或连接 MySQL；移除 `--dry-run` 后，复用管理员上传的原子发布机制，不覆盖已有题包。使用独立工具及现有目录权限执行，无须替换或重启服务。
 

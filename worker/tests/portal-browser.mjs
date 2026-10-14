@@ -51,6 +51,14 @@ try {
   await participant.getByRole('button', { name: '继续下一步', exact: true }).click()
   await participant.getByRole('button', { name: '确认答案并生成报告' }).click()
   await participant.getByText('报告已保存，由访谈管理端查看。', { exact: true }).waitFor()
+  await participant.reload()
+  await participant.locator('#regenerate').waitFor()
+  const regeneratedResponse = participant.waitForResponse(response => response.request().method() === 'POST' && new URL(response.url()).pathname === '/portal/api/tasks')
+  await participant.locator('#regenerate').click()
+  const acceptedRegeneration = await regeneratedResponse
+  assert.equal(acceptedRegeneration.status(), 202)
+  assert.equal((await acceptedRegeneration.json()).report_version, 2)
+  await participant.getByText('报告已保存，由访谈管理端查看。', { exact: true }).nth(1).waitFor()
   const cookies = await participantContext.cookies()
   const cookie = cookies.find(cookie => cookie.name === 'teaching_interview')
   assert.ok(cookie?.httpOnly)
@@ -68,5 +76,5 @@ try {
   assert.equal(miss.status(), 404)
   assert.ok(!(await miss.text()).includes('<!doctype'))
   assert.deepEqual(errors, [])
-  console.log('Browser acceptance passed: login, upload, invitation, radio choices, voice hook, draft reload, answers, report download, logout and API 404.')
+  console.log('Browser acceptance passed: login, upload, invitation, radio choices, voice hook, draft reload, answers, frozen report reload/regeneration with sourceRefs, report download, logout and API 404.')
 } finally { await browser.close() }

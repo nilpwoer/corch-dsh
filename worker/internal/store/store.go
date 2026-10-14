@@ -278,11 +278,24 @@ func (s *Store) Enqueue(ctx context.Context, key string, sub domain.Submit) (Tas
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("request_key=?", key).Take(&prior).Error; err != nil {
 			return err
 		}
+		if prior.TaskID != taskID {
+			if err := tx.Where("id=?", prior.TaskID).Take(&task).Error; err != nil {
+				return err
+			}
+			if prior.InputHash != hash {
+				// Historical digests include sourceRefs key order. Compare the retained input without rewriting its digest.
+				var saved Input
+				if err := json.Unmarshal(task.Input, &saved); err != nil {
+					return err
+				}
+				if config.Hash(saved.Submit) != hash {
+					return domain.Fail("IDEMPOTENCY_CONFLICT", 409)
+				}
+			}
+			return nil
+		}
 		if prior.InputHash != hash {
 			return domain.Fail("IDEMPOTENCY_CONFLICT", 409)
-		}
-		if prior.TaskID != taskID {
-			return tx.Where("id=?", prior.TaskID).Take(&task).Error
 		}
 		snap := sub.Snapshot
 		snapHash := config.Hash(snap)
@@ -298,7 +311,19 @@ func (s *Store) Enqueue(ctx context.Context, key string, sub domain.Submit) (Tas
 			return domain.Fail("INPUT_VERSION_CONFLICT", 409)
 		}
 		if snap.InputVersion == live.InputVersion && snapHash != live.InputHash {
-			return domain.Fail("INPUT_VERSION_CONFLICT", 409)
+			var saved struct{ Contents json.RawMessage }
+			if err := tx.Table("tw_snapshots").Where("interview_id=? AND input_version=?", live.ID, live.InputVersion).Take(&saved).Error; err != nil {
+				return err
+			}
+			var previous domain.Snapshot
+			if err := json.Unmarshal(saved.Contents, &previous); err != nil {
+				return err
+			}
+			if config.Hash(previous) != snapHash {
+				return domain.Fail("INPUT_VERSION_CONFLICT", 409)
+			}
+			// Preserve legacy metadata for an unchanged version; only a later version receives a new digest.
+			snapHash = live.InputHash
 		}
 		if live.Frozen && (sub.Kind == "followup" || snap.InputVersion != live.InputVersion) {
 			return domain.Fail("INTERVIEW_FROZEN", 409)
