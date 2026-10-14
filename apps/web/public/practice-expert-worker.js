@@ -50,6 +50,8 @@ export async function mountWorkerInterview(app) {
   let review = false
   let reportView = false
   let key
+  let composingInput = null
+  let renderPending = false
   const encodeAnswer = (answer, question) => {
     const selected = answer.selected ? [answer.selected] : (answer.options || []).map(i => question.options?.[i]).filter(Boolean)
     return [selected.length ? `选择：${selected.join('；')}` : '', answer.text || '', ...(answer.supplements || []).map((text, i) => `补充回答 ${i + 1}：${text}`)].filter(Boolean).join('\n')
@@ -167,10 +169,36 @@ export async function mountWorkerInterview(app) {
     persist()
     await poll()
   }
-  const markChanged = answer => {
+  const markChanged = (answer, questionId) => {
     answer.confirmed = false; answer.skipped = false
-    delete results[context.pack.questions[state.index].id]
+    delete results[questionId]
     error = ''; message = ''; persist()
+  }
+  const bindDraftInput = (element, commit) => {
+    element.addEventListener('compositionstart', () => { composingInput = element })
+    element.addEventListener('compositionend', () => {
+      if (composingInput === element) composingInput = null
+      commit(element.value)
+      // Some browsers emit the final input after compositionend. Leave that event's target attached.
+      if (renderPending) setTimeout(() => { if (!lifetime.signal.aborted && renderPending) render() }, 0)
+    })
+    element.oninput = event => {
+      if (event.isComposing || composingInput === element) return
+      commit(element.value)
+    }
+  }
+  const refreshDraftStatus = question => {
+    const progress = context.pack.questions.filter(item => state.answers[item.id].confirmed).length
+    const intro = app.querySelector('.intro p')
+    if (intro) intro.textContent = `这不是考试，也没有标准答案。已确认 ${progress} / ${context.pack.questions.length} 题。`
+    const bar = app.querySelector('.bar i')
+    if (bar) bar.style.width = `${progress / context.pack.questions.length * 100}%`
+    const step = app.querySelector(`[data-go="${state.index}"]`)
+    if (step) { step.classList.remove('done'); step.textContent = question.title }
+    app.querySelector('.followup')?.remove()
+    app.querySelectorAll('.question-body > .worker-status').forEach(node => node.remove())
+    const confirm = document.getElementById('confirm')
+    if (confirm) { confirm.style.display = ''; confirm.textContent = '确认回答并分析' }
   }
   const reportHtml = task => {
     if (task.status !== 'succeeded') return `<div class="worker-status ${task.status === 'failed' ? 'worker-error' : ''}">报告 v${task.report_version} · ${esc(task.status === 'failed' ? errorText(task.error_code) : task.status)}</div>`
@@ -181,6 +209,13 @@ export async function mountWorkerInterview(app) {
     return `<article class="panel report"><div class="kind">报告 v${task.report_version} · 答案版本 ${output.input_version} · ${esc(task.release_version)}</div><h2>${esc(output.report.title)}</h2>${output.report.sections.map(section => `<h3>${esc(section.title)}</h3>${section.statements.map(item => `<p><span class="kind">${esc(labels[item.kind] || item.kind)}</span>${esc(item.text)} ${cites(item.evidence_ids)}</p>`).join('')}`).join('')}${output.report.task_cards.map(card => `<h3>典型任务：${esc(card.title)}</h3>${[['触发条件', card.trigger], ['工作场景', card.context], ['步骤', card.steps.join('\n')], ['关键判断', card.judgments.join('\n')], ['工具', card.tools.join('、')], ['协作', card.collaboration], ['质量依据', card.quality_evidence], ['边界', card.boundaries]].filter(([, value]) => value).map(([label, value]) => `<p><strong>${label}：</strong>${esc(value)}</p>`).join('')}<p>${cites(card.evidence_ids)}</p>`).join('')}${output.report.needs_verification.length ? `<h3>尚待核实</h3><ul>${output.report.needs_verification.map(text => `<li>${esc(text)}</li>`).join('')}</ul>` : ''}<h3>原文证据</h3>${output.evidence.map(item => `<blockquote id="evidence-${esc(task.id)}-${esc(item.id)}"><strong>${esc(item.id)} · ${esc(item.question_id)}</strong><p>${esc(item.quote)}</p></blockquote>`).join('')}</article>`
   }
   function render() {
+    if (composingInput) { renderPending = true; return }
+    renderPending = false
+    const focused = document.activeElement
+    const focusedDraft = focused?.tagName === 'TEXTAREA' && app.contains(focused)
+      ? { id: focused.id, start: focused.selectionStart, end: focused.selectionEnd,
+          direction: focused.selectionDirection, scrollTop: focused.scrollTop }
+      : null
     const q = context.pack.questions[state.index]
     const answer = state.answers[q.id]
     const locked = busy || !!state.pending || state.frozen
@@ -197,26 +232,27 @@ export async function mountWorkerInterview(app) {
     } else {
       const followup = assessment?.status === 'followup_ready'
       const hint = assessment?.status === 'complete' ? '当前回答已覆盖关键内容。' : assessment?.status === 'skipped' ? '本题已选择跳过。' : assessment?.status === 'needs_review' ? `已保留当前回答，可继续访谈。${assessment.reason === 'FOLLOWUP_LIMIT' ? '本题追问轮次已用完。' : ''}` : ''
-      content = `<div class="intro"><div><h1>请从您熟悉的地方，慢慢讲起。</h1><p>这不是考试，也没有标准答案。已确认 ${progress} / ${context.pack.questions.length} 题。</p></div><button class="btn" id="review" ${locked ? 'disabled' : ''}>回看全部答案</button></div><div class="layout"><aside class="panel outline">${context.pack.questions.map((item, i) => `<button class="step ${i === state.index ? 'active' : ''} ${state.answers[item.id].confirmed ? 'done' : ''}" data-go="${i}" ${locked ? 'disabled' : ''}>${esc(item.title)}${state.answers[item.id].confirmed ? ' ✓' : ''}</button>`).join('')}</aside><section class="panel question-card"><div><div class="stage-row">问题 ${state.index + 1} / ${context.pack.questions.length}</div><div class="bar"><i style="width:${progress / context.pack.questions.length * 100}%"></i></div><div class="question-head"><h2>${esc(q.title)}</h2><p>${esc(q.question)}</p></div><div class="question-body">${q.options?.length ? `<div class="option-list">${q.options.map((option, i) => `<label class="option"><input type="${(q.type === '单项选择' || q.type === '授权确认') ? 'radio' : 'checkbox'}" name="answer-option" data-option="${i}" ${answer.selected === option || answer.options.includes(i) ? 'checked' : ''} ${locked ? 'disabled' : ''}>${esc(option)}</label>`).join('')}</div>` : ''}<label class="label" for="answer">您的回答</label><textarea class="answer" id="answer" maxlength="60000" ${locked ? 'disabled' : ''} placeholder="请按实际经验描述…">${esc(answer.text)}</textarea>${q.helper ? `<div class="helper">${esc(q.helper)}</div>` : ''}${answer.supplements.map((text, i) => `<div class="helper">补充回答 ${i + 1}：${esc(text)}</div>`).join('')}${followup ? `<div class="followup"><h3>可以再补充一点</h3><p>${esc(assessment.text)}</p><label class="label" for="supplement">补充回答（可暂不回答）</label><textarea class="answer" id="supplement" maxlength="30000" ${locked ? 'disabled' : ''}>${esc(answer.supplementDraft || '')}</textarea><div class="actions"><button class="btn primary" id="supplement-submit" ${locked ? 'disabled' : ''}>提交补充并再判断</button><button class="btn" id="continue" ${locked ? 'disabled' : ''}>暂不补充，继续</button></div></div>` : hint ? `<div class="worker-status">${esc(hint)}</div>` : ''}${status}</div></div><div class="controls"><div class="voice-row"><button class="voice" id="voice" ${locked ? 'disabled' : ''}>开启语音转写</button><span id="voice-status" aria-live="polite"></span><button class="btn" id="save-draft">暂存回答</button></div><div class="action-row"><button class="btn" id="previous" ${locked || state.index === 0 ? 'disabled' : ''}>上一题</button><div class="actions"><button class="btn" id="skip" ${locked ? 'disabled' : ''}>本题不便回答</button>${!followup ? `<button class="btn primary" id="confirm" ${locked ? 'disabled' : ''}>${assessment && answer.confirmed ? '继续下一步' : '确认回答并分析'}</button>` : ''}</div></div></div></section><aside class="tips"><div class="panel tip"><h3>本次访谈</h3><p>${esc(context.pack.profile.name)} · ${esc(context.pack.profile.role)}</p></div><div class="panel tip"><h3>回答由您决定</h3><p>追问不是必答题。您可以保留已有回答，跳过不便透露的内容。</p></div></aside></div>`
+      content = `<div class="intro"><div><h1>请从您熟悉的地方，慢慢讲起。</h1><p>这不是考试，也没有标准答案。已确认 ${progress} / ${context.pack.questions.length} 题。</p></div><button class="btn" id="review" ${locked ? 'disabled' : ''}>回看全部答案</button></div><div class="layout"><aside class="panel outline">${context.pack.questions.map((item, i) => `<button class="step ${i === state.index ? 'active' : ''} ${state.answers[item.id].confirmed ? 'done' : ''}" data-go="${i}" ${locked ? 'disabled' : ''}>${esc(item.title)}${state.answers[item.id].confirmed ? ' ✓' : ''}</button>`).join('')}</aside><section class="panel question-card"><div><div class="stage-row">问题 ${state.index + 1} / ${context.pack.questions.length}</div><div class="bar"><i style="width:${progress / context.pack.questions.length * 100}%"></i></div><div class="question-head"><h2>${esc(q.title)}</h2><p>${esc(q.question)}</p></div><div class="question-body">${q.options?.length ? `<div class="option-list">${q.options.map((option, i) => `<label class="option"><input type="${(q.type === '单项选择' || q.type === '授权确认') ? 'radio' : 'checkbox'}" name="answer-option" data-option="${i}" ${answer.selected === option || answer.options.includes(i) ? 'checked' : ''} ${locked ? 'disabled' : ''}>${esc(option)}</label>`).join('')}</div>` : ''}<label class="label" for="answer">您的回答</label><textarea class="answer" id="answer" maxlength="60000" ${locked ? 'disabled' : ''} placeholder="请按实际经验描述…">${esc(answer.text)}</textarea>${q.helper ? `<div class="helper">${esc(q.helper)}</div>` : ''}${answer.supplements.map((text, i) => `<div class="helper">补充回答 ${i + 1}：${esc(text)}</div>`).join('')}${followup ? `<div class="followup"><h3>可以再补充一点</h3><p>${esc(assessment.text)}</p><label class="label" for="supplement">补充回答（可暂不回答）</label><textarea class="answer" id="supplement" maxlength="30000" ${locked ? 'disabled' : ''}>${esc(answer.supplementDraft || '')}</textarea><div class="actions"><button class="btn primary" id="supplement-submit" ${locked ? 'disabled' : ''}>提交补充并再判断</button><button class="btn" id="continue" ${locked ? 'disabled' : ''}>暂不补充，继续</button></div></div>` : hint ? `<div class="worker-status">${esc(hint)}</div>` : ''}${status}</div></div><div class="controls"><div class="voice-row"><button class="voice" id="voice" ${locked ? 'disabled' : ''}>开启语音转写</button><span id="voice-status" aria-live="polite"></span><button class="btn" id="save-draft">暂存回答</button></div><div class="action-row"><button class="btn" id="previous" ${locked || state.index === 0 ? 'disabled' : ''}>上一题</button><div class="actions"><button class="btn" id="skip" ${locked ? 'disabled' : ''}>本题不便回答</button><button class="btn primary" id="confirm" style="${followup ? 'display:none' : ''}" ${locked ? 'disabled' : ''}>${assessment && answer.confirmed ? '继续下一步' : '确认回答并分析'}</button></div></div></div></section><aside class="tips"><div class="panel tip"><h3>本次访谈</h3><p>${esc(context.pack.profile.name)} · ${esc(context.pack.profile.role)}</p></div><div class="panel tip"><h3>回答由您决定</h3><p>追问不是必答题。您可以保留已有回答，跳过不便透露的内容。</p></div></aside></div>`
     }
     app.innerHTML = `${banner}${content}</main><footer class="footer"><div class="footer-inner">实践专家访谈 · ${portal ? '访谈服务' : '本地验证'}</div></footer>`
     const bind = (id, handler) => { const element = document.getElementById(id); if (element) element.onclick = handler }
     const next = () => { recognition?.stop(); if (state.index < context.pack.questions.length - 1) state.index++; else review = true; message = ''; error = ''; persist(); render() }
     document.querySelectorAll('[data-go]').forEach(button => { button.onclick = () => { recognition?.stop(); state.index = Number(button.dataset.go); review = false; persist(); render() } })
     const textarea = document.getElementById('answer')
-    if (textarea) textarea.oninput = () => {
-      const start = textarea.selectionStart; const end = textarea.selectionEnd
-      answer.text = textarea.value; markChanged(answer); render()
-      const current = document.getElementById('answer')
-      current.focus({ preventScroll: true }); current.setSelectionRange(start, end)
-    }
+    if (textarea) bindDraftInput(textarea, value => {
+      if (answer.text === value) return
+      answer.text = value; markChanged(answer, q.id); refreshDraftStatus(q)
+    })
     document.querySelectorAll('[data-option]').forEach(input => { input.onchange = () => {
       if ((q.type === '单项选择' || q.type === '授权确认')) answer.selected = q.options[Number(input.dataset.option)]
       else answer.options = [...document.querySelectorAll('[data-option]:checked')].map(item => Number(item.dataset.option))
-      markChanged(answer); render()
+      markChanged(answer, q.id); render()
     } })
     const supplement = document.getElementById('supplement')
-    if (supplement) supplement.oninput = () => { answer.supplementDraft = supplement.value; persist() }
+    if (supplement) bindDraftInput(supplement, value => {
+      if (answer.supplementDraft === value) return
+      answer.supplementDraft = value; persist()
+    })
     bind('save-draft', () => { persist(); message = '回答已在本机暂存，确认后保存到服务端。'; render() })
     bind('voice', () => {
       const questionId = q.id
@@ -261,6 +297,14 @@ export async function mountWorkerInterview(app) {
       try { context = await api('/browser/session/reset', {}); review = false; reportView = false; error = ''; message = ''; restore(); render() }
       catch (failure) { error = errorText(failure.message); render() }
     })
+    if (focusedDraft) {
+      const current = document.getElementById(focusedDraft.id)
+      if (current && !current.disabled) {
+        current.focus({ preventScroll: true })
+        current.setSelectionRange(focusedDraft.start, focusedDraft.end, focusedDraft.direction)
+        current.scrollTop = focusedDraft.scrollTop
+      }
+    }
   }
   render()
   if (state.pending) await poll()
