@@ -3,7 +3,7 @@ import tinyPinyin from 'tiny-pinyin'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import css from './InterviewWorkbench.module.css'
 import { createPublication, type InterviewPolicy } from './publication.ts'
-import { publishToWorker, readWorkerOrigin, readWorkerReceipt, workerShareURL, type WorkerPublicationReceipt } from './workerPublishing.ts'
+import { publishToWorker, readWorkerOrigin, readWorkerReceipt, type WorkerPublicationReceipt } from './workerPublishing.ts'
 import { parseAgentQuestionPack, validateQuestionPack, checksumQuestionPack, createQuestionPackMeta, type InterviewQuestion as MockQuestion, type QuestionSourceRef, type QuestionPackMeta } from './questionPack.ts'
 import { InterviewSettings } from './InterviewSettings.tsx'
 import { getEnabledGlobalReferenceDocuments } from './InterviewSettings.tsx'
@@ -14,7 +14,7 @@ type InterviewTab = 'overview' | 'profile' | 'questions' | 'spa'
 type InterviewItem = { id: string; fieldnoteId: string; title: string; expert: string; industry: string; status: string; updated: string }
 type GenerationStatus = 'idle' | 'running' | 'done' | 'failed'
 type InvitationMeta = { code: string; createdAt: string; status: 'active' | 'revoked' }
-type PublicationSettings = { goal?: string; scope?: '' | InterviewPolicy['scope']; count?: string; legacyVersion?: number; worker?: WorkerPublicationReceipt }
+type PublicationSettings = { goal?: string; scope?: '' | InterviewPolicy['scope']; count?: string; legacyVersion?: number; legacyInvitationVersion?: number; worker?: WorkerPublicationReceipt }
 type PersistedInterview = {
   publication?: PublicationSettings
   record: InterviewItem
@@ -24,9 +24,15 @@ type PersistedInterview = {
   invitation?: InvitationMeta
 }
 function restorePublication(item: PersistedInterview): PublicationSettings | undefined {
-  if (item.publication === undefined) return undefined
-  const legacyVersion = item.publication.legacyVersion ?? item.questionPackMeta?.version
-  return { ...item.publication, ...(legacyVersion === undefined ? {} : { legacyVersion }) }
+  if (item.publication === undefined && item.invitation === undefined) return undefined
+  const publication = item.publication ?? {}
+  const legacyVersion = publication.legacyVersion ?? item.questionPackMeta?.version
+  const legacyInvitationVersion = publication.legacyInvitationVersion
+    ?? (item.invitation === undefined ? undefined : item.questionPackMeta?.version)
+  return {
+    ...publication, ...(legacyVersion === undefined ? {} : { legacyVersion }),
+    ...(legacyInvitationVersion === undefined ? {} : { legacyInvitationVersion }),
+  }
 }
 const INTERVIEW_STORAGE_KEY = 'dsh.practice-expert-interviews.v2'
 const REMOVED_MOCK_INTERVIEW_IDS = new Set(['elder-care', 'community', 'live-commerce'])
@@ -231,19 +237,6 @@ const generatedInvitations = new Map<string, InvitationMeta>(
     item => item.invitation === undefined ? [] : [[item.record.id, item.invitation] as const]),
 )
 
-function createInvitationCode(): string {
-  return String(Math.floor(Math.random() * 1_000_000)).padStart(6, '0')
-}
-
-function ensureInvitation(id: string): InvitationMeta {
-  const existing = generatedInvitations.get(id)
-  if (existing !== undefined && existing.status === 'active') return existing
-  const invitation: InvitationMeta = { code: createInvitationCode(), createdAt: new Date().toISOString(), status: 'active' }
-  generatedInvitations.set(id, invitation)
-  persistInterviews()
-  return invitation
-}
-
 type InterviewSidebarProps = PropsRuntime<'sidebar.workspaces'> & { createInterviewSession?: () => Promise<void>; openInterviewSession?: (id: string, expert?: string) => void; onOpenSettings?: () => void }
 
 export function InterviewSidebar({
@@ -426,18 +419,19 @@ function QuestionsTab({
 }
 
 
-type SpaTabProps = { invitation: InvitationMeta; publicationSettings: PublicationSettings; publicationStatus: string | null }
+type SpaTabProps = { publicationSettings: PublicationSettings; publicationStatus: string | null }
 
-function SpaTab({ invitation, publicationSettings, publicationStatus }: SpaTabProps) {
+function SpaTab({ publicationSettings, publicationStatus }: SpaTabProps) {
   const [copied, setCopied] = useState<string | null>(null)
   const receipt = readWorkerReceipt(publicationSettings.worker)
+  const code = receipt?.code ?? (receipt ? new URLSearchParams(new URL(receipt.url).hash.slice(1)).get('code') : null)
   const copy = async (kind: 'code' | 'link'): Promise<void> => {
-    const value = kind === 'code' ? invitation.code : receipt?.url
+    const value = kind === 'code' ? code : receipt?.url
     if (!value) return
     try { await navigator.clipboard.writeText(value); setCopied(kind) } catch { setCopied('failed') }
   }
   return <div className={css.shareLayout}>
-    <section className={css.card}><h3>专家访谈口令</h3><strong className={css.shareCode}>{invitation.code}</strong><div><button type="button" className={css.ghostButton} onClick={() => { void copy('code') }}>复制口令</button></div><p className={css.muted}>口令随分享链接交给专家。持有链接的人可以使用此口令。</p></section>
+    <section className={css.card}><h3>专家访谈口令</h3><strong className={css.shareCode}>{code || (receipt?.accessStatus === 'not_required' ? '未启用口令验证' : '发布后由 Worker 生成')}</strong><div><button type="button" className={css.ghostButton} disabled={!code} onClick={() => { void copy('code') }}>复制口令</button></div><p className={css.muted}>口令随分享链接交给专家。持有链接的人可以使用此口令。</p></section>
     <section className={css.card}><h3>分享链接</h3>{publicationStatus && <p role="status">{publicationStatus}</p>}{receipt ? <><p className={css.muted}>已发布题包 {receipt.key} · v{receipt.version}</p><label className={css.editField}><span>Worker 访谈地址</span><input readOnly value={receipt.url} /></label><button type="button" className={css.primaryButton} onClick={() => { void copy('link') }}>复制链接</button><p className={css.muted}>链接包含题包标识和口令；专家打开后仍需点击开始访谈。</p></> : <p className={css.muted}>尚未发布到 Worker。请先到问题包页确认并发布。</p>}{copied && <p role="status">{copied === 'failed' ? '复制失败，请手动复制' : copied === 'code' ? '口令已复制' : '链接已复制'}</p>}</section>
   </div>
 }
@@ -571,7 +565,8 @@ export function InterviewWorkbench(props: InterviewProps & { initialTab?: Interv
     const policy = publicationSettings.legacyVersion === questionPackMeta.version
       && publicationSettings.scope && publicationSettings.count?.trim()
       ? { scope: publicationSettings.scope, maxFollowups: Number(publicationSettings.count) } : undefined
-    const invitation = ensureInvitation(selectedInterviewId)
+    const invitation = publicationSettings.legacyInvitationVersion === questionPackMeta.version
+      ? generatedInvitations.get(selectedInterviewId) : undefined
     const publication = createPublication({
       fieldnoteId, publicFieldnoteId: toPublicFieldnoteId(fieldnoteId), goal: publicationSettings.goal?.trim() || selectedRecord?.title || `${profile.industry} · ${profile.role}访谈`, profile,
       questions: questionPack.filter(item => !item.deleted), questionPackMeta, invitation, interviewPolicy: policy,
@@ -592,7 +587,7 @@ export function InterviewWorkbench(props: InterviewProps & { initialTab?: Interv
       const result = await publishToWorker(target, key, JSON.stringify(publication), controller.signal, setPublicationStatus)
       const receipt: WorkerPublicationReceipt = {
         ...result, version: publication.questionPackMeta.version,
-        url: workerShareURL(target, key, publication.invitation.code),
+        url: result.url,
       }
       const next = { ...(generatedPublicationSettings.get(interviewId) ?? publicationSettings), worker: receipt }
       generatedPublicationSettings.set(interviewId, next)
@@ -625,7 +620,7 @@ export function InterviewWorkbench(props: InterviewProps & { initialTab?: Interv
   }
   const statusText = generationStatus === 'running' ? 'Agent 生成中' : generationStatus === 'done' ? '问题包待确认' : generationStatus === 'failed' ? '生成失败' : '准备录入'
   const activeQuestionCount = questionPack.filter(item => !item.deleted).length
-  return <div className={css.workbench}><header className={css.header}><div><span className={css.eyebrow}>实践专家访谈工作台</span><h1>{isNewInterview ? '新建实践专家访谈' : `${profile.industry} · ${profile.role}访谈`}</h1><p>插件负责准备问题包与发布 SPA；专家的实际访谈在 SPA 中完成。</p></div><span className={css.pill}>{statusText}</span></header><nav className={css.tabs} aria-label="专家访谈工作台标签页">{tabs.map(([id, label]) => <button type="button" key={id} className={tab === id ? css.tabActive : css.tab} disabled={publishing || id !== 'profile' && generationStatus !== 'done' && questionPack.length === 0} onClick={() => { setTab(id) }}>{label}</button>)}</nav><main className={css.content}><div className={css.contentTop}><div><span className={css.eyebrow}>{isNewInterview ? 'NEW INTERVIEW · 待录入' : `${fieldnoteId} · ${profile.name}`}</span></div><span className={css.mockLabel}>{generationStatus === 'done' || questionPack.length > 0 ? 'AGENT DRAFT' : isNewInterview ? 'NEW DRAFT' : 'PREPARATION'}</span></div>{tab === 'profile' && <ProfileTab initialProfile={initialProfile} onGenerate={generate} generating={generationStatus === 'running'} error={generationError} onPreviewMaterial={(material) => { props.openExpertMaterialPreview?.(props.sessionId, material) }} />}{tab === 'overview' && <><div className={css.intro}><span className={css.eyebrow}>WORKSPACE OVERVIEW</span><h2>把一次访谈，整理成可回看的实践证据</h2><p>当前条目围绕{profile.industry}行业{profile.role}，覆盖经历校准、核心职责、真实案例与专家回看。</p></div><div className={css.grid3}><div className={css.card}><h3>专家信息</h3><p>{profile.name} · {profile.role}<br />{profile.industry} · {profile.stage}<br />{profile.years}从业经验</p></div><div className={css.card}><h3>问题包</h3><p>{activeQuestionCount || 0} 个有效问题<br />开放回忆 + 选项辅助<br />{generationStatus === 'done' || questionPack.length > 0 ? '等待主持人确认' : '尚未生成'}<br />{questionPackMeta ? `v${questionPackMeta.version} · ${questionPackMeta.checksum}` : ''}</p></div><div className={css.card}><h3>SPA 单页</h3><p>Fieldnote ID：{fieldnoteId}<br />单题模式 · 进度提示<br />确认后按 ID 发布</p></div></div><div className={css.summary}><h3>下一步</h3><p>先确认专家背景并生成问题包。Agent 任务会同步出现在右侧对话区；问题包确认后才能发布 SPA。</p><div className={css.footer}><span className={css.muted}>{generationStatus === 'running' ? '正在等待 Agent 返回…' : '准备就绪'}</span><button type="button" className={css.primaryButton} disabled={generationStatus !== 'done' && questionPack.length === 0} onClick={() => { setTab('questions') }}>查看问题包</button></div></div></>}{tab === 'questions' && <QuestionsTab questions={questionPack} packMeta={questionPackMeta} pending={pendingQuestionPack} onConfirmPending={confirmPendingQuestionPack} onDiscardPending={discardPendingQuestionPack} onUpdateQuestion={updateQuestion} onDeleteQuestion={deleteQuestion} onOpenSpa={() => { setTab('spa') }} onPublishSpa={() => { void publishSpa() }} onExport={exportQuestionPack} publishing={publishing} onNewVersion={createPublicationVersion} publicationError={publicationError} publicationStatus={publicationStatus} onCancelPublish={() => { publicationOperation.current?.abort(); setPublishing(false); setPublicationStatus(null); setPublicationError('已取消发布等待；如 Worker 已接收，重试会确认相同题包') }} />}{tab === 'spa' && <SpaTab invitation={ensureInvitation(selectedInterviewId)} publicationSettings={publicationSettings} publicationStatus={publicationStatus} />}</main></div>
+  return <div className={css.workbench}><header className={css.header}><div><span className={css.eyebrow}>实践专家访谈工作台</span><h1>{isNewInterview ? '新建实践专家访谈' : `${profile.industry} · ${profile.role}访谈`}</h1><p>插件负责准备问题包与发布 SPA；专家的实际访谈在 SPA 中完成。</p></div><span className={css.pill}>{statusText}</span></header><nav className={css.tabs} aria-label="专家访谈工作台标签页">{tabs.map(([id, label]) => <button type="button" key={id} className={tab === id ? css.tabActive : css.tab} disabled={publishing || id !== 'profile' && generationStatus !== 'done' && questionPack.length === 0} onClick={() => { setTab(id) }}>{label}</button>)}</nav><main className={css.content}><div className={css.contentTop}><div><span className={css.eyebrow}>{isNewInterview ? 'NEW INTERVIEW · 待录入' : `${fieldnoteId} · ${profile.name}`}</span></div><span className={css.mockLabel}>{generationStatus === 'done' || questionPack.length > 0 ? 'AGENT DRAFT' : isNewInterview ? 'NEW DRAFT' : 'PREPARATION'}</span></div>{tab === 'profile' && <ProfileTab initialProfile={initialProfile} onGenerate={generate} generating={generationStatus === 'running'} error={generationError} onPreviewMaterial={(material) => { props.openExpertMaterialPreview?.(props.sessionId, material) }} />}{tab === 'overview' && <><div className={css.intro}><span className={css.eyebrow}>WORKSPACE OVERVIEW</span><h2>把一次访谈，整理成可回看的实践证据</h2><p>当前条目围绕{profile.industry}行业{profile.role}，覆盖经历校准、核心职责、真实案例与专家回看。</p></div><div className={css.grid3}><div className={css.card}><h3>专家信息</h3><p>{profile.name} · {profile.role}<br />{profile.industry} · {profile.stage}<br />{profile.years}从业经验</p></div><div className={css.card}><h3>问题包</h3><p>{activeQuestionCount || 0} 个有效问题<br />开放回忆 + 选项辅助<br />{generationStatus === 'done' || questionPack.length > 0 ? '等待主持人确认' : '尚未生成'}<br />{questionPackMeta ? `v${questionPackMeta.version} · ${questionPackMeta.checksum}` : ''}</p></div><div className={css.card}><h3>SPA 单页</h3><p>Fieldnote ID：{fieldnoteId}<br />单题模式 · 进度提示<br />确认后按 ID 发布</p></div></div><div className={css.summary}><h3>下一步</h3><p>先确认专家背景并生成问题包。Agent 任务会同步出现在右侧对话区；问题包确认后才能发布 SPA。</p><div className={css.footer}><span className={css.muted}>{generationStatus === 'running' ? '正在等待 Agent 返回…' : '准备就绪'}</span><button type="button" className={css.primaryButton} disabled={generationStatus !== 'done' && questionPack.length === 0} onClick={() => { setTab('questions') }}>查看问题包</button></div></div></>}{tab === 'questions' && <QuestionsTab questions={questionPack} packMeta={questionPackMeta} pending={pendingQuestionPack} onConfirmPending={confirmPendingQuestionPack} onDiscardPending={discardPendingQuestionPack} onUpdateQuestion={updateQuestion} onDeleteQuestion={deleteQuestion} onOpenSpa={() => { setTab('spa') }} onPublishSpa={() => { void publishSpa() }} onExport={exportQuestionPack} publishing={publishing} onNewVersion={createPublicationVersion} publicationError={publicationError} publicationStatus={publicationStatus} onCancelPublish={() => { publicationOperation.current?.abort(); setPublishing(false); setPublicationStatus(null); setPublicationError('已取消发布等待；如 Worker 已接收，重试会确认相同题包') }} />}{tab === 'spa' && <SpaTab publicationSettings={publicationSettings} publicationStatus={publicationStatus} />}</main></div>
 }
 
 export function InterviewDetails(props: InterviewProps): ReactNode {

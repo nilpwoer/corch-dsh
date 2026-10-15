@@ -14,7 +14,7 @@ export function createPublication<T extends { deleted?: boolean; deletedAt?: str
   profile: unknown
   questions: readonly T[]
   questionPackMeta: { version: number; [key: string]: unknown } | undefined
-  invitation: unknown
+  invitation: unknown | undefined
   interviewPolicy: InterviewPolicy | undefined
 }, publishedAt: string) {
   if (!input.goal.trim()) throw new Error('请填写本次访谈目标。')

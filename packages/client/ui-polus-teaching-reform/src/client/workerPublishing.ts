@@ -2,7 +2,7 @@
 const WORKER_ORIGIN_KEY = 'dsh.practice-expert-worker-origin.v1'
 
 /** Validated Worker receipt retained with the last successfully published package version. */
-export type WorkerPublicationReceipt = { key: string; hash: string; url: string; version: number }
+export type WorkerPublicationReceipt = { key: string; hash: string; url: string; version: number; code?: string; accessStatus?: 'active' | 'not_required' }
 
 /** Validate a persisted share receipt before rendering its URL.
  * @param value - Browser-persisted publication metadata.
@@ -15,8 +15,16 @@ export function readWorkerReceipt(value: unknown): WorkerPublicationReceipt | un
   try {
     const url = new URL(item.url)
     normalizeWorkerOrigin(url.origin)
+    if (url.searchParams.size !== 1 || new URLSearchParams(url.hash.slice(1)).size > 1) return undefined
     if (url.username || url.password || url.pathname !== '/' || url.searchParams.get('fieldnoteId') !== item.key || [...url.searchParams.keys()].some(key => key !== 'fieldnoteId') || [...new URLSearchParams(url.hash.slice(1)).keys()].some(key => key !== 'code')) return undefined
-    return { key: item.key, hash: item.hash, version: item.version, url: item.url }
+    if (item.code !== undefined && (typeof item.code !== 'string' || item.code.length > 128
+      || new URLSearchParams(url.hash.slice(1)).get('code') !== item.code)) return undefined
+    if (item.accessStatus !== undefined && item.accessStatus !== 'active' && item.accessStatus !== 'not_required') return undefined
+    return {
+      key: item.key, hash: item.hash, version: item.version, url: item.url,
+      ...(item.code === undefined ? {} : { code: item.code }),
+      ...(item.accessStatus === undefined ? {} : { accessStatus: item.accessStatus }),
+    }
   } catch { return undefined }
 }
 
@@ -69,11 +77,11 @@ export function workerShareURL(origin: string, key: string, code: string): strin
  * @param payload - Stable JSON bytes reused for retries.
  * @param signal - Operation lifetime; abort closes its owned popup and removes listeners.
  * @param onProgress - Visible login/upload progress; no credentials enter this channel.
- * @returns the acknowledged publication key/hash; credentials never enter this page.
+ * @returns the acknowledged key/hash and server-owned participant invitation/link; admin credentials never enter this page.
  */
 export function publishToWorker(
   target: string, key: string, payload: string, signal?: AbortSignal, onProgress?: (message: string) => void,
-): Promise<{ key: string; hash: string }> {
+): Promise<Omit<WorkerPublicationReceipt, 'version'>> {
   const origin = normalizeWorkerOrigin(target)
   if (!/^[a-zA-Z0-9_-]{1,100}$/.test(key)) throw new Error('题包文件键无效，请生成有效的问题包版本。')
   if (!['127.0.0.1', 'localhost', '[::1]'].includes(window.location.hostname)) throw new Error('请从本机 DSH 发起受控发布。')
@@ -86,7 +94,7 @@ export function publishToWorker(
   return new Promise((resolve, reject) => {
     let settled = false
     let ready = false
-    const finish = (result: { key: string; hash: string } | Error): void => {
+    const finish = (result: Omit<WorkerPublicationReceipt, 'version'> | Error): void => {
       if (settled) return
       settled = true
       window.removeEventListener('message', receive)
@@ -105,17 +113,23 @@ export function publishToWorker(
         autoPublish?: unknown
         phase?: unknown
         message?: unknown
+        accessAuthority?: unknown
+        accessStatus?: unknown
+        code?: unknown
+        url?: unknown
       }
       if (data.nonce !== nonce) return
       if (data.type === 'teaching-publish:ready') {
         if (data.autoPublish !== true) { finish(new Error('Worker 版本仍需额外确认，请更新 Worker 后再发布')); return }
+        if (data.accessAuthority !== 'worker') { finish(new Error('Worker 不支持服务端口令，请更新 Worker 后再发布')); return }
         ready = true
-        popup.postMessage({ type: 'teaching-publish:prepare', nonce, key, payload }, origin)
+        popup.postMessage({ type: 'teaching-publish:prepare', nonce, key, payload, protocol: 2 }, origin)
       }
       if (data.type === 'teaching-publish:progress') {
         if (data.phase === 'authorizing') onProgress?.('正在检查 Worker 登录状态…')
         if (data.phase === 'login-required') onProgress?.('请在 Worker 窗口登录，登录后将自动发布')
         if (data.phase === 'uploading') onProgress?.('正在上传题包到 Worker…')
+        if (data.phase === 'configuration-required') onProgress?.('题包已上传，请在 Worker 中完成访谈设置')
       }
       if (data.type === 'teaching-publish:error' && (data.key === undefined || data.key === key)) {
         finish(new Error(typeof data.message === 'string' ? data.message.slice(0, 400) : 'Worker 发布失败，请重试'))
@@ -123,7 +137,12 @@ export function publishToWorker(
       }
       if (data.type === 'teaching-publish:complete') {
         if (data.key !== key || typeof data.hash !== 'string' || !/^[a-f0-9]{64}$/.test(data.hash)) { finish(new Error('Worker 返回了无效发布回执')); return }
-        finish({ key, hash: data.hash })
+        const receipt = readWorkerReceipt({ ...data, version: 1 })
+        const code = typeof data.code === 'string' ? data.code : undefined
+        if (!receipt || new URL(receipt.url).origin !== origin || (data.accessStatus !== 'active' && data.accessStatus !== 'not_required') || (data.accessStatus === 'active' && !code) || (data.accessStatus === 'not_required' && (code || new URL(receipt.url).hash))) {
+          finish(new Error('Worker 返回了无效访问口令或分享地址')); return
+        }
+        finish({ key, hash: data.hash, url: receipt.url, ...(code === undefined ? {} : { code }), accessStatus: data.accessStatus })
       }
     }
     const handshakeDeadline = Date.now() + 15000

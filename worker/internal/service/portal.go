@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -25,6 +24,7 @@ type participantBackend interface {
 	List(context.Context, string) ([]store.Task, error)
 	Enqueue(context.Context, string, domain.Submit) (store.Task, error)
 	Get(context.Context, string) (store.Task, error)
+	CheckPackAccess(context.Context, published.Entry, string) error
 }
 
 func participantOriginalEntry(row store.ParticipantSession) (published.Entry, error) {
@@ -249,9 +249,8 @@ func mountPortal(mux *http.ServeMux, c config.Portal, backend participantBackend
 			return
 		}
 		if c.InvitationMode == "code" {
-			invitation := entry.Pack.Invitation
-			if invitation == nil || invitation.Status != "active" || invitation.Code == "" || subtle.ConstantTimeCompare([]byte(invitation.Code), []byte(input.Code)) != 1 {
-				failure(w, domain.Fail("INVALID_INVITATION", 401))
+			if err := backend.CheckPackAccess(r.Context(), entry, input.Code); err != nil {
+				failure(w, err)
 				return
 			}
 		}

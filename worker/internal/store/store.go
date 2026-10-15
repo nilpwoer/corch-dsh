@@ -32,6 +32,9 @@ var portalSchema string
 //go:embed runtime-schema.sql
 var runtimeSchema string
 
+//go:embed access-schema.sql
+var accessSchema string
+
 type Store struct {
 	DB     *gorm.DB
 	Config config.Config
@@ -221,21 +224,24 @@ func (s *Store) migrate(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	if len(versions) > 1 || len(versions) == 1 && versions[0] != 1 && versions[0] != 2 && versions[0] != 3 {
+	if len(versions) > 1 || len(versions) == 1 && versions[0] != 1 && versions[0] != 2 && versions[0] != 3 && versions[0] != 4 {
 		return fmt.Errorf("不支持的 Worker 数据库结构版本")
 	}
-	if len(versions) == 1 && versions[0] == 3 {
+	if len(versions) == 1 && versions[0] == 4 {
 		return nil
 	}
 	if !s.Config.Database.AutoMigrate {
 		return fmt.Errorf("数据库尚未初始化")
 	}
-	ddl := runtimeSchema
+	ddl := accessSchema
+	if len(versions) == 1 && versions[0] == 2 {
+		ddl = runtimeSchema + "\n" + accessSchema
+	}
 	if len(versions) == 1 && versions[0] == 1 {
-		ddl = portalSchema + "\n" + runtimeSchema
+		ddl = portalSchema + "\n" + runtimeSchema + "\n" + accessSchema
 	}
 	if len(versions) == 0 {
-		ddl = schema + "\n" + portalSchema + "\n" + runtimeSchema
+		ddl = schema + "\n" + portalSchema + "\n" + runtimeSchema + "\n" + accessSchema
 	}
 	for _, statement := range strings.Split(ddl, ";") {
 		if strings.TrimSpace(statement) != "" {
@@ -245,9 +251,9 @@ func (s *Store) migrate(ctx context.Context, name string) error {
 		}
 	}
 	if len(versions) == 1 {
-		_, err = conn.ExecContext(ctx, "UPDATE tw_schema SET version=3")
+		_, err = conn.ExecContext(ctx, "UPDATE tw_schema SET version=4")
 	} else {
-		_, err = conn.ExecContext(ctx, "INSERT INTO tw_schema(version) VALUES (3)")
+		_, err = conn.ExecContext(ctx, "INSERT INTO tw_schema(version) VALUES (4)")
 	}
 	return err
 }

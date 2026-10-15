@@ -90,6 +90,9 @@ func Parse(raw []byte) (Pack, string, error) {
 		return p, "", fmt.Errorf("invalid public fieldnote identifier")
 	}
 	seen := map[string]bool{}
+	if p.Invitation != nil && len(p.Invitation.Code) > 128 {
+		return p, "", fmt.Errorf("invalid invitation length")
+	}
 	if p.Policy != nil {
 		if err := p.Policy.Validate(); err != nil {
 			return p, "", err

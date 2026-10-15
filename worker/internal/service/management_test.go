@@ -7,17 +7,23 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/fanzy531/corch-dsh/worker/internal/config"
 	"github.com/fanzy531/corch-dsh/worker/internal/domain"
+	"github.com/fanzy531/corch-dsh/worker/internal/packaccess"
 	"github.com/fanzy531/corch-dsh/worker/internal/published"
 	"github.com/fanzy531/corch-dsh/worker/internal/runtimecfg"
 	"github.com/fanzy531/corch-dsh/worker/internal/store"
 )
 
-type fakeManagement struct{ active bool }
+type fakeManagement struct {
+	active   bool
+	accessMu sync.Mutex
+	access   map[string]packaccess.View
+}
 
 func (f *fakeManagement) ReadRuntimeSettings(context.Context, *published.Entry) (store.SettingsView, error) {
 	return store.SettingsView{}, nil

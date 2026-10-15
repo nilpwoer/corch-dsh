@@ -19,20 +19,30 @@ let sessionChecked=false
 let settingsView=null
 let settingsGeneration=0
 const setSession=active=>{
-  authenticated=active;el('login').hidden=active;el('workspace').hidden=!active;el('logout').hidden=!active
+  authenticated=active;el('login').hidden=active;el('workspace').hidden=!active;el('logout').hidden=!active;el('admin-nav').hidden=!active
+  for(const id of ['pack-list','runtime-settings','reports-page'])el(id).hidden=true
   sessionChecked=true
   void publishTransferred()
 }
 const reportURL=(id,format)=>'/admin/api/reports/'+encodeURIComponent(id)+'/'+format
 const statusLabel=r=>({queued:'等待生成',running:'生成中',succeeded:'已完成',failed:'生成失败',superseded:'已被新版本替代'}[r.status]||r.status)+(r.error_code?' · '+r.error_code:'')
+const showPage=(view,title,description)=>{
+  for(const id of ['pack-list','runtime-settings','reports-page'])el(id).hidden=id!==view
+  el('page-title').textContent=title;el('page-description').textContent=description
+}
 const load=async()=>{
-  const [data,reports]=await Promise.all([api('packs'),api('reports')])
+  const data=await api('packs')
   el('packs').innerHTML=data.packs.map(p=>`<tr><td>${esc(p.fieldnoteId)}<small>${esc(p.key)}</small></td><td>v${p.version}</td><td>${p.questions}</td><td><div class="table-actions"><button data-settings="${esc(p.key)}">访谈设置</button><a href="/?fieldnoteId=${encodeURIComponent(p.key)}" target="_blank" rel="noopener">打开访谈</a><button class="link-button danger" data-delete="${esc(p.key)}">移除</button></div></td></tr>`).join('')||'<tr><td colspan="4" class="empty">暂无题包，上传 JSON 或从 DSH 发布</td></tr>'
   el('issues').textContent=data.invalid_files.length?`未加载的文件：${data.invalid_files.join('、')}`:''
-  el('reports').innerHTML=reports.map(r=>`<div class="report-row"><div><div class="report-id">${esc(r.interview_id)}</div><div class="report-meta">报告 v${r.report_version} · ${esc(statusLabel(r))}</div></div><div class="report-actions"><button data-report="${esc(r.id)}" ${r.status==='succeeded'?'':'disabled'}>网页预览</button>${r.status==='succeeded'?`<a href="${reportURL(r.id,'pdf')}" download>下载 PDF</a><a href="${reportURL(r.id,'view')}" target="_blank" rel="noopener">单独打开</a>`:''}</div></div>`).join('')||'<p class="empty">暂无报告</p>'
   document.querySelectorAll('[data-delete]').forEach(b=>b.onclick=action(async()=>{if(confirm('移除当前目录题包？已开始的访谈仍保留原版本。')){await api('packs/'+encodeURIComponent(b.dataset.delete),{method:'DELETE'});await load()}}))
   document.querySelectorAll('[data-settings]').forEach(b=>b.onclick=action(()=>openSettings(b.dataset.settings)))
+  showPage('pack-list','题包管理','发布题包并管理访谈设置')
+}
+const loadReports=async()=>{
+  const reports=await api('reports')
+  el('reports').innerHTML=reports.map(r=>`<div class="report-row"><div><div class="report-id">${esc(r.interview_id)}</div><div class="report-meta">报告 v${r.report_version} · ${esc(statusLabel(r))}</div></div><div class="report-actions"><button data-report="${esc(r.id)}" ${r.status==='succeeded'?'':'disabled'}>网页预览</button>${r.status==='succeeded'?`<a href="${reportURL(r.id,'pdf')}" download>下载 PDF</a><a href="${reportURL(r.id,'view')}" target="_blank" rel="noopener">单独打开</a>`:''}</div></div>`).join('')||'<p class="empty">暂无报告</p>'
   document.querySelectorAll('[data-report]').forEach(b=>b.onclick=action(()=>{el('report-frame').src=reportURL(b.dataset.report,'view');el('report-detail').hidden=false}))
+  showPage('reports-page','访谈报告','查看和下载已有报告')
 }
 const settingsPath=key=>key?'packs/'+encodeURIComponent(key)+'/settings':'settings'
 const updateInheritance=()=>{
@@ -59,11 +69,38 @@ const openSettings=async key=>{
     for(const stage of ['analyze','compose'])el(kind+'-'+stage).value=view.effective[kind][stage]
   }
   document.querySelectorAll('.inherit-label').forEach(e=>e.textContent=key?'继承全局默认提示词':'使用服务配置中的默认提示词')
-  el('settings-message').textContent='';updateInheritance();el('runtime-settings').hidden=false
+  el('settings-message').textContent='';updateInheritance();showPage('runtime-settings',key?'题包访谈设置':'全局提示词',key||'题包未覆盖时使用这里的提示词')
+  history.replaceState(null,'',key?'?configure='+encodeURIComponent(key):'?view=defaults')
+  el('pack-access').hidden=!key
+  if(key)await loadAccess(key)
   el('runtime-settings').scrollIntoView({block:'start',behavior:'instant'})
 }
+let accessView=null
+const loadAccess=async key=>{
+  const result=await api('packs/'+encodeURIComponent(key)+'/access')
+  if(settingsView?.key!==key)return
+  accessView={...result,key}
+  const v=result.access
+  el('access-code').type='password';el('access-code').value=v.code||'';el('access-reveal').textContent='显示口令'
+  el('access-description').textContent=(v.source==='legacy'?'保留既有题包口令':'Worker 生成并验证')+' · '+({active:'有效',revoked:'已撤销',missing:'尚未生成'}[v.status]||v.status)
+  el('access-create').hidden=v.status!=='missing';el('access-rotate').hidden=!v.code;el('access-revoke').hidden=v.status!=='active'
+  for(const id of ['access-copy','access-copy-link'])el(id).disabled=v.status!=='active'
+  el('access-reveal').disabled=!v.code;el('access-message').textContent=''
+}
+el('access-reveal').onclick=()=>{const input=el('access-code');input.type=input.type==='password'?'text':'password';el('access-reveal').textContent=input.type==='password'?'显示口令':'隐藏口令'}
+for(const [id,kind]of [['access-copy','code'],['access-copy-link','url']])el(id).onclick=action(async()=>{
+  try{await navigator.clipboard.writeText(kind==='code'?accessView.access.code:accessView.url);el('access-message').textContent='已复制'}
+  catch{el('access-message').textContent='复制不可用，请显示并选中字段后手动复制'}
+})
+for(const [id,verb]of [['access-create','create'],['access-rotate','rotate'],['access-revoke','revoke']])el(id).onclick=action(async()=>{
+  const current=accessView;if(!current)return
+  if(verb!=='create'&&!confirm(verb==='rotate'?'重新生成后，原分享链接无法用于新进入。继续？':'撤销后，原分享链接无法用于新进入。继续？'))return
+  await api('packs/'+encodeURIComponent(current.key)+'/access',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:verb,revision:current.access.revision,publication_hash:current.access.publication_hash})})
+  await loadAccess(current.key)
+  if(transfer?.receipt&&transfer.key===current.key)await publishTransferred()
+})
 el('global-settings').onclick=action(()=>openSettings(''))
-el('settings-close').onclick=()=>{settingsGeneration++;settingsView=null;el('runtime-settings').hidden=true}
+el('settings-close').onclick=action(async()=>{settingsGeneration++;settingsView=null;history.replaceState(null,'','/admin/');await load()})
 for(const id of ['followup-inherit','report-inherit','policy-inherit'])el(id).onchange=updateInheritance
 el('settings-form').onsubmit=action(async()=>{
   const view=settingsView;if(!view)return
@@ -81,9 +118,11 @@ el('settings-form').onsubmit=action(async()=>{
   }
 })
 const loadRequestedSettings=async()=>{
-  await load()
-  const key=new URLSearchParams(location.search).get('configure')
+  const query=new URLSearchParams(location.search),key=query.get('configure')
   if(key){if(!/^[a-zA-Z0-9_-]{1,100}$/.test(key))throw new Error('题包文件键无效');await openSettings(key)}
+  else if(query.get('view')==='reports')await loadReports()
+  else if(query.get('view')==='defaults')await openSettings('')
+  else await load()
 }
 el('login-form').onsubmit=action(async()=>{
   const f=new FormData(el('login-form'))
@@ -92,12 +131,12 @@ el('login-form').onsubmit=action(async()=>{
   el('login-form').elements.password.value='';setSession(true);if(!transfer)await loadRequestedSettings()
 })
 el('logout').onclick=action(async()=>{
-  await api('logout',{method:'POST'});setSession(false);settingsGeneration++;settingsView=null
+  await api('logout',{method:'POST'});setSession(false);settingsGeneration++;settingsView=null;accessView=null;el('access-code').value=''
   el('packs').replaceChildren();el('reports').replaceChildren();el('runtime-settings').hidden=true;el('report-detail').hidden=true;el('report-frame').removeAttribute('src')
 })
 el('pack-file').onchange=()=>{const name=el('pack-file').files[0]?.name||'';el('pack-key').value=name.replace(/\.json$/i,'').replace(/[^a-zA-Z0-9_-]/g,'-').slice(0,100)}
 el('upload-form').onsubmit=action(async()=>{const file=el('pack-file').files[0];await api('packs/'+encodeURIComponent(el('pack-key').value),{method:'POST',headers:{'Content-Type':'application/json'},body:await file.text()});el('pack-file').value='';await load()})
-el('refresh').onclick=action(load)
+el('refresh').onclick=action(loadReports)
 
 // A DSH click authorizes one upload; Worker credentials stay on this origin.
 function publishProgress(phase,text){
@@ -130,9 +169,15 @@ async function publishTransferred(){
       await openSettings(key)
       return
     }
-    const url=new URL('/',location.origin);url.searchParams.set('fieldnoteId',key)
-    if(pack.invitation?.code)url.hash=new URLSearchParams({code:pack.invitation.code}).toString()
-    window.opener.postMessage({type:'teaching-publish:complete',nonce,key,hash:result.hash,url:url.href},origin)
+    const managed=await api('packs/'+encodeURIComponent(key)+'/access')
+    if(managed.access.status!=='active'&&managed.access.status!=='not_required'){
+      transfer.sending=false;publishProgress('configuration-required','请在题包设置中生成或重新生成有效口令，随后自动打开访谈。');await openSettings(key);return
+    }
+    const url=new URL(managed.url)
+    if(transfer.clientProtocol===1&&managed.access.code!==pack.invitation?.code){
+      throw Object.assign(new Error('口令已在 Worker 更新，旧版客户端无法显示当前链接；请更新客户端或从管理端复制分享链接'),{status:409})
+    }
+    window.opener.postMessage({type:'teaching-publish:complete',nonce,key,hash:result.hash,url:url.href,code:managed.access.code,accessStatus:managed.access.status},origin)
     window.opener=null
     location.replace(url.href)
   }catch(error){
@@ -156,15 +201,16 @@ const initializeTransfer=()=>{
       if(event.source!==window.opener||event.origin!==transfer.origin||event.data?.type!=='teaching-publish:prepare'||event.data.nonce!==transfer.nonce||transfer.payload)return
       try{
         const {key,payload}=event.data
+        if(event.data.protocol!==undefined&&event.data.protocol!==1&&event.data.protocol!==2)throw new Error('发布协议版本不支持，请更新客户端')
         if(typeof key!=='string'||!/^[a-zA-Z0-9_-]{1,100}$/.test(key)||typeof payload!=='string'||new TextEncoder().encode(payload).length>2097152)throw new Error('题包传输格式无效')
         const pack=JSON.parse(payload)
         if(!Array.isArray(pack.questions)||!pack.questions.length||!Number.isSafeInteger(pack.questionPackMeta?.version)||pack.questionPackMeta.version<1||key!==`${pack.publicFieldnoteId}-v${pack.questionPackMeta.version}`)throw new Error('题包内容或版本文件键无效')
-        transfer={...transfer,key,payload,pack}
+        transfer={...transfer,key,payload,pack,clientProtocol:event.data.protocol===2?2:1}
         el('publish-summary').textContent=`${pack.profile?.name||'实践专家'} · ${key} · v${pack.questionPackMeta.version} · ${pack.questions.length} 题`
         void publishTransferred()
       }catch(error){publishFailure(Object.assign(error,{status:400}))}
     })
-    window.opener.postMessage({type:'teaching-publish:ready',nonce,autoPublish:true},origin.origin)
+    window.opener.postMessage({type:'teaching-publish:ready',nonce,autoPublish:true,accessAuthority:'worker'},origin.origin)
   }catch(error){el('error').textContent=error.message}
 }
 initializeTransfer()

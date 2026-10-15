@@ -13,6 +13,7 @@ import (
 
 	"github.com/fanzy531/corch-dsh/worker/internal/config"
 	"github.com/fanzy531/corch-dsh/worker/internal/domain"
+	"github.com/fanzy531/corch-dsh/worker/internal/packaccess"
 	"github.com/fanzy531/corch-dsh/worker/internal/published"
 	"github.com/fanzy531/corch-dsh/worker/internal/runtimecfg"
 	"github.com/fanzy531/corch-dsh/worker/internal/store"
@@ -36,6 +37,9 @@ type managementBackend interface {
 	Get(context.Context, string) (store.Task, error)
 	ReadRuntimeSettings(context.Context, *published.Entry) (store.SettingsView, error)
 	SaveRuntimeSettings(context.Context, *published.Entry, int64, runtimecfg.Settings) (store.SettingsView, error)
+	ReadPackAccess(context.Context, published.Entry) (packaccess.View, error)
+	EnsurePackAccess(context.Context, published.Entry) (packaccess.View, error)
+	ChangePackAccess(context.Context, published.Entry, int64, string) (packaccess.View, error)
 }
 
 // mountManagement keeps administrator cookies and routes separate from interview sessions.
@@ -225,6 +229,63 @@ func mountManagement(mux *http.ServeMux, c config.Portal, backend managementBack
 	mux.HandleFunc("PUT /admin/api/settings", settingsHandler(false, true))
 	mux.HandleFunc("GET /admin/api/packs/{key}/settings", settingsHandler(true, false))
 	mux.HandleFunc("PUT /admin/api/packs/{key}/settings", settingsHandler(true, true))
+	accessResponse := func(w http.ResponseWriter, entry published.Entry, view packaccess.View) {
+		w.Header().Set("Cache-Control", "no-store")
+		share := *u
+		share.Path = "/"
+		share.RawQuery = url.Values{"fieldnoteId": {entry.Key}}.Encode()
+		if view.Status == "active" && view.Code != "" {
+			share.Fragment = url.Values{"code": {view.Code}}.Encode()
+		}
+		respond(w, 200, map[string]any{"key": entry.Key, "access": view, "url": share.String()})
+	}
+	accessHandler := func(change bool) http.HandlerFunc {
+		return protect(func(w http.ResponseWriter, r *http.Request) {
+			withDirectory(w, r, func(d *published.Directory) {
+				entry, err := d.Read(r.PathValue("key"))
+				if err != nil {
+					failure(w, domain.Fail("NOT_FOUND", 404))
+					return
+				}
+				var view packaccess.View
+				if c.InvitationMode != "code" {
+					if change {
+						failure(w, domain.Fail("ACCESS_NOT_REQUIRED", 409))
+						return
+					}
+					accessResponse(w, entry, packaccess.View{Status: "not_required", Source: "worker", PublicationHash: entry.Hash})
+					return
+				}
+				if change {
+					var input struct {
+						Action          string `json:"action"`
+						Revision        int64  `json:"revision"`
+						PublicationHash string `json:"publication_hash"`
+					}
+					r.Body = http.MaxBytesReader(w, r.Body, 4096)
+					raw, readErr := io.ReadAll(r.Body)
+					if readErr != nil || r.Header.Get("Content-Type") != "application/json" || domain.Decode(raw, &input) != nil || input.Revision < 0 {
+						failure(w, domain.Fail("INVALID_ACCESS_REQUEST", 400))
+						return
+					}
+					if input.PublicationHash != entry.Hash {
+						failure(w, domain.Fail("ACCESS_PUBLICATION_CHANGED", 409))
+						return
+					}
+					view, err = backend.ChangePackAccess(r.Context(), entry, input.Revision, input.Action)
+				} else {
+					view, err = backend.ReadPackAccess(r.Context(), entry)
+				}
+				if err != nil {
+					failure(w, err)
+					return
+				}
+				accessResponse(w, entry, view)
+			})
+		}, true)
+	}
+	mux.HandleFunc("GET /admin/api/packs/{key}/access", accessHandler(false))
+	mux.HandleFunc("POST /admin/api/packs/{key}/access", accessHandler(true))
 	mux.HandleFunc("POST /admin/api/packs/{key}", protect(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Content-Type") != "application/json" {
 			failure(w, domain.Fail("JSON_REQUIRED", 415))
@@ -242,7 +303,24 @@ func mountManagement(mux *http.ServeMux, c config.Portal, backend managementBack
 				failure(w, domain.Fail("PUBLICATION_REJECTED", 400))
 				return
 			}
-			respond(w, 201, map[string]string{"key": entry.Key, "hash": entry.Hash})
+			var access packaccess.View
+			if c.InvitationMode == "code" {
+				access, err = backend.EnsurePackAccess(r.Context(), entry)
+				if err != nil {
+					failure(w, err)
+					return
+				}
+			} else {
+				access = packaccess.View{Status: "not_required", PublicationHash: entry.Hash, Source: "worker"}
+			}
+			w.Header().Set("Cache-Control", "no-store")
+			share := *u
+			share.Path = "/"
+			share.RawQuery = url.Values{"fieldnoteId": {entry.Key}}.Encode()
+			if access.Status == "active" && access.Code != "" {
+				share.Fragment = url.Values{"code": {access.Code}}.Encode()
+			}
+			respond(w, 201, map[string]any{"key": entry.Key, "hash": entry.Hash, "access": access, "url": share.String()})
 		})
 	}, true))
 	mux.HandleFunc("DELETE /admin/api/packs/{key}", protect(func(w http.ResponseWriter, r *http.Request) {

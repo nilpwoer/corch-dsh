@@ -51,10 +51,10 @@ test('publication validates Worker origin, popup identity, nonce and exact packa
   message({ type: 'teaching-publish:ready', nonce }, undefined, {})
   message({ type: 'teaching-publish:ready', nonce: 'f'.repeat(64) })
   assert.equal(popup.postMessage.mock.calls.length, 0)
-  message({ type: 'teaching-publish:ready', nonce, autoPublish: true })
-  assert.deepEqual(popup.postMessage.mock.calls[0], [{ type: 'teaching-publish:prepare', nonce, key: 'FN-synthetic-v1', payload: '{"synthetic":true}' }, 'https://worker.example.com'])
-  message({ type: 'teaching-publish:complete', nonce, key: 'FN-synthetic-v1', hash: 'a'.repeat(64) })
-  assert.deepEqual(await promise, { key: 'FN-synthetic-v1', hash: 'a'.repeat(64) })
+  message({ type: 'teaching-publish:ready', nonce, autoPublish: true, accessAuthority: 'worker' })
+  assert.deepEqual(popup.postMessage.mock.calls[0], [{ type: 'teaching-publish:prepare', nonce, key: 'FN-synthetic-v1', payload: '{"synthetic":true}', protocol: 2 }, 'https://worker.example.com'])
+  message({ type: 'teaching-publish:complete', nonce, key: 'FN-synthetic-v1', hash: 'a'.repeat(64), code: 'synthetic-server-code', accessStatus: 'active', url: 'https://worker.example.com/?fieldnoteId=FN-synthetic-v1#code=synthetic-server-code' })
+  assert.deepEqual(await promise, { key: 'FN-synthetic-v1', hash: 'a'.repeat(64), code: 'synthetic-server-code', accessStatus: 'active', url: 'https://worker.example.com/?fieldnoteId=FN-synthetic-v1#code=synthetic-server-code' })
   assert.equal(popup.close.mock.calls.length, 0)
 })
 
@@ -82,6 +82,29 @@ test('an older Worker rejects before any package bytes are sent', async () => {
   await rejected
   assert.equal(popup.postMessage.mock.calls.length, 0)
   assert.equal(popup.close.mock.calls.length, 1)
+})
+
+test('a Worker without server invitation support rejects before package transfer', async () => {
+  const { popup, begin, message } = popupFixture()
+  const { promise, nonce } = begin()
+  const rejected = assert.rejects(promise, /服务端口令/)
+  message({ type: 'teaching-publish:ready', nonce, autoPublish: true })
+  await rejected
+  assert.equal(popup.postMessage.mock.calls.length, 0)
+})
+
+test('the authenticated Worker receipt cannot substitute an external URL or mismatched code', async () => {
+  const { begin, message } = popupFixture()
+  for (const changed of [
+    { url: 'https://attacker.example.com/?fieldnoteId=FN-synthetic-v1#code=synthetic-server-code' },
+    { code: 'different-synthetic-code' },
+    { accessStatus: 'revoked' },
+  ]) {
+    const { promise, nonce } = begin()
+    const rejected = assert.rejects(promise, /无效访问口令或分享地址/)
+    message({ type: 'teaching-publish:complete', nonce, key: 'FN-synthetic-v1', hash: 'a'.repeat(64), code: 'synthetic-server-code', accessStatus: 'active', url: 'https://worker.example.com/?fieldnoteId=FN-synthetic-v1#code=synthetic-server-code', ...changed })
+    await rejected
+  }
 })
 
 test('another package acknowledgement rejects the operation and closes only its popup', async () => {

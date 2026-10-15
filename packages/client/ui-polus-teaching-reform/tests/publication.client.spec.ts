@@ -26,6 +26,8 @@ test('new exports defer policy to Worker and legacy exports retain their countin
   const managed = createPublication({ ...input, interviewPolicy: undefined }, 'now')
   assert.equal(managed.interviewPolicy, undefined)
   assert.ok(!JSON.stringify(managed).includes('interviewPolicy'))
+  const serverInvitation = createPublication({ ...input, invitation: undefined, interviewPolicy: undefined }, 'now')
+  assert.ok(!JSON.stringify(serverInvitation).includes('invitation'))
   assert.throws(() => createPublication({ ...input, goal: '' }, 'now'))
   assert.throws(() => createPublication({ ...input, interviewPolicy: { scope: 'interview', maxFollowups: -1 } }, 'now'))
   const p = createPublication({ ...input, interviewPolicy: { scope: 'interview', maxFollowups: 3 } }, 'now')
