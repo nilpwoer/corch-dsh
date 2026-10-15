@@ -3,7 +3,16 @@ import {test} from 'node:test'
 import {mkdtemp,mkdir,writeFile,rm,readFile} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import {join,resolve,sep} from 'node:path'
-import {materializeDesktopWorkspaces,verifyDesktopClosure} from './desktop-closure.mjs'
+import {materializeDesktopWorkspaces,sanitizeDesktopDebugLabels,verifyDesktopClosure} from './desktop-closure.mjs'
+
+test('portable debug cleanup preserves code and license comments',async()=>{
+  const root=await mkdtemp(join(tmpdir(),'corch-closure-'))
+  try{
+    await writeFile(join(root,'index.js'),'/*! MIT license */\n//#region C:\\Users\\builder\\project\\style.css\nexport const value = "untouched"\n//# sourceMappingURL=index.js.map\n')
+    assert.equal(await sanitizeDesktopDebugLabels(root),1)
+    assert.equal(await readFile(join(root,'index.js'),'utf8'),'/*! MIT license */\nexport const value = "untouched"\n')
+  }finally{assert.ok(resolve(root).startsWith(resolve(tmpdir())+sep+'corch-closure-'));await rm(root,{recursive:true})}
+})
 
 test('missing required peers fail even when the entry package itself exists',async()=>{
   const root=await mkdtemp(join(tmpdir(),'corch-closure-'))

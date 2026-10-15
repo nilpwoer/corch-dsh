@@ -7,7 +7,7 @@ import { dirname, join, resolve, relative, sep } from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { parseArgs } from 'node:util'
-import { copyPortableDesktopRuntime, verifyDesktopClosure } from './desktop-closure.mjs'
+import { copyPortableDesktopRuntime, sanitizeDesktopDebugLabels, verifyDesktopClosure } from './desktop-closure.mjs'
 import { buildFrozenDesktopRuntime } from './desktop-frozen-build.mjs'
 
 const root = resolve(import.meta.dirname, '..')
@@ -62,6 +62,7 @@ if(values.closure){
   if(!pnpm||!/\.[cm]?js$/.test(pnpm)) throw new Error('Run through pnpm run package:win')
   closureReceipt=await buildFrozenDesktopRuntime(root,runtime,run,pnpm)
 }
+const debugFilesSanitized=await sanitizeDesktopDebugLabels(runtime)
 const closurePackages = await verifyDesktopClosure(runtime, root)
 console.log(JSON.stringify({closure_packages:closurePackages,frozen_install:true}))
 const required=['@deepseek-ai/dsh/lib/bin.js','@deepseek-ai/dsh-web-frontend/dist/index.html','@polus-ai/dsh-client-ui-teaching-reform/lib/client.js','dsh-better-sidebar/lib/client.js']
@@ -93,7 +94,7 @@ async function inventory(directory){
 }
 await inventory(out)
 const commit=execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim()
-await writeFile(join(out,'BUILD-MANIFEST.json'),JSON.stringify({version:manifest.version,source_commit:commit,source_dirty:execFileSync('git',['status','--porcelain'],{cwd:root,encoding:'utf8'}).trim()!=='',runtimes:binaries,lock_sha256:await sha(join(root,'pnpm-lock.yaml')),closure_packages:closurePackages,frozen_install:closureReceipt.frozen_install,built_client_sha256:await sha(join(runtime,'node_modules/@polus-ai/dsh-client-ui-teaching-reform/lib/client.js')),signed_application:false,private_data_included:false,files},null,2)+'\n')
+await writeFile(join(out,'BUILD-MANIFEST.json'),JSON.stringify({version:manifest.version,source_commit:commit,source_dirty:execFileSync('git',['status','--porcelain'],{cwd:root,encoding:'utf8'}).trim()!=='',runtimes:binaries,lock_sha256:await sha(join(root,'pnpm-lock.yaml')),closure_packages:closurePackages,frozen_install:closureReceipt.frozen_install,debug_comment_files_sanitized:debugFilesSanitized,source_maps_included:false,built_client_sha256:await sha(join(runtime,'node_modules/@polus-ai/dsh-client-ui-teaching-reform/lib/client.js')),signed_application:false,private_data_included:false,files},null,2)+'\n')
 const archive=out+'.zip'
 if(existsSync(archive)) throw new Error(`Archive already exists: ${archive}`)
 await run(join(process.env.SystemRoot,'System32/tar.exe'),['-a','-cf',archive,'-C',dirname(out),basenameSafe(out)])

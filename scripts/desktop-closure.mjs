@@ -1,7 +1,7 @@
 /** Production deploy verification, including mandatory peer packages and linked workspace overrides. */
 import { createRequire } from 'node:module'
 import { existsSync, globSync } from 'node:fs'
-import { readFile, mkdir, cp, copyFile, realpath, lstat, readdir } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, cp, copyFile, realpath, lstat, readdir } from 'node:fs/promises'
 import { join, isAbsolute, dirname, relative, sep } from 'node:path'
 import yaml from 'js-yaml'
 
@@ -13,7 +13,27 @@ const INSTALL_METADATA = new Set(['.bin', '.pnpm', '.modules.yaml', '.pnpm-works
  * @returns Whether the file belongs in the portable runtime.
  */
 export function desktopDependencyFile(path) {
-  return !path.split(sep).some(segment => INSTALL_METADATA.has(segment))
+  return !path.endsWith('.map') && !path.split(sep).some(segment => INSTALL_METADATA.has(segment))
+}
+
+/**
+ * Remove generated source-map links and region comments containing build-user paths.
+ * @param directory - New packaged runtime whose source labels may be rewritten.
+ * @returns Number of files with debug comments removed; executable statements are preserved.
+ */
+export async function sanitizeDesktopDebugLabels(directory) {
+  let changed=0
+  for(const entry of await readdir(directory,{withFileTypes:true})){
+    const path=join(directory,entry.name)
+    if(entry.isDirectory())changed+=await sanitizeDesktopDebugLabels(path)
+    else if(/\.(?:[cm]?js|ts)$/.test(entry.name)){
+      const text=await readFile(path,'utf8')
+      const clean=text.replace(/^[\t ]*\/\/#region[^\r\n]*(?:\r?\n|$)/gm,line=>/[a-z]:[\\/]+Users[\\/]/i.test(line)?'':line)
+        .replace(/^[\t ]*\/\/[#@]\s*sourceMappingURL=[^\r\n]*(?:\r?\n|$)/gm,'')
+      if(clean!==text){await writeFile(path,clean);changed++}
+    }
+  }
+  return changed
 }
 
 /**
