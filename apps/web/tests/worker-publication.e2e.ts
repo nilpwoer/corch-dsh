@@ -108,7 +108,7 @@ describe.skipIf(SIDEBAR_PACKAGE === undefined)('web e2e: Worker publication thro
     }
   }, 90_000)
 
-  it.skipIf(process.env.DSH_WORKER_PUBLISH_FIXTURE === undefined)('publishes from the real workbench through Worker confirmation and prefilled participant entry', async () => {
+  it.skipIf(process.env.DSH_WORKER_PUBLISH_FIXTURE === undefined)('publishes from the real workbench and continues after Worker login without another confirmation', async () => {
     try {
       const fixture = JSON.parse(await readFile(process.env.DSH_WORKER_PUBLISH_FIXTURE!, 'utf8')) as { origin: string; synthetic_password: string }
       const worker = new URL(fixture.origin)
@@ -135,6 +135,8 @@ describe.skipIf(SIDEBAR_PACKAGE === undefined)('web e2e: Worker publication thro
         const rows = JSON.parse(localStorage.getItem(key)!) as { publication: { worker?: unknown } }[]
         return rows[0]!.publication.worker
       }, RECORD_KEY)).toBeUndefined()
+      const workerConfirmationRequired = await manager.locator('#publish-confirm').count() !== 0
+      expect(workerConfirmationRequired).toBe(false)
       await manager.locator('input[name=password]').fill(fixture.synthetic_password)
       await manager.getByRole('button', { name: '登录', exact: true }).click()
       // Successful login resumes the existing DSH transfer without another click.
@@ -157,6 +159,7 @@ describe.skipIf(SIDEBAR_PACKAGE === undefined)('web e2e: Worker publication thro
       expect(portalEntries()).toBe(0)
       const transcript = {
         actual_loader: true,
+        worker_confirmation_required: workerConfirmationRequired,
         actual_host_session: hostSessions().list().length === 1,
         plugin_http_200: pluginResponses.includes(200),
         share_sections: await page.getByRole('heading', { name: '分享链接', exact: true }).locator('..').locator('..').getByRole('heading', { level: 3 }).allTextContents(),
@@ -176,7 +179,7 @@ describe.skipIf(SIDEBAR_PACKAGE === undefined)('web e2e: Worker publication thro
       expect(modelRequests).toBe(0)
       expect(pageErrors).toEqual([])
       expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain(fixture.synthetic_password)
-      await writeFile(join(ARTIFACTS, 'full-chain-verification.json'), JSON.stringify({ ...transcript, explicit_confirmation: true, matching_success_receipt: true, participant_entry_clicked: true, page_errors: pageErrors, production_changed: false, existing_3082_changed: false }, null, 2) + '\n')
+      await writeFile(join(ARTIFACTS, 'full-chain-verification.json'), JSON.stringify({ ...transcript, matching_success_receipt: true, participant_entry_clicked: true, page_errors: pageErrors, production_changed: false, existing_3082_changed: false }, null, 2) + '\n')
     } catch (error) {
       await saveFailureShot(page, 'worker-publication-full-chain')
       await writeFile(join(ARTIFACTS, 'full-chain-failure-body.txt'), await page.locator('body').innerText())

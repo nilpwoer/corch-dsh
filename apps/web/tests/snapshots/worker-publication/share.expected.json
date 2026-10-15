@@ -2,10 +2,14 @@
   "actual_loader": true,
   "actual_host_session": true,
   "plugin_http_200": true,
-  "share_sections": ["专家访谈口令", "分享链接"],
+  "share_sections": [
+    "专家访谈口令",
+    "分享链接"
+  ],
   "published_status": "已生成 SPA",
   "package_key": "FN-loader-publish-v1",
   "prefilled_invitation": "000000",
   "automatic_entry": false,
-  "model_requests": 0
+  "model_requests": 0,
+  "worker_confirmation_required": false
 }
