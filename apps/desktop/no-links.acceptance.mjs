@@ -19,7 +19,7 @@ await writeFile(join(profile, 'package.json'), manifest)
 await writeFile(join(profile, 'cordis.patch.yml'), '[]\n')
 const deny = join(scratch, 'deny-links.mjs')
 await writeFile(deny, `import fs from 'node:fs'; import {syncBuiltinESMExports} from 'node:module';
-const denied=()=>{throw Object.assign(new Error('TEST: link creation unavailable'),{code:'UNKNOWN',syscall:'symlink'})};
+const denied=(...paths)=>{throw Object.assign(new Error('TEST: link creation unavailable: '+paths.join(' -> ')),{code:'UNKNOWN',syscall:'symlink'})};
 fs.symlinkSync=denied;fs.symlink=denied;fs.promises.symlink=async()=>denied();syncBuiltinESMExports();\n`)
 const resources = join(portable, 'resources')
 for (let round = 0; round < 2; round++) {
