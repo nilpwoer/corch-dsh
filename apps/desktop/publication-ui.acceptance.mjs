@@ -168,6 +168,7 @@ try{
  await manager.screenshot({path:join(out,'worker-settings.png')})
  await manager.goto(fixture.origin+'/admin/?view=reports');await manager.locator('#reports-page').waitFor({state:'visible'})
  assert.equal(await manager.locator('#runtime-settings').isVisible(),false);assert.equal(await manager.locator('#pack-list').isVisible(),false)
+ await manager.locator('#reports .report-meta').filter({hasText:'报告 v1 · 已完成'}).waitFor()
  await manager.screenshot({path:join(out,'worker-reports-page.png')})
  await manager.goto(fixture.origin+'/admin/?configure=FN-ui-v1');await manager.locator('#runtime-settings').waitFor({state:'visible'})
  const readSettings=()=>manager.evaluate(async()=>{const r=await fetch('/admin/api/packs/FN-ui-v1/settings');if(r.status!==200)throw Error('settings read');return r.json()})

@@ -50,7 +50,7 @@ func (f *fakeManagement) AdminIdentity(_ context.Context, token string) (string,
 }
 func (f *fakeManagement) LogoutAdmin(context.Context, string) error { f.active = false; return nil }
 func (f *fakeManagement) Reports(context.Context) ([]store.Task, error) {
-	return []store.Task{{ID: "report-test", InterviewID: "interview-test", Kind: "report", Status: "succeeded", Output: []byte(`{"title":"报告"}`)}}, nil
+	return []store.Task{{ID: "report-test", InterviewID: "interview-test", Kind: "report", ReportVersion: 1, Status: "succeeded", Output: []byte(`{"title":"报告"}`)}}, nil
 }
 func (f *fakeManagement) Get(_ context.Context, id string) (store.Task, error) {
 	if id == "report-test" {
