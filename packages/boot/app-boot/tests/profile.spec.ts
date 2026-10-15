@@ -4,7 +4,7 @@
  * empty-root composition, and the installation module-fallback healing.
  */
 
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -212,6 +212,16 @@ describe('composeEntries', () => {
 })
 
 describe('healProfilesModuleFallback', () => {
+  it('does not link packages already resolving to the canonical installation', () => {
+    const home = tmp()
+    const app = join(home, 'node_modules', 'canonical-app')
+    mkdirSync(app, { recursive: true })
+    const anchor = join(app, 'package.json')
+    writeFileSync(anchor, JSON.stringify({ name: 'canonical-app', dependencies: {} }))
+    healProfilesModuleFallback(anchor, home)
+    expect(existsSync(join(home, 'profiles', 'node_modules', 'canonical-app'))).toBe(false)
+  })
+
   it('links the app and bundle dependency surface flat under profiles/node_modules', () => {
     const anchor = stageInstallation({
       'bundle-a': { patch: '[]\n', deps: { 'dep-of-a': '0.0.0', 'ghost-dep': '0.0.0' } },

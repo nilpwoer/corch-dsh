@@ -24,7 +24,7 @@
 
 import { createRequire } from 'node:module'
 import {
-  existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, symlinkSync, unlinkSync, writeFileSync,
+  existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, symlinkSync, unlinkSync, writeFileSync,
 } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import type { EntryOptions } from '@deepseek-ai/cordis-plugin-loader'
@@ -248,6 +248,14 @@ export function healProfilesModuleFallback(installAnchor: string, home: string =
     }
   }
   for (const [packageName, target] of links) {
+    // Embedded runtimes can supply a resolver instead of filesystem aliases.
+    let resolvedManifest: string | undefined
+    try {
+      resolvedManifest = createRequire(join(profilesDir, '__fallback__.cjs')).resolve(`${packageName}/package.json`)
+    } catch (error) {
+      if (!['MODULE_NOT_FOUND', 'ERR_PACKAGE_PATH_NOT_EXPORTED'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error
+    }
+    if (resolvedManifest !== undefined && realpathSync(resolvedManifest) === realpathSync(join(target, 'package.json'))) continue
     const link = join(modulesDir, packageName)
     mkdirSync(dirname(link), { recursive: true })
     ensureSymlink(link, target)

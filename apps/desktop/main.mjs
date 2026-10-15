@@ -1,7 +1,7 @@
 /** Windows portable desktop. Renderers have no Node or preload privileges. */
 import { app, BrowserWindow, dialog, Menu, session } from 'electron'
 import { spawn, execFile } from 'node:child_process'
-import { mkdir, readFile, writeFile, lstat, readlink, symlink, unlink } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { createWriteStream, existsSync } from 'node:fs'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -80,13 +80,6 @@ async function start() {
   await mkdir(profile, { recursive: true })
   await mkdir(work, { recursive: true })
   const modules = join(resources, 'runtime/node_modules')
-  const link = join(profile, 'node_modules')
-  if (existsSync(link)) {
-    const stat = await lstat(link)
-    if (!stat.isSymbolicLink()) throw new Error('客户端 profile/node_modules 必须由桌面启动器管理')
-    if (resolve(await readlink(link)) !== resolve(modules)) await unlink(link)
-  }
-  if (!existsSync(link)) await symlink(modules, link, 'junction')
   const manifest = join(profile, 'package.json')
   if (!existsSync(manifest)) await writeFile(manifest, JSON.stringify({
     name: 'corch-dsh-desktop-profile', private: true,

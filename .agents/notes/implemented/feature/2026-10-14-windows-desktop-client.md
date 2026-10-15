@@ -16,6 +16,9 @@ Keep renderer Node integration disabled, context isolation and Chromium sandbox 
 
 Package pinned official runtimes after SHA256 verification and install dependencies through a frozen pnpm production install in a publication-only workspace mirror, then materialize the shared workspace graph. Payload checks reject links and private configuration; the archive carries a per-file manifest and upstream licenses. Packaging is separate from the ordinary library build and does not change an already running client.
 
+The desktop backend registers synchronous Node resolution hooks before loading the CLI. Imports and package metadata requested from its private DSH home resolve shipped packages from the canonical portable runtime; additional profile plugins retain ordinary resolution. The boot fallback omits aliases whose manifests already resolve to the canonical installation. Desktop startup neither creates profile links nor replaces existing profile module directories. This supports writable locations where junction creation fails and keeps Cordis shared with the installed plugins.
+
+
 ## Alternatives considered
 
 **Browser app mode** depends on the user's browser installation and does not provide a self-contained desktop runtime. **The SDK executable** has a different protocol and supported-platform scope. **Electron's Node runtime for the backend** requires rebuilding native dependencies for its ABI. **A new desktop API bridge** duplicates existing model, profile and publication mechanisms while adding privileges.
