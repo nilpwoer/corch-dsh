@@ -7,7 +7,7 @@ import { dirname, join, resolve, relative, sep } from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { parseArgs } from 'node:util'
-import { verifyDesktopClosure } from './desktop-closure.mjs'
+import { copyPortableDesktopRuntime, verifyDesktopClosure } from './desktop-closure.mjs'
 import { buildFrozenDesktopRuntime } from './desktop-frozen-build.mjs'
 
 const root = resolve(import.meta.dirname, '..')
@@ -56,7 +56,7 @@ if(values.closure){
   if(manifest.name!=='@polus-ai/corch-dsh-desktop') throw new Error('Unexpected deployed closure')
   closureReceipt=JSON.parse(await readFile(join(closure,'DESKTOP-CLOSURE.json'),'utf8'))
   if(!closureReceipt.frozen_install||closureReceipt.lock_sha256!==await sha(join(root,'pnpm-lock.yaml')))throw new Error('Closure was not built with the current frozen lockfile')
-  await cp(closure,runtime,{recursive:true,dereference:false})
+  await copyPortableDesktopRuntime(closure,runtime)
 }else{
   const pnpm=process.env.npm_execpath
   if(!pnpm||!/\.[cm]?js$/.test(pnpm)) throw new Error('Run through pnpm run package:win')

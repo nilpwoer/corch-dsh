@@ -3,7 +3,7 @@ import {globSync,existsSync} from 'node:fs'
 import {readFile,mkdir,cp,copyFile,mkdtemp,writeFile} from 'node:fs/promises'
 import {join,dirname,sep} from 'node:path'
 import {createHash} from 'node:crypto'
-import {materializeDesktopWorkspaces,verifyDesktopClosure} from './desktop-closure.mjs'
+import {desktopDependencyFile,materializeDesktopWorkspaces,verifyDesktopClosure} from './desktop-closure.mjs'
 
 /**
  * Install locked dependencies without modifying the source workspace, then flatten workspace packages.
@@ -32,7 +32,7 @@ export async function buildFrozenDesktopRuntime(root,runtime,run,pnpm){
   await run(process.execPath,[pnpm,'rebuild','node-pty','koffi'],mirror)
   if(existsSync(runtime))throw new Error(`Runtime output already exists: ${runtime}`)
   await mkdir(runtime)
-  await cp(join(mirror,'node_modules'),join(runtime,'node_modules'),{recursive:true,dereference:false})
+  await cp(join(mirror,'node_modules'),join(runtime,'node_modules'),{recursive:true,dereference:false,filter:desktopDependencyFile})
   await copyFile(join(root,'apps/desktop/package.json'),join(runtime,'package.json'))
   const workspacePackages=await materializeDesktopWorkspaces(root,runtime,mirror)
   const packages=await verifyDesktopClosure(runtime,root)

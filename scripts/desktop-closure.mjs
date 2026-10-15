@@ -1,9 +1,61 @@
 /** Production deploy verification, including mandatory peer packages and linked workspace overrides. */
 import { createRequire } from 'node:module'
 import { existsSync, globSync } from 'node:fs'
-import { readFile, mkdir, cp, realpath, lstat, readdir } from 'node:fs/promises'
+import { readFile, mkdir, cp, copyFile, realpath, lstat, readdir } from 'node:fs/promises'
 import { join, isAbsolute, dirname, relative, sep } from 'node:path'
 import yaml from 'js-yaml'
+
+const INSTALL_METADATA = new Set(['.bin', '.pnpm', '.modules.yaml', '.pnpm-workspace-state-v1.json', '.ignored'])
+
+/**
+ * Exclude package-manager launchers and installation metadata from portable dependencies.
+ * @param path - Absolute or relative dependency file path.
+ * @returns Whether the file belongs in the portable runtime.
+ */
+export function desktopDependencyFile(path) {
+  return !path.split(sep).some(segment => INSTALL_METADATA.has(segment))
+}
+
+/**
+ * Copy only reachable installed packages, retaining installed optional bindings and nested versions.
+ * @param source - Verified frozen desktop runtime.
+ * @param target - New portable runtime directory.
+ * @returns Number of top-level package directories copied.
+ */
+export async function copyPortableDesktopRuntime(source, target) {
+  const queue=[source],visited=new Set(),packages=new Set()
+  while(queue.length){
+    const directory=await realpath(queue.shift())
+    if(visited.has(directory))continue
+    visited.add(directory)
+    const anchor=join(directory,'package.json'),manifest=JSON.parse(await readFile(anchor,'utf8'))
+    for(const name of Object.keys({...manifest.dependencies,...manifest.optionalDependencies,...manifest.peerDependencies})){
+      const next=packageDirectory(name,anchor)
+      if(!next){
+        if(manifest.optionalDependencies?.[name]||manifest.peerDependenciesMeta?.[name]?.optional)continue
+        throw new Error(`Incomplete portable runtime: ${manifest.name} requires ${name}`)
+      }
+      const actual=await realpath(next),owned=relative(source,actual)
+      if(owned.startsWith('..')||isAbsolute(owned))throw new Error(`Portable dependency escaped source: ${name}`)
+      const segments=owned.split(sep)
+      assertPackagePath(segments,name)
+      packages.add(join(source,...segments.slice(0,segments[1].startsWith('@')?3:2)))
+      queue.push(actual)
+    }
+  }
+  await mkdir(join(target,'node_modules'),{recursive:true})
+  for(const file of ['package.json','DESKTOP-CLOSURE.json'])await copyFile(join(source,file),join(target,file))
+  for(const path of [...packages].sort()){
+    const destination=join(target,relative(source,path))
+    await mkdir(dirname(destination),{recursive:true})
+    await cp(path,destination,{recursive:true,dereference:false,filter:desktopDependencyFile})
+  }
+  return packages.size
+}
+
+function assertPackagePath(segments,name){
+  if(segments[0]!=='node_modules'||!segments[1])throw new Error(`Invalid portable package location: ${name}`)
+}
 
 /**
  * Resolve a package directory without requiring an exported package.json.
@@ -70,7 +122,7 @@ export async function materializeDesktopWorkspaces(root, runtime, installedRoot 
         if(stat.isDirectory()){
           await mkdir(destination,{recursive:true})
           for(const child of await readdir(source)){
-            if(child==='.bin')continue
+            if(INSTALL_METADATA.has(child))continue
             await copyInstalled(join(source,child),join(destination,child))
           }
         }else await cp(source,destination)
