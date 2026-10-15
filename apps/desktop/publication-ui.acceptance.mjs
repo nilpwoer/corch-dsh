@@ -28,8 +28,8 @@ try{
  await desktop.context().route('**/*',route=>['127.0.0.1','localhost','[::1]'].includes(new URL(route.request().url()).hostname)?route.continue():route.abort())
  desktop.context().on('request',request=>{
   if(request.method()==='POST'&&request.url().startsWith(fixture.origin+'/admin/api/packs/'))uploads.push({url:request.url(),payload:request.postData()})
-  if(request.method()==='POST'&&request.url()===fixture.origin+'/portal/api/session')participantEntries++
  })
+ desktop.context().on('response',response=>{if(response.request().method()==='POST'&&response.url()===fixture.origin+'/portal/api/session'&&response.status()===200)participantEntries++})
  await desktop.evaluate(({session},out)=>session.defaultSession.on('will-download',(_event,item)=>item.setSavePath(out+'/'+item.getFilename())),out)
  await page.getByRole('dialog',{name:'内测声明'}).waitFor();await page.getByRole('button',{name:'继续',exact:true}).click()
  const onboarding=page.getByRole('dialog',{name:'添加一个 API Key 开始使用'});await onboarding.waitFor();await onboarding.getByRole('button',{name:'稍后配置',exact:true}).click()
@@ -83,7 +83,10 @@ try{
  const networkFailure=route=>route.abort('connectionfailed')
  await failedPublish('无法连接 Worker',()=>desktop.context().route('**/admin/api/session',networkFailure),()=>desktop.context().unroute('**/admin/api/session',networkFailure))
  let loginContinuations=0,authenticatedOneClicks=0
+ const configured=new Set()
+ let policyGates=0,missingPolicyErrorChecked=false
  async function publish(key){
+  const entriesBefore=participantEntries
   const [manager]=await Promise.all([desktop.waitForEvent('window',{timeout:25000}),page.getByRole('button',{name:'发布并打开 SPA',exact:true}).click()])
   manager.setDefaultTimeout(25000)
   if((await manager.request.get(fixture.origin+'/admin/api/session')).status()!==200){
@@ -93,6 +96,32 @@ try{
    await manager.screenshot({path:join(out,'worker-login-auto-continue.png')})
    await manager.locator('input[name=password]').fill(fixture.synthetic_password);await manager.getByRole('button',{name:'登录',exact:true}).click();loginContinuations++
   }else authenticatedOneClicks++
+  if(['FN-ui-v1','FN-ui-v2','FN-legacy-v2'].includes(key)&&!configured.has(key)){
+   await manager.locator('#runtime-settings').waitFor({state:'visible'})
+   await manager.locator('#publish-status').filter({hasText:'尚未配置追问策略'}).waitFor()
+   assert.equal(await manager.locator('#policy-scope').inputValue(),'')
+   assert.equal(await manager.locator('#policy-count').inputValue(),'')
+   assert.equal(await manager.locator('#policy-inherit').isChecked(),false)
+   assert.equal(participantEntries,entriesBefore)
+   if(!missingPolicyErrorChecked){
+    const [participant]=await Promise.all([desktop.waitForEvent('window'),desktop.evaluate(({BrowserWindow},url)=>{const w=new BrowserWindow({show:false,webPreferences:{nodeIntegration:false,contextIsolation:true,sandbox:true}});void w.loadURL(url)},fixture.origin+'/?fieldnoteId='+key+'#code=000000')])
+    await participant.locator('#portal-code').waitFor()
+    await participant.locator('#portal-start button').click()
+    await participant.locator('#portal-error').filter({hasText:'尚未配置追问策略'}).waitFor()
+    assert.equal(participantEntries,0)
+    const link=participant.getByRole('link',{name:'主持人：打开题包设置',exact:true})
+    assert.equal(await link.getAttribute('href'),'/admin/?configure='+key)
+    assert.equal(await participant.locator('#answer').count(),0)
+    const [settingsWindow]=await Promise.all([desktop.waitForEvent('window'),link.click()])
+    await settingsWindow.locator('#runtime-settings').waitFor({state:'visible'})
+    assert.equal(await settingsWindow.locator('#policy-count').inputValue(),'')
+    await settingsWindow.close();await participant.close()
+    missingPolicyErrorChecked=true
+   }
+   await manager.locator('#policy-scope').selectOption('interview');await manager.locator('#policy-count').fill('0')
+   await manager.locator('#settings-save').click()
+   configured.add(key);policyGates++
+  }
   await page.getByRole('heading',{name:'分享链接',exact:true}).waitFor();await manager.locator('#portal-code,#answer').first().waitFor()
   await page.getByRole('status').filter({hasText:'发布成功，已打开 SPA'}).waitFor()
   assert.deepEqual(await page.locator('[class*="shareLayout"]').getByRole('heading',{level:3}).allTextContents(),['专家访谈口令','分享链接'])
@@ -141,7 +170,7 @@ try{
  assert.equal(savedLegacy.publication.goal,legacy.publication.goal);assert.equal(savedLegacy.publication.count,'2');assert.equal(savedLegacy.publication.legacyVersion,1)
  assert.deepEqual(errors,[])
  const runtime=JSON.parse(await readFile(join(data,'runtime.json'),'utf8'))
- const result={passed:true,actual_packaged_exe:true,desktop_version:runtime.desktop_version,actual_host_sessions:2,publication_form_absent:true,single_click_publish:true,worker_confirmation_required:false,login_continuations:loginContinuations,authenticated_one_clicks:authenticatedOneClicks,missing_address_visible:true,address_setting_shortcut:true,blocked_popup_feedback:true,old_worker_rejected_before_upload:true,network_failure_feedback:true,initial_followup_fields_absent:true,question_package_operations:true,json_download:true,new_package_policy:'Worker configured',worker_http_and_assets:'real',worker_sql_and_accounts:'synthetic fixture',worker_policy_and_prompt_editor:true,same_version_retry_preserves_bytes_and_worker_settings:true,legacy_v1_payload_unchanged:true,new_versions_omit_legacy_policy:true,legacy_local_data_preserved:true,spa_sections:['专家访谈口令','分享链接'],copied_link_includes_code:true,worker_code_prefilled:true,automatic_participant_entries:0,explicit_participant_entries:participantEntries,publish_uploads:uploads.length,real_model_calls:0,page_errors:errors,production_changed:false}
+ const result={passed:true,actual_packaged_exe:true,desktop_version:runtime.desktop_version,actual_host_sessions:2,publication_form_absent:true,mandatory_policy_gates:policyGates,blank_policy_fields_require_explicit_choice:true,missing_policy_human_error_and_settings_link:missingPolicyErrorChecked,new_pack_entry_blocked_before_policy:true,single_click_publish:true,worker_confirmation_required:false,login_continuations:loginContinuations,authenticated_one_clicks:authenticatedOneClicks,missing_address_visible:true,address_setting_shortcut:true,blocked_popup_feedback:true,old_worker_rejected_before_upload:true,network_failure_feedback:true,initial_followup_fields_absent:true,question_package_operations:true,json_download:true,new_package_policy:'Worker configured',worker_http_and_assets:'real',worker_sql_and_accounts:'synthetic fixture',worker_policy_and_prompt_editor:true,same_version_retry_preserves_bytes_and_worker_settings:true,legacy_v1_payload_unchanged:true,new_versions_omit_legacy_policy:true,legacy_local_data_preserved:true,spa_sections:['专家访谈口令','分享链接'],copied_link_includes_code:true,worker_code_prefilled:true,automatic_participant_entries:0,explicit_participant_entries:participantEntries,publish_uploads:uploads.length,real_model_calls:0,page_errors:errors,production_changed:false}
  await writeFile(join(out,'verification.json'),JSON.stringify(result,null,2)+'\n');console.log(JSON.stringify(result));passed=true
 }catch(error){if(page&&!page.isClosed()){await page.screenshot({path:join(out,'failure.png')}).catch(()=>{});await writeFile(join(out,'failure.txt'),await page.locator('body').innerText()).catch(()=>{})}throw error}
 finally{if(desktop)await desktop.close();await writeFile(fixturePath+'.done',JSON.stringify({passed})+'\n')}

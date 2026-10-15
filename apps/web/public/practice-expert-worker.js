@@ -44,7 +44,17 @@ export async function mountWorkerInterview(app) {
         target.searchParams.set('fieldnoteId', created.snapshot_template.pack.key)
         history.replaceState(null, '', target)
         await mountWorkerInterview(app)
-      } catch (error) { document.querySelector('#portal-error').textContent = error.message }
+      } catch (error) {
+        const message = document.querySelector('#portal-error')
+        if (error.message === 'FOLLOWUP_POLICY_REQUIRED') {
+          message.textContent = '此题包尚未配置追问策略，请联系主持人在 Worker 管理端保存计数范围和次数后，再点击开始访谈。'
+          const link = document.createElement('a')
+          link.href = '/admin/?configure=' + encodeURIComponent(document.querySelector('#portal-key').value)
+          link.target = '_blank'; link.rel = 'noopener'
+          link.textContent = '主持人：打开题包设置'
+          message.append(document.createElement('br'), link)
+        } else message.textContent = error.message
+      }
     }
     return
   }

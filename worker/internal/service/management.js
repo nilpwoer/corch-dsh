@@ -50,6 +50,10 @@ const openSettings=async key=>{
   el('policy-inherit').checked=!view.settings.policy
   el('policy-scope').value=view.policy?.scope||''
   el('policy-count').value=view.policy?.maxFollowups??''
+  if(key&&!view.policy){
+    el('policy-inherit').checked=false
+    el('settings-description').textContent=key+' · 尚未配置追问策略，请明确选择计数范围和次数（0 表示不追问）'
+  }
   for(const kind of ['followup','report']){
     el(kind+'-inherit').checked=!view.settings[kind]
     for(const stage of ['analyze','compose'])el(kind+'-'+stage).value=view.effective[kind][stage]
@@ -71,13 +75,21 @@ el('settings-form').onsubmit=action(async()=>{
     settings.policy={scope:el('policy-scope').value,maxFollowups:count}
   }
   await api(settingsPath(view.key),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:view.revision,publication_hash:view.publication_hash,settings})})
-  if(settingsView===view){await openSettings(view.key);el('settings-message').textContent='已保存，新进入的访谈将采用此配置'}
+  if(settingsView===view){
+    await openSettings(view.key);el('settings-message').textContent='已保存，新进入的访谈将采用此配置'
+    if(transfer?.receipt&&transfer.key===view.key)await publishTransferred()
+  }
 })
+const loadRequestedSettings=async()=>{
+  await load()
+  const key=new URLSearchParams(location.search).get('configure')
+  if(key){if(!/^[a-zA-Z0-9_-]{1,100}$/.test(key))throw new Error('题包文件键无效');await openSettings(key)}
+}
 el('login-form').onsubmit=action(async()=>{
   const f=new FormData(el('login-form'))
   try{await api('login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:f.get('username'),password:f.get('password')})})}
   catch(error){if(error.status!==401)publishFailure(error);throw error}
-  el('login-form').elements.password.value='';setSession(true);if(!transfer)await load()
+  el('login-form').elements.password.value='';setSession(true);if(!transfer)await loadRequestedSettings()
 })
 el('logout').onclick=action(async()=>{
   await api('logout',{method:'POST'});setSession(false);settingsGeneration++;settingsView=null
@@ -108,8 +120,16 @@ async function publishTransferred(){
   const {key,payload,pack,origin,nonce}=transfer
   publishProgress('uploading','正在上传题包…')
   try{
-    const result=await api('packs/'+encodeURIComponent(key),{method:'POST',headers:{'Content-Type':'application/json'},body:payload})
+    const result=transfer.receipt||await api('packs/'+encodeURIComponent(key),{method:'POST',headers:{'Content-Type':'application/json'},body:payload})
     if(result.key!==key||!/^[a-f0-9]{64}$/.test(result.hash))throw Object.assign(new Error('发布回执无效'),{status:502})
+    transfer.receipt=result
+    const settings=await api(settingsPath(key))
+    if(!settings.policy){
+      transfer.sending=false
+      publishProgress('configuration-required','题包已上传，尚未配置追问策略。请先保存计数范围和次数，随后自动打开访谈。')
+      await openSettings(key)
+      return
+    }
     const url=new URL('/',location.origin);url.searchParams.set('fieldnoteId',key)
     if(pack.invitation?.code)url.hash=new URLSearchParams({code:pack.invitation.code}).toString()
     window.opener.postMessage({type:'teaching-publish:complete',nonce,key,hash:result.hash,url:url.href},origin)
@@ -148,5 +168,5 @@ const initializeTransfer=()=>{
   }catch(error){el('error').textContent=error.message}
 }
 initializeTransfer()
-try{await api('session');setSession(true);if(!transfer)await load()}
+try{await api('session');setSession(true);if(!transfer)await loadRequestedSettings()}
 catch(error){if(error.status===401)setSession(false);else{el('error').textContent=error.message;publishFailure(error)}}
