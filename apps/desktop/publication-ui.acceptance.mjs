@@ -57,15 +57,44 @@ try{
  const exported=JSON.parse(await waitFile(join(out,'FN-ui-v1.json')))
  assert.equal(exported.goal,fresh.record.title);assert.equal(exported.interviewPolicy,undefined)
  await page.getByRole('button',{name:'发布并打开 SPA',exact:true}).scrollIntoViewIfNeeded();await page.screenshot({path:join(out,'question-package-operations.png')})
- await page.getByRole('button',{name:'访谈设置',exact:true}).click();await page.getByRole('button',{name:'Worker 发布',exact:true}).click()
+ await page.getByRole('button',{name:'发布并打开 SPA',exact:true}).click()
+ const feedback=page.getByLabel('发布反馈',{exact:true})
+ await feedback.getByRole('alert').filter({hasText:'填写目标地址'}).waitFor()
+ assert.equal(await feedback.evaluate(el=>{const r=el.getBoundingClientRect();return r.top>=0&&r.bottom<=innerHeight}),true)
+ assert.equal(desktop.windows().length,1)
+ await page.screenshot({path:join(out,'missing-address-visible.png')})
+ await feedback.getByRole('button',{name:'设置 Worker 地址',exact:true}).click()
  await page.getByPlaceholder('https://worker.example.com').fill(fixture.origin);await page.getByRole('button',{name:'保存地址',exact:true}).click();await page.getByRole('status').filter({hasText:'已保存 Worker'}).waitFor()
- await page.getByRole('button',{name:'返回访谈',exact:true}).click();await page.getByRole('button',{name:'问题包',exact:true}).click()
+ await page.getByRole('button',{name:'返回访谈',exact:true}).click()
+ await page.getByRole('button',{name:'发布并打开 SPA',exact:true}).waitFor()
+ async function failedPublish(pattern,setup,cleanup){
+  const before=uploads.length
+  await setup()
+  try{
+   await page.getByRole('button',{name:'发布并打开 SPA',exact:true}).click()
+   await page.getByLabel('发布反馈',{exact:true}).getByRole('alert').filter({hasText:pattern}).waitFor()
+   assert.equal(uploads.length,before)
+   assert.equal(await page.getByRole('button',{name:'发布并打开 SPA',exact:true}).isEnabled(),true)
+  }finally{await cleanup()}
+ }
+ await failedPublish('阻止了发布窗口',()=>page.evaluate(()=>{window.__originalOpen=window.open;window.open=()=>null}),()=>page.evaluate(()=>{window.open=window.__originalOpen;delete window.__originalOpen}))
+ const oldWorker=async route=>{const response=await route.fetch();await route.fulfill({response,body:(await response.text()).replace('nonce,autoPublish:true','nonce,autoPublish:false')})}
+ await failedPublish('更新 Worker',()=>desktop.context().route('**/admin/management.js',oldWorker),()=>desktop.context().unroute('**/admin/management.js',oldWorker))
+ const networkFailure=route=>route.abort('connectionfailed')
+ await failedPublish('无法连接 Worker',()=>desktop.context().route('**/admin/api/session',networkFailure),()=>desktop.context().unroute('**/admin/api/session',networkFailure))
+ let loginContinuations=0,authenticatedOneClicks=0
  async function publish(key){
   const [manager]=await Promise.all([desktop.waitForEvent('window',{timeout:25000}),page.getByRole('button',{name:'发布并打开 SPA',exact:true}).click()])
-  manager.setDefaultTimeout(25000);await manager.locator('#publish-summary').filter({hasText:key}).waitFor()
-  if((await manager.request.get(fixture.origin+'/admin/api/session')).status()!==200){await manager.locator('input[name=password]').fill(fixture.synthetic_password);await manager.getByRole('button',{name:'登录',exact:true}).click()}
-  await manager.locator('#workspace').waitFor({state:'visible'});await manager.locator('#publish-confirm').click()
+  manager.setDefaultTimeout(25000)
+  if((await manager.request.get(fixture.origin+'/admin/api/session')).status()!==200){
+   await manager.locator('#publish-summary').filter({hasText:key}).waitFor()
+   assert.equal(await manager.locator('#publish-confirm').count(),0)
+   await page.getByRole('status').filter({hasText:'登录后将自动发布'}).waitFor()
+   await manager.screenshot({path:join(out,'worker-login-auto-continue.png')})
+   await manager.locator('input[name=password]').fill(fixture.synthetic_password);await manager.getByRole('button',{name:'登录',exact:true}).click();loginContinuations++
+  }else authenticatedOneClicks++
   await page.getByRole('heading',{name:'分享链接',exact:true}).waitFor();await manager.locator('#portal-code,#answer').first().waitFor()
+  await page.getByRole('status').filter({hasText:'发布成功，已打开 SPA'}).waitFor()
   assert.deepEqual(await page.locator('[class*="shareLayout"]').getByRole('heading',{level:3}).allTextContents(),['专家访谈口令','分享链接'])
   if(await manager.locator('#portal-code').isVisible())assert.equal(await manager.locator('#portal-code').inputValue(),'000000');assert.equal(new URL(manager.url()).hash,'')
   const receipt=await page.evaluate(({recordKey,key})=>JSON.parse(localStorage.getItem(recordKey)).find(row=>row.publication?.worker?.key===key).publication.worker,{recordKey,key})
@@ -90,6 +119,14 @@ try{
  assert.equal(before.settings.followup.analyze,'合成分析提示词 followup');assert.equal(before.settings.report.compose,'合成生成提示词 report')
  await manager.goto(receipt.url);await manager.locator('#portal-code').waitFor();assert.equal(await manager.locator('#portal-code').inputValue(),'000000');assert.equal(participantEntries,0)
  await manager.locator('#portal-start button').click();await manager.locator('#answer').waitFor();assert.equal(participantEntries,1);await manager.close()
+ await page.getByRole('button',{name:'问题包',exact:true}).click()
+ await desktop.context().route('**/admin/api/packs/FN-ui-v1',networkFailure)
+ try{
+  await page.getByRole('button',{name:'发布并打开 SPA',exact:true}).click()
+  await page.getByLabel('发布反馈',{exact:true}).getByRole('alert').filter({hasText:'无法连接 Worker'}).waitFor()
+  assert.equal(await readFile(join(fixture.packs_directory,'FN-ui-v1.json'),'utf8'),originalPack)
+  await page.screenshot({path:join(out,'upload-network-failure-visible.png')})
+ }finally{await desktop.context().unroute('**/admin/api/packs/FN-ui-v1',networkFailure)}
  await page.getByRole('button',{name:'问题包',exact:true}).click();({manager}=await publish('FN-ui-v1'))
  assert.equal(uploads.at(-1).payload,firstPayload);assert.equal(await readFile(join(fixture.packs_directory,'FN-ui-v1.json'),'utf8'),originalPack)
  await manager.goto(fixture.origin+'/admin/');assert.deepEqual(await readSettings(),before);await manager.close()
@@ -104,7 +141,7 @@ try{
  assert.equal(savedLegacy.publication.goal,legacy.publication.goal);assert.equal(savedLegacy.publication.count,'2');assert.equal(savedLegacy.publication.legacyVersion,1)
  assert.deepEqual(errors,[])
  const runtime=JSON.parse(await readFile(join(data,'runtime.json'),'utf8'))
- const result={passed:true,actual_packaged_exe:true,desktop_version:runtime.desktop_version,actual_host_sessions:2,publication_form_absent:true,initial_followup_fields_absent:true,question_package_operations:true,json_download:true,new_package_policy:'Worker configured',worker_http_and_assets:'real',worker_sql_and_accounts:'synthetic fixture',worker_policy_and_prompt_editor:true,same_version_retry_preserves_bytes_and_worker_settings:true,legacy_v1_payload_unchanged:true,new_versions_omit_legacy_policy:true,legacy_local_data_preserved:true,spa_sections:['专家访谈口令','分享链接'],copied_link_includes_code:true,worker_code_prefilled:true,automatic_participant_entries:0,explicit_participant_entries:participantEntries,publish_uploads:uploads.length,real_model_calls:0,page_errors:errors,production_changed:false}
+ const result={passed:true,actual_packaged_exe:true,desktop_version:runtime.desktop_version,actual_host_sessions:2,publication_form_absent:true,single_click_publish:true,worker_confirmation_required:false,login_continuations:loginContinuations,authenticated_one_clicks:authenticatedOneClicks,missing_address_visible:true,address_setting_shortcut:true,blocked_popup_feedback:true,old_worker_rejected_before_upload:true,network_failure_feedback:true,initial_followup_fields_absent:true,question_package_operations:true,json_download:true,new_package_policy:'Worker configured',worker_http_and_assets:'real',worker_sql_and_accounts:'synthetic fixture',worker_policy_and_prompt_editor:true,same_version_retry_preserves_bytes_and_worker_settings:true,legacy_v1_payload_unchanged:true,new_versions_omit_legacy_policy:true,legacy_local_data_preserved:true,spa_sections:['专家访谈口令','分享链接'],copied_link_includes_code:true,worker_code_prefilled:true,automatic_participant_entries:0,explicit_participant_entries:participantEntries,publish_uploads:uploads.length,real_model_calls:0,page_errors:errors,production_changed:false}
  await writeFile(join(out,'verification.json'),JSON.stringify(result,null,2)+'\n');console.log(JSON.stringify(result));passed=true
 }catch(error){if(page&&!page.isClosed()){await page.screenshot({path:join(out,'failure.png')}).catch(()=>{});await writeFile(join(out,'failure.txt'),await page.locator('body').innerText()).catch(()=>{})}throw error}
 finally{if(desktop)await desktop.close();await writeFile(fixturePath+'.done',JSON.stringify({passed})+'\n')}

@@ -137,10 +137,7 @@ describe.skipIf(SIDEBAR_PACKAGE === undefined)('web e2e: Worker publication thro
       }, RECORD_KEY)).toBeUndefined()
       await manager.locator('input[name=password]').fill(fixture.synthetic_password)
       await manager.getByRole('button', { name: '登录', exact: true }).click()
-      await manager.locator('#workspace').waitFor({ state: 'visible' })
-      expect(await manager.locator('#publish-confirm').isEnabled()).toBe(true)
-      await manager.screenshot({ path: join(ARTIFACTS, 'worker-confirmation.png'), fullPage: true })
-      await manager.locator('#publish-confirm').click()
+      // Successful login resumes the existing DSH transfer without another click.
       await page.getByRole('heading', { name: '分享链接', exact: true }).waitFor()
       await manager.locator('#portal-code').waitFor()
       const saved = await page.evaluate((key) => {

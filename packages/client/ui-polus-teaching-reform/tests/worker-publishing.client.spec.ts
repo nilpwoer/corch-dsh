@@ -51,11 +51,37 @@ test('publication validates Worker origin, popup identity, nonce and exact packa
   message({ type: 'teaching-publish:ready', nonce }, undefined, {})
   message({ type: 'teaching-publish:ready', nonce: 'f'.repeat(64) })
   assert.equal(popup.postMessage.mock.calls.length, 0)
-  message({ type: 'teaching-publish:ready', nonce })
+  message({ type: 'teaching-publish:ready', nonce, autoPublish: true })
   assert.deepEqual(popup.postMessage.mock.calls[0], [{ type: 'teaching-publish:prepare', nonce, key: 'FN-synthetic-v1', payload: '{"synthetic":true}' }, 'https://worker.example.com'])
   message({ type: 'teaching-publish:complete', nonce, key: 'FN-synthetic-v1', hash: 'a'.repeat(64) })
   assert.deepEqual(await promise, { key: 'FN-synthetic-v1', hash: 'a'.repeat(64) })
   assert.equal(popup.close.mock.calls.length, 0)
+})
+
+test('login/upload progress and failures use the authenticated popup channel', async () => {
+  const { popup, open, message } = popupFixture()
+  const progress = vi.fn()
+  const promise = publishToWorker('https://worker.example.com', 'FN-synthetic-v1', '{}', undefined, progress)
+  const nonce = new URLSearchParams(new URL(String(open.mock.calls.at(-1)?.[0])).hash.slice(1)).get('nonce')
+  message({ type: 'teaching-publish:progress', nonce, phase: 'login-required' }, 'https://attacker.example.com')
+  assert.equal(progress.mock.calls.length, 0)
+  message({ type: 'teaching-publish:progress', nonce, phase: 'login-required' })
+  message({ type: 'teaching-publish:progress', nonce, phase: 'uploading' })
+  assert.deepEqual(progress.mock.calls.map(call => call[0]), ['请在 Worker 窗口登录，登录后将自动发布', '正在上传题包到 Worker…'])
+  const rejected = assert.rejects(promise, /无法连接 Worker/)
+  message({ type: 'teaching-publish:error', nonce, key: 'FN-synthetic-v1', message: '无法连接 Worker，请检查网络后重试' })
+  await rejected
+  assert.equal(popup.close.mock.calls.length, 1)
+})
+
+test('an older Worker rejects before any package bytes are sent', async () => {
+  const { popup, begin, message } = popupFixture()
+  const { promise, nonce } = begin()
+  const rejected = assert.rejects(promise, /更新 Worker/)
+  message({ type: 'teaching-publish:ready', nonce })
+  await rejected
+  assert.equal(popup.postMessage.mock.calls.length, 0)
+  assert.equal(popup.close.mock.calls.length, 1)
 })
 
 test('another package acknowledgement rejects the operation and closes only its popup', async () => {
@@ -63,6 +89,16 @@ test('another package acknowledgement rejects the operation and closes only its 
   const { promise, nonce } = begin()
   const rejected = assert.rejects(promise)
   message({ type: 'teaching-publish:complete', nonce, key: 'other-package', hash: 'a'.repeat(64) })
+  await rejected
+  assert.equal(popup.close.mock.calls.length, 1)
+})
+
+test('an unresponsive Worker times out before the login allowance', async () => {
+  vi.useFakeTimers()
+  const { popup, begin } = popupFixture()
+  const { promise } = begin()
+  const rejected = assert.rejects(promise, /Worker 未响应/)
+  await vi.advanceTimersByTimeAsync(15250)
   await rejected
   assert.equal(popup.close.mock.calls.length, 1)
 })

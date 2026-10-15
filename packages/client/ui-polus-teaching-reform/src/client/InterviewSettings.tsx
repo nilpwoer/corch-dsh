@@ -10,7 +10,7 @@ export const GLOBAL_REFERENCE_STORAGE_KEY = 'dsh.practice-expert-global-referenc
 export type { GlobalReferenceDocument } from './interviewTypes.ts'
 import type { GlobalReferenceDocument } from './interviewTypes.ts'
 
-export type InterviewSettingsProps = { onClose?: () => void; onPreviewDocument?: (document: GlobalReferenceDocument) => void }
+export type InterviewSettingsProps = { initialTab?: 'worker'; onClose?: () => void; onPreviewDocument?: (document: GlobalReferenceDocument) => void }
 type SettingsTab = 'references' | 'prompt' | 'worker'
 
 const UPDATED_EVENT = 'interview-global-reference-pool-updated'
@@ -58,9 +58,9 @@ export async function loadGlobalReferenceDocumentsForGeneration(): Promise<Globa
   return await hydrateCorpusDocuments(getEnabledGlobalReferenceDocuments())
 }
 
-export function InterviewSettings({ onClose, onPreviewDocument }: InterviewSettingsProps): ReactNode {
+export function InterviewSettings({ onClose, onPreviewDocument, initialTab }: InterviewSettingsProps): ReactNode {
   const [documents, setDocuments] = useState<GlobalReferenceDocument[]>(() => readGlobalReferenceDocuments())
-  const [activeTab, setActiveTab] = useState<SettingsTab>('references')
+  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab ?? 'references')
   const [workerOrigin, setWorkerOrigin] = useState(readWorkerOrigin)
   const [workerMessage, setWorkerMessage] = useState('')
   const [showArchived, setShowArchived] = useState(false)

@@ -62,13 +62,17 @@ function secureContents(contents, allowedOrigin) {
   contents.on('will-attach-webview', event => event.preventDefault())
   contents.setWindowOpenHandler(details => {
     if (allowedOrigin === localOrigin && workerPopupAllowed(details.url, localOrigin)) {
-      return { action: 'allow', overrideBrowserWindowOptions: { title: 'Worker 发布确认', width: 1040, height: 840, autoHideMenuBar: true, webPreferences: prefs } }
+      return { action: 'allow', overrideBrowserWindowOptions: { title: 'Worker 发布', width: 1040, height: 840, autoHideMenuBar: true, webPreferences: prefs } }
     }
     return { action: 'deny' }
   })
   contents.on('did-create-window', (window, details) => {
     secureContents(window.webContents, new URL(details.url).origin)
     window.setMenu(null)
+    window.webContents.on('did-fail-load', (_event, code, _description, _url, isMainFrame) => {
+      if (!isMainFrame || code === -3) return
+      window.close()
+    })
   })
 }
 

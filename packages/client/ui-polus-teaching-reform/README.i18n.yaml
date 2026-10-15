@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write packages/client/ui-polus-teaching-reform/README.md
-README.md: a1ce01b0cdb6b876d926e804c5f63712dc7f9c03
-README.zh.md: 1cea5fdebb62c3982954ec7c4b08497eca8191bd
+README.md: 5f512a977a41211793dad4a6015897904fd64e6c
+README.zh.md: 9eaa464ebe738ce931d5564b0604ca875d918153

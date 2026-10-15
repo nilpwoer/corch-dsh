@@ -128,10 +128,7 @@ try{
     assert.equal(await manager.evaluate(()=>!!window.opener),true)
     await manager.locator('input[name=password]').fill(fixture.synthetic_password)
     await manager.getByRole('button',{name:'登录',exact:true}).click()
-    await manager.locator('#workspace').waitFor({state:'visible'})
-    assert.equal(await manager.locator('#publish-confirm').isEnabled(),true)
-    await manager.screenshot({path:join(out,'worker-confirmation.png')})
-    await manager.locator('#publish-confirm').click()
+    // Successful login resumes the existing DSH transfer without another click.
     await page.getByRole('heading',{name:'分享链接',exact:true}).waitFor()
     await manager.locator('#portal-code').waitFor()
     const published=await page.evaluate(()=>JSON.parse(localStorage.getItem('dsh.practice-expert-interviews.v2'))[0])

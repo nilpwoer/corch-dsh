@@ -15,11 +15,13 @@ const action=fn=>async event=>{
 }
 let authenticated=false
 let transfer=null
+let sessionChecked=false
 let settingsView=null
 let settingsGeneration=0
 const setSession=active=>{
   authenticated=active;el('login').hidden=active;el('workspace').hidden=!active;el('logout').hidden=!active
-  el('publish-confirm').disabled=!active||!transfer?.payload
+  sessionChecked=true
+  void publishTransferred()
 }
 const reportURL=(id,format)=>'/admin/api/reports/'+encodeURIComponent(id)+'/'+format
 const statusLabel=r=>({queued:'等待生成',running:'生成中',succeeded:'已完成',failed:'生成失败',superseded:'已被新版本替代'}[r.status]||r.status)+(r.error_code?' · '+r.error_code:'')
@@ -73,8 +75,9 @@ el('settings-form').onsubmit=action(async()=>{
 })
 el('login-form').onsubmit=action(async()=>{
   const f=new FormData(el('login-form'))
-  await api('login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:f.get('username'),password:f.get('password')})})
-  el('login-form').elements.password.value='';setSession(true);await load()
+  try{await api('login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:f.get('username'),password:f.get('password')})})}
+  catch(error){if(error.status!==401)publishFailure(error);throw error}
+  el('login-form').elements.password.value='';setSession(true);if(!transfer)await load()
 })
 el('logout').onclick=action(async()=>{
   await api('logout',{method:'POST'});setSession(false);settingsGeneration++;settingsView=null
@@ -84,7 +87,40 @@ el('pack-file').onchange=()=>{const name=el('pack-file').files[0]?.name||'';el('
 el('upload-form').onsubmit=action(async()=>{const file=el('pack-file').files[0];await api('packs/'+encodeURIComponent(el('pack-key').value),{method:'POST',headers:{'Content-Type':'application/json'},body:await file.text()});el('pack-file').value='';await load()})
 el('refresh').onclick=action(load)
 
-// Each transfer requires confirmation on the Worker's origin; credentials never cross this channel.
+// A DSH click authorizes one upload; Worker credentials stay on this origin.
+function publishProgress(phase,text){
+  if(!transfer)return
+  el('publish-status').textContent=text
+  window.opener?.postMessage({type:'teaching-publish:progress',nonce:transfer.nonce,phase},transfer.origin)
+}
+function publishFailure(error){
+  if(!transfer)return
+  const message=error.status?'Worker 发布失败：'+error.message:'无法连接 Worker，请检查网络后重试'
+  el('error').textContent=message
+  el('publish-status').textContent='发布失败，请回到 DSH 重试'
+  window.opener?.postMessage({type:'teaching-publish:error',nonce:transfer.nonce,key:transfer.key,message},transfer.origin)
+}
+async function publishTransferred(){
+  if(!transfer?.payload||transfer.sending)return
+  if(!sessionChecked){publishProgress('authorizing','正在检查登录状态…');return}
+  if(!authenticated){publishProgress('login-required','请登录管理账号，登录后将自动发布');return}
+  transfer.sending=true
+  const {key,payload,pack,origin,nonce}=transfer
+  publishProgress('uploading','正在上传题包…')
+  try{
+    const result=await api('packs/'+encodeURIComponent(key),{method:'POST',headers:{'Content-Type':'application/json'},body:payload})
+    if(result.key!==key||!/^[a-f0-9]{64}$/.test(result.hash))throw Object.assign(new Error('发布回执无效'),{status:502})
+    const url=new URL('/',location.origin);url.searchParams.set('fieldnoteId',key)
+    if(pack.invitation?.code)url.hash=new URLSearchParams({code:pack.invitation.code}).toString()
+    window.opener.postMessage({type:'teaching-publish:complete',nonce,key,hash:result.hash,url:url.href},origin)
+    window.opener=null
+    location.replace(url.href)
+  }catch(error){
+    transfer.sending=false
+    if(error.status===401){setSession(false);el('error').textContent='登录已过期，请重新登录后继续';return}
+    publishFailure(error)
+  }
+}
 const initializeTransfer=()=>{
   const fragment=new URLSearchParams(location.hash.slice(1))
   if(fragment.get('publish')!=='1')return
@@ -94,7 +130,7 @@ const initializeTransfer=()=>{
     const origin=new URL(fragment.get('origin')||'')
     const nonce=fragment.get('nonce')||''
     if(!window.opener||origin.origin!==fragment.get('origin')||!['http:','https:'].includes(origin.protocol)||!['127.0.0.1','localhost','[::1]'].includes(origin.hostname)||!/^[a-f0-9]{64}$/.test(nonce))throw new Error('发布来源无效，请从本机 DSH 重新打开')
-    transfer={origin:origin.origin,nonce,payload:null}
+    transfer={origin:origin.origin,nonce,payload:null,sending:false}
     el('publish-source').textContent='来源：'+origin.origin
     window.addEventListener('message',event=>{
       if(event.source!==window.opener||event.origin!==transfer.origin||event.data?.type!=='teaching-publish:prepare'||event.data.nonce!==transfer.nonce||transfer.payload)return
@@ -105,22 +141,12 @@ const initializeTransfer=()=>{
         if(!Array.isArray(pack.questions)||!pack.questions.length||!Number.isSafeInteger(pack.questionPackMeta?.version)||pack.questionPackMeta.version<1||key!==`${pack.publicFieldnoteId}-v${pack.questionPackMeta.version}`)throw new Error('题包内容或版本文件键无效')
         transfer={...transfer,key,payload,pack}
         el('publish-summary').textContent=`${pack.profile?.name||'实践专家'} · ${key} · v${pack.questionPackMeta.version} · ${pack.questions.length} 题`
-        el('publish-confirm').disabled=!authenticated
-      }catch(error){el('error').textContent=error.message}
+        void publishTransferred()
+      }catch(error){publishFailure(Object.assign(error,{status:400}))}
     })
-    window.opener.postMessage({type:'teaching-publish:ready',nonce},origin.origin)
+    window.opener.postMessage({type:'teaching-publish:ready',nonce,autoPublish:true},origin.origin)
   }catch(error){el('error').textContent=error.message}
 }
-el('publish-confirm').onclick=action(async()=>{
-  if(!authenticated||!transfer?.payload)throw new Error('请先登录并等待题包')
-  const {key,payload,pack,origin,nonce}=transfer
-  const result=await api('packs/'+encodeURIComponent(key),{method:'POST',headers:{'Content-Type':'application/json'},body:payload})
-  if(result.key!==key||!/^[a-f0-9]{64}$/.test(result.hash))throw new Error('发布回执无效')
-  const url=new URL('/',location.origin);url.searchParams.set('fieldnoteId',key)
-  if(pack.invitation?.code)url.hash=new URLSearchParams({code:pack.invitation.code}).toString()
-  window.opener.postMessage({type:'teaching-publish:complete',nonce,key,hash:result.hash,url:url.href},origin)
-  window.opener=null
-  location.replace(url.href)
-})
 initializeTransfer()
-try{await api('session');setSession(true);await load()}catch(error){if(error.message!=='ADMIN_SESSION_REQUIRED')el('error').textContent=error.message}
+try{await api('session');setSession(true);if(!transfer)await load()}
+catch(error){if(error.status===401)setSession(false);else{el('error').textContent=error.message;publishFailure(error)}}
