@@ -5,6 +5,9 @@ English | [中文](README.zh.md)
 Desktop startup resolves shipped plugins directly from the portable runtime; it does not create symbolic links or junctions in `data`. Administrator privileges and Windows Developer Mode are not required. Keep the existing `data` folder when replacing the program, including after a failed startup. Existing profile manifests, patches, credentials, sessions and additional plugin directories are preserved.
 
 
+Copy controls can write links and invitation codes to the clipboard from the local workbench. Web pages receive no clipboard-read permission.
+
+
 ## Use the portable client
 
 Windows 10/11 x64 is required. Extract the entire ZIP into a writable folder, then double-click **Corch DSH.exe**. Node.js, Electron, the Web interface, the expert interview plugin and the patched better-sidebar provider are included; no system installation or pnpm download occurs at startup.

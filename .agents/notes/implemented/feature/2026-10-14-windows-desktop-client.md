@@ -4,11 +4,15 @@ Status: implemented
 
 English | [中文](2026-10-14-windows-desktop-client.zh.md)
 
+
+
 ## Problem
 
 The expert interview workbench needs a distributable Windows application containing its actual plugin dependencies and a private profile. A browser shortcut depends on an independently running development server. The Python SDK executable builder ships an automation agent and excludes Windows.
 
 ## Decision
+
+Allow sanitized clipboard writes only when both the requesting frame and top-level window belong to the exact local backend origin. Deny clipboard reads and writes from Worker or external origins. This supports the workbench copy controls without exposing an Electron bridge or weakening renderer isolation.
 
 Use a minimal Electron main process over the normal built DSH CLI/Web bundles. Ship a separate official Node runtime for the backend so native addons use their supported Node ABI. The production closure declares the teaching plugin and real patched better-sidebar provider. A writable portable data directory owns the Electron profile, DSH home and working directory. It never adopts existing DSH homes or ambient provider credentials. The first loopback port is retained to preserve origin-scoped browser data; an occupied saved port fails startup.
 

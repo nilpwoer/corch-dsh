@@ -24,3 +24,9 @@ export function backendEnvironment(source, home) {
 export function sameOrigin(value, origin) {
   try { return new URL(value).origin === origin } catch { return false }
 }
+
+/** Permit text writes only from the local workbench; clipboard reads stay denied. */
+export function clipboardWriteAllowed(permission, requestingURL, topURL, localOrigin) {
+  return permission === 'clipboard-sanitized-write'
+    && sameOrigin(requestingURL, localOrigin) && sameOrigin(topURL, localOrigin)
+}

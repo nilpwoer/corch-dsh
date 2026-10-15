@@ -127,9 +127,6 @@ describe.skipIf(SIDEBAR_PACKAGE === undefined)('web e2e: Worker publication thro
       await page.getByRole('status').filter({ hasText: '已保存 Worker' }).waitFor()
       await page.getByRole('button', { name: '返回访谈', exact: true }).click()
       await page.getByRole('button', { name: '问题包', exact: true }).click()
-      await page.getByLabel('访谈目标').fill('核实合成课堂中的任务证据')
-      await page.getByLabel('初始追问范围').selectOption('per_question')
-      await page.getByLabel('初始追问次数').fill('2')
       const popup = page.waitForEvent('popup')
       await page.getByRole('button', { name: '发布并打开 SPA', exact: true }).click()
       const manager = await popup

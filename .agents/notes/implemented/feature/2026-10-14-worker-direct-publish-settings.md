@@ -16,6 +16,9 @@ Publish stable JSON bytes to the existing immutable package endpoint. Only its m
 
 Store versioned settings separately from uploaded packages. Resolve YAML business prompts through global defaults and package overrides; package policy overrides the publication's initial policy. At participant entry, persist an immutable execution snapshot containing both releases, public model/provider configuration, queue budgets and resolved policy. Credentials remain in startup configuration. Backend-only interviews freeze on first submission. Future tasks and report versions use the snapshot. Editable prompts cannot alter Go schema or citation validators.
 
+DSH keeps no publication-settings form: the question-package operation bar owns publish, JSON download and new-version actions. New package versions omit follow-up policy and require explicit Worker configuration before participant entry. Titles supply new publication goals. Persisted legacy goals and the policy bound to their original version remain available for byte-stable retries; creating a later version does not carry that legacy policy forward. SPA preview contains only code and share-link sections.
+
+
 ## Alternatives considered
 
 Embedding a backend token or administrator password in the client would grant excess authority. Allowing arbitrary browser origins with ambient management sessions would expose publication to untrusted sites. Rewriting immutable package JSON for settings would break retry identity and history. Resolving current prompts at every task would change interviews midway.

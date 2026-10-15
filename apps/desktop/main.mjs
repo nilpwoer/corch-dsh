@@ -5,7 +5,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { createWriteStream, existsSync } from 'node:fs'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { backendEnvironment, sameOrigin, workerPopupAllowed } from './policy.mjs'
+import { backendEnvironment, clipboardWriteAllowed, sameOrigin, workerPopupAllowed } from './policy.mjs'
 
 app.setName('Corch DSH')
 const source = dirname(fileURLToPath(import.meta.url))
@@ -114,8 +114,11 @@ async function start() {
   })
   localOrigin = endpoint
   await writeFile(statePath, JSON.stringify({ port: Number(new URL(endpoint).port) }, null, 2) + '\n')
-  session.defaultSession.setPermissionCheckHandler((contents, permission, origin) => permission === 'media' && sameOrigin(origin, localOrigin))
+  session.defaultSession.setPermissionCheckHandler((contents, permission, origin) =>
+    permission === 'media' && sameOrigin(origin, localOrigin)
+    || clipboardWriteAllowed(permission, origin, contents?.getURL() ?? '', localOrigin))
   session.defaultSession.setPermissionRequestHandler(async (contents, permission, callback, details) => {
+    if (clipboardWriteAllowed(permission, details.requestingUrl, contents?.getURL() ?? '', localOrigin)) return callback(true)
     if (permission !== 'media' || !sameOrigin(contents.getURL(), localOrigin) || details.mediaTypes?.some(type => type !== 'audio')) return callback(false)
     const answer = await dialog.showMessageBox(mainWindow, { type: 'question', buttons: ['拒绝', '允许麦克风'], defaultId: 0, cancelId: 0, message: '允许 Corch DSH 使用麦克风？' })
     callback(answer.response === 1)

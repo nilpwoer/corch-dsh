@@ -10,13 +10,13 @@ The profile mounts this package's [bundle patch](cordis.patch.yml) alongside an 
 
 In interview settings, save the Worker origin under **Worker 发布**. Public targets require HTTPS; HTTP is accepted only for loopback development. The address must contain no credentials, path, query or fragment. No target is inferred or silently configured.
 
-Confirm the question package, enter the interview goal and explicit initial follow-up policy, then choose **发布并打开 SPA**. The Worker opens its own management window. Sign in there with an existing account, review the exact package key, expert, version and count, and explicitly confirm the upload. DSH marks the interview published only after the matching success receipt. Closing, cancelling, failed login or failed upload leaves it available for retry. Stable publication bytes make the same-version retry idempotent; changed contents require **创建新发布版本**. That action does not regenerate questions or call a model.
+Confirm the question package, then choose **发布并打开 SPA**. The Worker opens its own management window. Sign in there with an existing account, review the exact package key, expert, version and count, and explicitly confirm the upload. DSH marks the interview published only after the matching success receipt. Closing, cancelling, failed login or failed upload leaves it available for retry. Stable publication bytes make the same-version retry idempotent; changed contents require **创建新发布版本**. That action does not regenerate questions or call a model.
 
 SPA preview contains only the invitation code and share link. The link carries the immutable package key and a code fragment. Worker removes the code from browser history, pre-fills it and waits for the participant to click enter. Anyone receiving the full link receives that invitation.
 
 ## Worker settings
 
-Management provides global business prompts and per-package overrides for both follow-up and report stages, plus each package's follow-up scope and count. Inheritance and immutable execution semantics are described in the [Worker reference](../../../worker/README.md#management-settings-and-interview-freezing). Same-version publication never replaces those separate Worker settings. A new version starts with its own initial policy and inherits the current global business prompts.
+Management provides global business prompts and per-package overrides for both follow-up and report stages, plus each package's follow-up scope and count. Inheritance and immutable execution semantics are described in the [Worker reference](../../../worker/README.md#management-settings-and-interview-freezing). Same-version publication never replaces those separate Worker settings. New packages and versions omit an initial follow-up policy: configure the scope and count in Worker before participant entry. The interview title supplies the publication goal. Existing saved goals and same-version legacy policies remain stable for retry compatibility. JSON download and new-version actions belong to the question-package operation bar; DSH has no publication-settings form.
 
 ## Model Experience
 

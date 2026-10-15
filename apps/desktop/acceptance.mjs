@@ -74,7 +74,7 @@ try{
   await page.getByRole('heading',{name:'新建实践专家访谈',exact:true}).waitFor()
   const sessions=await rpc('session.list')
   assert.equal(sessions.items.length,1)
-  const sessionId=sessions.items[0].id
+  const sessionId=sessions.items[0].sessionId
   const plugin=await page.request.get(new URL('/plugins/@polus-ai/dsh-client-ui-teaching-reform/client.js',page.url()).href)
   assert.equal(plugin.status(),200)
   await page.screenshot({path:join(out,'expert-workbench.png')})
@@ -118,9 +118,6 @@ try{
     await page.getByRole('status').filter({hasText:'已保存 Worker'}).waitFor()
     await page.getByRole('button',{name:'返回访谈',exact:true}).click()
     await page.getByRole('button',{name:'问题包',exact:true}).click()
-    await page.getByLabel('访谈目标',{exact:true}).fill('核实合成课堂中的任务证据')
-    await page.getByLabel('初始追问范围').selectOption('per_question')
-    await page.getByLabel('初始追问次数').fill('2')
     const confirm=page.getByRole('button',{name:'确认问题并生成 SPA',exact:true})
     if(await confirm.count())await confirm.click()
     const [manager]=await Promise.all([

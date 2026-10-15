@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { backendEnvironment, sameOrigin, workerPopupAllowed } from './policy.mjs'
+import { backendEnvironment, clipboardWriteAllowed, sameOrigin, workerPopupAllowed } from './policy.mjs'
 const origin = 'http://127.0.0.1:43210'
 const nonce = 'a'.repeat(64)
 const popup = `https://114.132.201.209/admin/#${new URLSearchParams({publish:'1',origin,nonce})}`
@@ -16,4 +16,12 @@ test('backend never inherits provider credentials or source-launch injection', (
 test('navigation cannot leave its owning HTTP origin', () => {
   assert.equal(sameOrigin(origin+'/settings',origin),true)
   for(const url of ['file:///C:/private','https://example.com',origin.replace('43210','43211'),'invalid']) assert.equal(sameOrigin(url,origin),false)
+})
+
+test('clipboard text writes belong only to the local workbench and reads remain denied', () => {
+  assert.equal(clipboardWriteAllowed('clipboard-sanitized-write',origin+'/interview',origin,origin),true)
+  for(const permission of ['clipboard-read','deprecated-sync-clipboard-read','unknown'])assert.equal(clipboardWriteAllowed(permission,origin,origin,origin),false)
+  assert.equal(clipboardWriteAllowed('clipboard-sanitized-write','https://worker.test',origin,origin),false)
+  assert.equal(clipboardWriteAllowed('clipboard-sanitized-write',origin,'https://worker.test',origin),false)
+  assert.equal(clipboardWriteAllowed('clipboard-sanitized-write','',origin,origin),false)
 })

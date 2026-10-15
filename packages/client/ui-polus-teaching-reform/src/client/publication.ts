@@ -1,9 +1,9 @@
-/** Explicit package policy. A missing value must never silently select a scope or limit. */
+/** Legacy package policy; new publications leave policy selection to Worker management. */
 export type InterviewPolicy = { scope: 'per_question' | 'interview'; maxFollowups: number }
 
 /**
  * Create an uploadable publication while retaining optional hints and sources.
- * @param input - Host data and explicitly selected follow-up policy.
+ * @param input - Host data, with an optional legacy follow-up policy for stable retries.
  * @param publishedAt - Publication timestamp supplied by the host.
  * @returns the versioned upload payload, excluding deleted questions and deletion metadata.
  */
@@ -19,8 +19,8 @@ export function createPublication<T extends { deleted?: boolean; deletedAt?: str
 }, publishedAt: string) {
   if (!input.goal.trim()) throw new Error('请填写本次访谈目标。')
   const policy = input.interviewPolicy
-  if (!policy || !['per_question', 'interview'].includes(policy.scope) || !Number.isSafeInteger(policy.maxFollowups) || policy.maxFollowups < 0) {
-    throw new Error('请明确选择追问计数范围与次数，0 表示不追加追问。')
+  if (policy && (!['per_question', 'interview'].includes(policy.scope) || !Number.isSafeInteger(policy.maxFollowups) || policy.maxFollowups < 0)) {
+    throw new Error('保存的旧版追问策略无效，请检查原题包。')
   }
   if (!input.questionPackMeta || !Number.isSafeInteger(input.questionPackMeta.version) || input.questionPackMeta.version < 1) throw new Error('问题包尚未生成有效版本。')
   const questions = input.questions.filter(question => !question.deleted).map((question) => {

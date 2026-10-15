@@ -4,11 +4,14 @@ Status: implemented
 
 [English](2026-10-14-windows-desktop-client.md) | 中文
 
+
 ## Problem
 
 专家访谈工作台需要可分发的 Windows 应用，包含真实插件依赖并使用独立配置。浏览器快捷方式依赖另行启动的开发服务器；Python SDK 可执行文件构建器提供自动化代理，且不支持 Windows。
 
 ## Decision
+
+仅当请求帧和顶层窗口都属于精确的本地后端 origin 时，允许剪贴板文本写入。拒绝剪贴板读取，以及 Worker 或外部来源的写入。工作台因此可以使用复制按钮，无需暴露 Electron 桥接或放宽渲染器隔离。
 
 以最小 Electron 主进程承载正常构建的 DSH CLI/Web bundle。后端使用随包携带的官方 Node 运行时，确保原生扩展使用受支持的 Node ABI。生产闭包显式声明访谈插件和已打补丁的真实 better-sidebar 提供器。可写便携数据目录独立保存 Electron 配置、DSH_HOME 和工作目录，不接管已有 DSH_HOME，也不继承环境中的模型凭据。首次回环端口会保留，以维持按来源隔离的浏览器数据；已保存端口被占用时启动失败。
 

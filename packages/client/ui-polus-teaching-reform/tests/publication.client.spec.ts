@@ -18,16 +18,18 @@ test('export retains policy, public alias, hints and sources without deleted que
   const source = question.sourceRefs?.[0]
   assert.ok(source)
   assert.equal(source.title, '问题设计来源')
-  assert.equal(p.interviewPolicy.maxFollowups, 0)
+  assert.equal(p.interviewPolicy?.maxFollowups, 0)
   assert.equal(p.publicFieldnoteId, 'FN-public')
   assert.equal(p.questionPackMeta.version, 2)
 })
-test('export requires explicit policy and preserves whole-interview counting when selected', () => {
-  assert.throws(() => createPublication({ ...input, interviewPolicy: undefined }, 'now'))
+test('new exports defer policy to Worker and legacy exports retain their counting policy', () => {
+  const managed = createPublication({ ...input, interviewPolicy: undefined }, 'now')
+  assert.equal(managed.interviewPolicy, undefined)
+  assert.ok(!JSON.stringify(managed).includes('interviewPolicy'))
   assert.throws(() => createPublication({ ...input, goal: '' }, 'now'))
   assert.throws(() => createPublication({ ...input, interviewPolicy: { scope: 'interview', maxFollowups: -1 } }, 'now'))
   const p = createPublication({ ...input, interviewPolicy: { scope: 'interview', maxFollowups: 3 } }, 'now')
-  assert.equal(p.interviewPolicy.scope, 'interview')
+  assert.equal(p.interviewPolicy?.scope, 'interview')
 })
 
 test('export rejects invalid form values and missing metadata before producing an upload', () => {
