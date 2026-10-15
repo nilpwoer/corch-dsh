@@ -3,7 +3,14 @@ import {test} from 'node:test'
 import {mkdtemp,mkdir,writeFile,rm,readFile} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import {join,resolve,sep} from 'node:path'
-import {materializeDesktopWorkspaces,sanitizeDesktopDebugLabels,verifyDesktopClosure} from './desktop-closure.mjs'
+import {desktopDependencyFile,materializeDesktopWorkspaces,sanitizeDesktopDebugLabels,verifyDesktopClosure} from './desktop-closure.mjs'
+
+test('portable dependencies exclude compiler state and maps while retaining runtime and declarations',()=>{
+  assert.equal(desktopDependencyFile(join('runtime','lib','tsconfig.tsbuildinfo')),false)
+  assert.equal(desktopDependencyFile(join('runtime','lib','client.js.map')),false)
+  assert.equal(desktopDependencyFile(join('runtime','lib','client.js')),true)
+  assert.equal(desktopDependencyFile(join('runtime','lib','types','index.d.ts')),true)
+})
 
 test('portable debug cleanup preserves code and license comments',async()=>{
   const root=await mkdtemp(join(tmpdir(),'corch-closure-'))

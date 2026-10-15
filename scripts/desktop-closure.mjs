@@ -13,7 +13,8 @@ const INSTALL_METADATA = new Set(['.bin', '.pnpm', '.modules.yaml', '.pnpm-works
  * @returns Whether the file belongs in the portable runtime.
  */
 export function desktopDependencyFile(path) {
-  return !path.endsWith('.map') && !path.split(sep).some(segment => INSTALL_METADATA.has(segment))
+  return !path.endsWith('.map') && !path.endsWith('.tsbuildinfo')
+    && !path.split(sep).some(segment => INSTALL_METADATA.has(segment))
 }
 
 /**
