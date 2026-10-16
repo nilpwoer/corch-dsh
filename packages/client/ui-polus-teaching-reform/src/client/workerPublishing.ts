@@ -1,4 +1,4 @@
-/** Existing Worker admin sessions authorize publication on the Worker's own origin. */
+/** Native desktop publication keeps upload-only API Keys outside browser persistence. */
 const WORKER_ORIGIN_KEY = 'dsh.practice-expert-worker-origin.v1'
 
 /** Validated Worker receipt retained with the last successfully published package version. */
@@ -71,89 +71,74 @@ export function workerShareURL(origin: string, key: string, code: string): strin
   return url.href
 }
 
-/** Transfer one prepared publication to an authenticated Worker popup after the DSH click.
- * @param target - Explicit Worker origin.
- * @param key - Immutable version-specific key.
- * @param payload - Stable JSON bytes reused for retries.
- * @param signal - Operation lifetime; abort closes its owned popup and removes listeners.
- * @param onProgress - Visible login/upload progress; no credentials enter this channel.
- * @returns the acknowledged key/hash and server-owned participant invitation/link; admin credentials never enter this page.
+type NativeResult<T> = { ok: true; value: T } | { ok: false; message: string }
+type PublisherStatus = { configured: boolean; origin?: string; prefix?: string }
+declare global {
+  interface Window {
+    corchPublication?: {
+      configure(input: { origin: string; token: string }): Promise<NativeResult<PublisherStatus>>
+      status(): Promise<NativeResult<PublisherStatus>>
+      publish(input: { id: string; origin: string; key: string; payload: string }): Promise<NativeResult<unknown>>
+      cancel(id: string): void
+    }
+  }
+}
+
+/** Return the native broker; browser-only clients cannot persist a publishing credential.
+ * @returns the restricted native publication interface.
  */
-export function publishToWorker(
+function nativePublisher(): NonNullable<Window['corchPublication']> {
+  if (!window.corchPublication) throw new Error('请使用新版 Windows 桌面客户端配置发布 API Key。')
+  return window.corchPublication
+}
+
+/** Read non-secret native authorization metadata.
+ * @returns whether a publisher Key is configured, its target and display prefix.
+ */
+export async function readPublisherStatus(): Promise<PublisherStatus> {
+  const result = await nativePublisher().status()
+  if (!result.ok) throw new Error(result.message)
+  return result.value
+}
+
+/** Encrypt a Key through the native process, without persisting it in browser storage.
+ * @param origin - Explicit Worker origin.
+ * @param token - Transient input, cleared by the caller after saving.
+ * @returns only non-secret credential metadata.
+ */
+export async function savePublisherKey(origin: string, token: string): Promise<PublisherStatus> {
+  const result = await nativePublisher().configure({ origin: normalizeWorkerOrigin(origin), token: token.trim() })
+  if (!result.ok) throw new Error(result.message)
+  return result.value
+}
+
+/** Upload once through the native process and open the returned participant page.
+ * @param target - Explicit Worker origin.
+ * @param key - Immutable publication key.
+ * @param payload - Stable JSON bytes reused for retries.
+ * @param signal - Operation lifetime.
+ * @param onProgress - Visible upload progress.
+ * @returns the validated matching receipt; no admin session or interactive login is used.
+ */
+export async function publishToWorker(
   target: string, key: string, payload: string, signal?: AbortSignal, onProgress?: (message: string) => void,
 ): Promise<Omit<WorkerPublicationReceipt, 'version'>> {
   const origin = normalizeWorkerOrigin(target)
   if (!/^[a-zA-Z0-9_-]{1,100}$/.test(key)) throw new Error('题包文件键无效，请生成有效的问题包版本。')
-  if (!['127.0.0.1', 'localhost', '[::1]'].includes(window.location.hostname)) throw new Error('请从本机 DSH 发起受控发布。')
-  if (signal?.aborted) return Promise.reject(new Error('发布已取消'))
-  const nonce = [...crypto.getRandomValues(new Uint8Array(32))].map(n => n.toString(16).padStart(2, '0')).join('')
-  const url = new URL('/admin/', origin)
-  url.hash = new URLSearchParams({ publish: '1', origin: window.location.origin, nonce }).toString()
-  const popup = window.open(url.href, '_blank', 'popup,width=1000,height=780')
-  if (popup === null) return Promise.reject(new Error('浏览器阻止了发布窗口，请允许弹出窗口后重试。'))
-  return new Promise((resolve, reject) => {
-    let settled = false
-    let ready = false
-    const finish = (result: Omit<WorkerPublicationReceipt, 'version'> | Error): void => {
-      if (settled) return
-      settled = true
-      window.removeEventListener('message', receive)
-      signal?.removeEventListener('abort', abort)
-      window.clearInterval(timer)
-      if (result instanceof Error) { popup.close(); reject(result) } else resolve(result)
-    }
-    const abort = (): void => { finish(new Error('发布已取消')) }
-    const receive = (event: MessageEvent<unknown>): void => {
-      if (event.origin !== origin || event.source !== popup || typeof event.data !== 'object' || event.data === null) return
-      const data = event.data as {
-        type?: unknown
-        nonce?: unknown
-        key?: unknown
-        hash?: unknown
-        autoPublish?: unknown
-        phase?: unknown
-        message?: unknown
-        accessAuthority?: unknown
-        accessStatus?: unknown
-        code?: unknown
-        url?: unknown
-      }
-      if (data.nonce !== nonce) return
-      if (data.type === 'teaching-publish:ready') {
-        if (data.autoPublish !== true) { finish(new Error('Worker 版本仍需额外确认，请更新 Worker 后再发布')); return }
-        if (data.accessAuthority !== 'worker') { finish(new Error('Worker 不支持服务端口令，请更新 Worker 后再发布')); return }
-        ready = true
-        popup.postMessage({ type: 'teaching-publish:prepare', nonce, key, payload, protocol: 2 }, origin)
-      }
-      if (data.type === 'teaching-publish:progress') {
-        if (data.phase === 'authorizing') onProgress?.('正在检查 Worker 登录状态…')
-        if (data.phase === 'login-required') onProgress?.('请在 Worker 窗口登录，登录后将自动发布')
-        if (data.phase === 'uploading') onProgress?.('正在上传题包到 Worker…')
-        if (data.phase === 'configuration-required') onProgress?.('题包已上传，请在 Worker 中完成访谈设置')
-      }
-      if (data.type === 'teaching-publish:error' && (data.key === undefined || data.key === key)) {
-        finish(new Error(typeof data.message === 'string' ? data.message.slice(0, 400) : 'Worker 发布失败，请重试'))
-        return
-      }
-      if (data.type === 'teaching-publish:complete') {
-        if (data.key !== key || typeof data.hash !== 'string' || !/^[a-f0-9]{64}$/.test(data.hash)) { finish(new Error('Worker 返回了无效发布回执')); return }
-        const receipt = readWorkerReceipt({ ...data, version: 1 })
-        const code = typeof data.code === 'string' ? data.code : undefined
-        if (!receipt || new URL(receipt.url).origin !== origin || (data.accessStatus !== 'active' && data.accessStatus !== 'not_required') || (data.accessStatus === 'active' && !code) || (data.accessStatus === 'not_required' && (code || new URL(receipt.url).hash))) {
-          finish(new Error('Worker 返回了无效访问口令或分享地址')); return
-        }
-        finish({ key, hash: data.hash, url: receipt.url, ...(code === undefined ? {} : { code }), accessStatus: data.accessStatus })
-      }
-    }
-    const handshakeDeadline = Date.now() + 15000
-    const deadline = Date.now() + 300000
-    const timer = window.setInterval(() => {
-      if (popup.closed) finish(new Error('发布窗口已关闭或 Worker 无法加载，请检查地址、网络和证书后重试'))
-      else if (!ready && Date.now() > handshakeDeadline) finish(new Error('Worker 未响应发布请求，请检查地址、网络或更新 Worker 后重试'))
-      else if (Date.now() > deadline) finish(new Error('发布等待超时，请重试'))
-    }, 250)
-    window.addEventListener('message', receive)
-    signal?.addEventListener('abort', abort, { once: true })
-    if (signal?.aborted) abort()
-  })
+  if (signal?.aborted) throw new Error('发布已取消')
+  const broker = nativePublisher()
+  const id = [...crypto.getRandomValues(new Uint8Array(16))].map(n => n.toString(16).padStart(2, '0')).join('')
+  const abort = (): void => { broker.cancel(id) }
+  signal?.addEventListener('abort', abort, { once: true })
+  onProgress?.('正在上传题包到 Worker…')
+  try {
+    const result = await broker.publish({ id, origin, key, payload })
+    if (signal?.aborted) throw new Error('发布已取消')
+    if (!result.ok) throw new Error(result.message)
+    const receipt = readWorkerReceipt({ ...(result.value as object), version: 1 })
+    if (!receipt || receipt.key !== key || new URL(receipt.url).origin !== origin
+      || !receipt.accessStatus || receipt.accessStatus === 'active' && !receipt.code) throw new Error('Worker 返回了无效发布回执。')
+    const { version: _version, ...value } = receipt
+    return value
+  } finally { signal?.removeEventListener('abort', abort) }
 }

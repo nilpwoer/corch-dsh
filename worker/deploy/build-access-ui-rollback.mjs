@@ -1,4 +1,4 @@
-/** Build a schema4-compatible backend with explicitly selected earlier management/SPA assets. */
+/** Build a schema5-compatible backend with explicitly selected earlier management/SPA assets. */
 import {execFileSync} from 'node:child_process'
 import {mkdirSync,mkdtempSync,readFileSync,writeFileSync,existsSync} from 'node:fs'
 import {resolve,join} from 'node:path'
@@ -24,6 +24,6 @@ execFileSync(values.go??'go',['build','-trimpath','-buildvcs=false','-overlay='+
 const worker=execFileSync('git',['show',baseline+':apps/web/public/practice-expert-worker.js'],{cwd:root})
 writeFileSync(join(out,'practice-expert-worker.js'),worker)
 const hash=p=>createHash('sha256').update(readFileSync(p)).digest('hex')
-const metadata={purpose:'UI-only emergency rollback; retains schema4 access authority and all new data',backend_commit:execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim(),backend_source_dirty:execFileSync('git',['status','--porcelain'],{cwd:root,encoding:'utf8'}).trim()!=='',ui_baseline_commit:baseline,schema:4,database_restore_required:false,binary_sha256:hash(join(out,'teaching-worker')),worker_script_sha256:hash(join(out,'practice-expert-worker.js')),limitations:['Existing participant links and reports remain available.','New client publication rejects the earlier management protocol; old clients retain legacy publication.','This does not undo backend access changes or repair arbitrary backend defects; those need a schema4-compatible fix.']}
+const metadata={purpose:'UI-only emergency rollback; retains schema5 access authority and all new data',backend_commit:execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim(),backend_source_dirty:execFileSync('git',['status','--porcelain'],{cwd:root,encoding:'utf8'}).trim()!=='',ui_baseline_commit:baseline,schema:5,database_restore_required:false,binary_sha256:hash(join(out,'teaching-worker')),worker_script_sha256:hash(join(out,'practice-expert-worker.js')),limitations:['Existing participant links and reports remain available.','Native API Key publication stays available. This earlier UI cannot create or revoke publisher Keys; restore the current UI for credential administration.','This does not undo backend access changes or repair arbitrary backend defects; those need a schema5-compatible fix.']}
 writeFileSync(join(out,'manifest.json'),JSON.stringify(metadata,null,2)+'\n')
 console.log(JSON.stringify(metadata))

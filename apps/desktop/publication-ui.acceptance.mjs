@@ -1,4 +1,4 @@
-/** Real packaged UI + real Worker routes/assets; SQL/account storage is an explicit test fixture. */
+/** Legacy 0.1.4 compatibility only; current native Key flow uses publisher-ui.acceptance.mjs. Real packaged UI + real Worker routes/assets; SQL/account storage is an explicit test fixture. */
 import assert from 'node:assert/strict'
 import {createRequire} from 'node:module'
 import {mkdir,readFile,writeFile} from 'node:fs/promises'

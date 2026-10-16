@@ -35,6 +35,9 @@ var runtimeSchema string
 //go:embed access-schema.sql
 var accessSchema string
 
+//go:embed publisher-schema.sql
+var publisherSchema string
+
 type Store struct {
 	DB     *gorm.DB
 	Config config.Config
@@ -224,24 +227,27 @@ func (s *Store) migrate(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	if len(versions) > 1 || len(versions) == 1 && versions[0] != 1 && versions[0] != 2 && versions[0] != 3 && versions[0] != 4 {
+	if len(versions) > 1 || len(versions) == 1 && versions[0] != 1 && versions[0] != 2 && versions[0] != 3 && versions[0] != 4 && versions[0] != 5 {
 		return fmt.Errorf("不支持的 Worker 数据库结构版本")
 	}
-	if len(versions) == 1 && versions[0] == 4 {
+	if len(versions) == 1 && versions[0] == 5 {
 		return nil
 	}
 	if !s.Config.Database.AutoMigrate {
 		return fmt.Errorf("数据库尚未初始化")
 	}
-	ddl := accessSchema
+	ddl := publisherSchema
+	if len(versions) == 1 && versions[0] == 3 {
+		ddl = accessSchema + "\n" + publisherSchema
+	}
 	if len(versions) == 1 && versions[0] == 2 {
-		ddl = runtimeSchema + "\n" + accessSchema
+		ddl = runtimeSchema + "\n" + accessSchema + "\n" + publisherSchema
 	}
 	if len(versions) == 1 && versions[0] == 1 {
-		ddl = portalSchema + "\n" + runtimeSchema + "\n" + accessSchema
+		ddl = portalSchema + "\n" + runtimeSchema + "\n" + accessSchema + "\n" + publisherSchema
 	}
 	if len(versions) == 0 {
-		ddl = schema + "\n" + portalSchema + "\n" + runtimeSchema + "\n" + accessSchema
+		ddl = schema + "\n" + portalSchema + "\n" + runtimeSchema + "\n" + accessSchema + "\n" + publisherSchema
 	}
 	for _, statement := range strings.Split(ddl, ";") {
 		if strings.TrimSpace(statement) != "" {
@@ -251,9 +257,9 @@ func (s *Store) migrate(ctx context.Context, name string) error {
 		}
 	}
 	if len(versions) == 1 {
-		_, err = conn.ExecContext(ctx, "UPDATE tw_schema SET version=4")
+		_, err = conn.ExecContext(ctx, "UPDATE tw_schema SET version=5")
 	} else {
-		_, err = conn.ExecContext(ctx, "INSERT INTO tw_schema(version) VALUES (4)")
+		_, err = conn.ExecContext(ctx, "INSERT INTO tw_schema(version) VALUES (5)")
 	}
 	return err
 }

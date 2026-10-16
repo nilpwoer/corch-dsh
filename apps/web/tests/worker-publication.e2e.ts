@@ -13,10 +13,6 @@ const PLUGIN = '@polus-ai/dsh-client-ui-teaching-reform'
 const RECORD_KEY = 'dsh.practice-expert-interviews.v2'
 const ARTIFACTS = fileURLToPath(new URL('../../../.artifacts/worker-publication/', import.meta.url))
 const SIDEBAR_PACKAGE = process.env.DSH_WORKER_SIDEBAR_PACKAGE
-type SavedPublication = {
-  record: { status: string }
-  publication: { worker: { key: string; hash: string; url: string; version: number } }
-}
 
 describe.skipIf(SIDEBAR_PACKAGE === undefined)('web e2e: Worker publication through the real interview Loader', () => {
   let scaffold: WebScaffold
@@ -108,82 +104,18 @@ describe.skipIf(SIDEBAR_PACKAGE === undefined)('web e2e: Worker publication thro
     }
   }, 90_000)
 
-  it.skipIf(process.env.DSH_WORKER_PUBLISH_FIXTURE === undefined)('publishes from the real workbench and continues after Worker login without another confirmation', async () => {
-    try {
-      const fixture = JSON.parse(await readFile(process.env.DSH_WORKER_PUBLISH_FIXTURE!, 'utf8')) as { origin: string; synthetic_password: string }
-      const worker = new URL(fixture.origin)
-      expect(worker.protocol).toBe('http:')
-      expect(worker.hostname).toBe('127.0.0.1')
-      const requests: { url: string; method: string }[] = []
-      page.context().on('request', request => requests.push({ url: request.url(), method: request.method() }))
-      await page.context().route('**/*', (route) => {
-        const origin = new URL(route.request().url()).origin
-        return origin === scaffold.baseUrl || origin === worker.origin ? route.continue() : route.abort()
-      })
-      await page.getByRole('button', { name: '访谈设置', exact: true }).click()
-      await page.getByRole('button', { name: 'Worker 发布', exact: true }).click()
-      await page.getByPlaceholder('https://worker.example.com').fill(worker.origin)
-      await page.getByRole('button', { name: '保存地址', exact: true }).click()
-      await page.getByRole('status').filter({ hasText: '已保存 Worker' }).waitFor()
-      await page.getByRole('button', { name: '返回访谈', exact: true }).click()
-      await page.getByRole('button', { name: '问题包', exact: true }).click()
-      const popup = page.waitForEvent('popup')
-      await page.getByRole('button', { name: '发布并打开 SPA', exact: true }).click()
-      const manager = await popup
-      await manager.locator('#publish-summary').filter({ hasText: 'FN-loader-publish-v1' }).waitFor()
-      expect(await page.evaluate((key) => {
-        const rows = JSON.parse(localStorage.getItem(key)!) as { publication: { worker?: unknown } }[]
-        return rows[0]!.publication.worker
-      }, RECORD_KEY)).toBeUndefined()
-      const workerConfirmationRequired = await manager.locator('#publish-confirm').count() !== 0
-      expect(workerConfirmationRequired).toBe(false)
-      await manager.locator('input[name=password]').fill(fixture.synthetic_password)
-      await manager.getByRole('button', { name: '登录', exact: true }).click()
-      // Successful login resumes the existing DSH transfer without another click.
-      await page.getByRole('heading', { name: '分享链接', exact: true }).waitFor()
-      await manager.locator('#portal-code').waitFor()
-      const saved = await page.evaluate((key) => {
-        const rows = JSON.parse(localStorage.getItem(key)!) as SavedPublication[]
-        return rows[0]!
-      }, RECORD_KEY)
-      const receipt = saved.publication.worker
-      expect(receipt.key).toBe('FN-loader-publish-v1')
-      expect(receipt.hash).toMatch(/^[a-f0-9]{64}$/)
-      expect(new URL(receipt.url).origin).toBe(worker.origin)
-      expect(new URL(receipt.url).searchParams.get('fieldnoteId')).toBe(receipt.key)
-      expect(new URL(receipt.url).searchParams.has('code')).toBe(false)
-      expect(new URLSearchParams(new URL(receipt.url).hash.slice(1)).get('code')).toBe('000000')
-      expect(await page.getByLabel('Worker 访谈地址', { exact: true }).inputValue()).toBe(receipt.url)
-      expect(new URL(manager.url()).hash).toBe('')
-      const portalEntries = () => requests.filter(request => request.method === 'POST' && request.url === worker.origin + '/portal/api/session').length
-      expect(portalEntries()).toBe(0)
-      const transcript = {
-        actual_loader: true,
-        worker_confirmation_required: workerConfirmationRequired,
-        actual_host_session: hostSessions().list().length === 1,
-        plugin_http_200: pluginResponses.includes(200),
-        share_sections: await page.getByRole('heading', { name: '分享链接', exact: true }).locator('..').locator('..').getByRole('heading', { level: 3 }).allTextContents(),
-        published_status: saved.record.status,
-        package_key: receipt.key,
-        prefilled_invitation: await manager.locator('#portal-code').inputValue(),
-        automatic_entry: portalEntries() !== 0,
-        model_requests: modelRequests,
-      }
-      const expected = JSON.parse(await readFile(new URL('./snapshots/worker-publication/share.expected.json', import.meta.url), 'utf8')) as unknown
-      expect(transcript).toEqual(expected)
-      await page.screenshot({ path: join(ARTIFACTS, 'loader-share.png'), fullPage: true })
-      await manager.screenshot({ path: join(ARTIFACTS, 'worker-code-prefilled.png'), fullPage: true })
-      await manager.locator('#portal-start button').click()
-      await manager.locator('#answer').waitFor()
-      expect(portalEntries()).toBe(1)
-      expect(modelRequests).toBe(0)
-      expect(pageErrors).toEqual([])
-      expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain(fixture.synthetic_password)
-      await writeFile(join(ARTIFACTS, 'full-chain-verification.json'), JSON.stringify({ ...transcript, matching_success_receipt: true, participant_entry_clicked: true, page_errors: pageErrors, production_changed: false, existing_3082_changed: false }, null, 2) + '\n')
-    } catch (error) {
-      await saveFailureShot(page, 'worker-publication-full-chain')
-      await writeFile(join(ARTIFACTS, 'full-chain-failure-body.txt'), await page.locator('body').innerText())
-      throw error
-    }
-  }, 90_000)
+  it('browser-only clients give a settings shortcut without asking for Worker login', async () => {
+    await page.getByRole('button',{ name:'访谈设置',exact:true }).click()
+    await page.getByRole('button',{ name:'Worker 发布',exact:true }).click()
+    await page.getByPlaceholder('https://worker.example.com').fill('https://worker.example.com')
+    await page.getByRole('button',{ name:'保存地址',exact:true }).click()
+    await page.getByRole('button',{ name:'返回访谈',exact:true }).click()
+    await page.getByRole('button',{ name:'问题包',exact:true }).click()
+    const popups:Page[]=[];page.on('popup',p=>popups.push(p))
+    await page.getByRole('button',{ name:'发布并打开 SPA',exact:true }).click()
+    await page.getByRole('alert').filter({ hasText:'Windows 桌面客户端' }).waitFor()
+    expect(await page.getByRole('button',{ name:'配置发布授权',exact:true }).count()).toBe(1)
+    expect(popups).toEqual([])
+    expect(modelRequests).toBe(0)
+  })
 })

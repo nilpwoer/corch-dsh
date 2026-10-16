@@ -15,6 +15,7 @@ import (
 	"github.com/fanzy531/corch-dsh/worker/internal/domain"
 	"github.com/fanzy531/corch-dsh/worker/internal/packaccess"
 	"github.com/fanzy531/corch-dsh/worker/internal/published"
+	"github.com/fanzy531/corch-dsh/worker/internal/publisherauth"
 	"github.com/fanzy531/corch-dsh/worker/internal/runtimecfg"
 	"github.com/fanzy531/corch-dsh/worker/internal/store"
 )
@@ -29,6 +30,10 @@ var managementScript []byte
 var managementStyle []byte
 
 type managementBackend interface {
+	CreatePublisherKey(context.Context, string, *time.Time) (publisherauth.Key, string, error)
+	ListPublisherKeys(context.Context) ([]publisherauth.Key, error)
+	RevokePublisherKey(context.Context, string) error
+	AuthenticatePublisher(context.Context, string) error
 	AuthenticateAccount(context.Context, string, string) error
 	NewAdminSession(context.Context, string) (string, error)
 	AdminIdentity(context.Context, string) (string, error)
@@ -64,6 +69,7 @@ func mountManagement(mux *http.ServeMux, c config.Portal, backend managementBack
 	}
 	protect := func(next http.HandlerFunc, requireSession bool) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Cache-Control", "no-store")
 			if r.Host != u.Host || r.Header.Get("Sec-Fetch-Site") == "cross-site" || (r.Method != "GET" && r.Method != "HEAD" && r.Header.Get("Origin") != c.Origin) {
 				failure(w, domain.Fail("SAME_ORIGIN_REQUIRED", 403))
 				return
@@ -143,6 +149,42 @@ func mountManagement(mux *http.ServeMux, c config.Portal, backend managementBack
 			return
 		}
 		respond(w, 200, map[string]string{"username": username})
+	}, true))
+	mux.HandleFunc("GET /admin/api/publisher-keys", protect(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		keys, err := backend.ListPublisherKeys(r.Context())
+		if err != nil {
+			failure(w, err)
+			return
+		}
+		respond(w, 200, map[string]any{"keys": keys})
+	}, true))
+	mux.HandleFunc("POST /admin/api/publisher-keys", protect(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		var input struct {
+			Name      string     `json:"name"`
+			ExpiresAt *time.Time `json:"expires_at"`
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 4096)
+		raw, err := io.ReadAll(r.Body)
+		if err != nil || r.Header.Get("Content-Type") != "application/json" || domain.Decode(raw, &input) != nil {
+			failure(w, domain.Fail("INVALID_PUBLISHER_KEY", 400))
+			return
+		}
+		key, token, err := backend.CreatePublisherKey(r.Context(), input.Name, input.ExpiresAt)
+		if err != nil {
+			failure(w, err)
+			return
+		}
+		respond(w, 201, map[string]any{"key": key, "token": token})
+	}, true))
+	mux.HandleFunc("DELETE /admin/api/publisher-keys/{id}", protect(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		if err := backend.RevokePublisherKey(r.Context(), r.PathValue("id")); err != nil {
+			failure(w, err)
+			return
+		}
+		respond(w, 200, map[string]bool{"revoked": true})
 	}, true))
 	mux.HandleFunc("POST /admin/api/logout", protect(func(w http.ResponseWriter, r *http.Request) {
 		if err := backend.LogoutAdmin(r.Context(), token(r)); err != nil {
@@ -286,7 +328,7 @@ func mountManagement(mux *http.ServeMux, c config.Portal, backend managementBack
 	}
 	mux.HandleFunc("GET /admin/api/packs/{key}/access", accessHandler(false))
 	mux.HandleFunc("POST /admin/api/packs/{key}/access", accessHandler(true))
-	mux.HandleFunc("POST /admin/api/packs/{key}", protect(func(w http.ResponseWriter, r *http.Request) {
+	publishPack := func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Content-Type") != "application/json" {
 			failure(w, domain.Fail("JSON_REQUIRED", 415))
 			return
@@ -322,7 +364,9 @@ func mountManagement(mux *http.ServeMux, c config.Portal, backend managementBack
 			}
 			respond(w, 201, map[string]any{"key": entry.Key, "hash": entry.Hash, "access": access, "url": share.String()})
 		})
-	}, true))
+	}
+	mux.HandleFunc("POST /admin/api/packs/{key}", protect(publishPack, true))
+	mux.HandleFunc("POST /publish/api/packs/{key}", publisherAuthorization(c, backend, publishPack))
 	mux.HandleFunc("DELETE /admin/api/packs/{key}", protect(func(w http.ResponseWriter, r *http.Request) {
 		withDirectory(w, r, func(d *published.Directory) {
 			if !published.ValidKey(r.PathValue("key")) {

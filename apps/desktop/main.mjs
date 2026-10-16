@@ -1,11 +1,13 @@
-/** Windows portable desktop. Renderers have no Node or preload privileges. */
-import { app, BrowserWindow, dialog, Menu, session } from 'electron'
+/** Windows portable desktop. A restricted preload exposes native publication only to the local workbench. */
+import { app, BrowserWindow, dialog, Menu, session, ipcMain, safeStorage } from 'electron'
 import { spawn, execFile } from 'node:child_process'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { createWriteStream, existsSync } from 'node:fs'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { backendEnvironment, clipboardWriteAllowed, sameOrigin, workerPopupAllowed } from './policy.mjs'
+import { createPublisher } from './publisher.mjs'
+import { createPublisherVault } from './publisher-vault.mjs'
 
 app.setName('Corch DSH')
 const source = dirname(fileURLToPath(import.meta.url))
@@ -128,7 +130,28 @@ async function start() {
     callback(answer.response === 1)
   })
   session.defaultSession.on('will-download', (_event, item) => item.setSaveDialogOptions({ title: '保存文件' }))
-  mainWindow = new BrowserWindow({ title: 'Corch DSH', width: 1440, height: 1000, minWidth: 1000, minHeight: 700, show: false, autoHideMenuBar: true, webPreferences: prefs })
+  mainWindow = new BrowserWindow({ title: 'Corch DSH', width: 1440, height: 1000, minWidth: 1000, minHeight: 700, show: false, autoHideMenuBar: true, webPreferences: { ...prefs, preload: join(source, 'publisher-preload.cjs') } })
+  const publisher = createPublisher({
+    vault: createPublisherVault(join(data, 'worker-publisher.json'), safeStorage),
+    openParticipant: async url => {
+      const window = new BrowserWindow({ title: '专家访谈', width: 1040, height: 840, autoHideMenuBar: true, webPreferences: prefs })
+      secureContents(window.webContents, new URL(url).origin)
+      window.setMenu(null)
+      try { await window.loadURL(url) } catch { window.close(); throw new Error('访谈页面无法打开，请检查网络后重试。') }
+    },
+  })
+  const trustedPublisher = event => event.sender === mainWindow?.webContents
+    && event.senderFrame === mainWindow.webContents.mainFrame && sameOrigin(event.senderFrame.url, localOrigin)
+  for (const method of ['configure', 'status', 'publish']) ipcMain.handle('corch:publisher:' + method, async (event, input) => {
+    if (!trustedPublisher(event)) return { ok: false, message: '当前页面无发布授权。' }
+    try { return { ok: true, value: await publisher[method](input) } }
+    catch (error) {
+      const known = /^(PUBLISH_|PUBLICATION_|INVALID_|WORKER_UPDATE_REQUIRED)/.test(error.code ?? '')
+      const vault = /^(系统凭据加密不可用|发布授权|无法读取发布授权)/.test(error.message ?? '')
+      return { ok: false, code: known ? error.code : 'PUBLISH_NATIVE_FAILED', message: known || vault ? error.message : '发布未完成，请检查客户端设置和网络后重试。' }
+    }
+  })
+  ipcMain.on('corch:publisher:cancel', (event, id) => { if (trustedPublisher(event)) publisher.cancel(id) })
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     { label: 'Corch DSH', submenu: [{ label: '重新加载', role: 'reload' }, { type: 'separator' }, { label: '退出', role: 'quit' }] },
     { label: '编辑', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },

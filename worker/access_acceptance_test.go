@@ -115,6 +115,8 @@ func TestManagedAccessAcceptance(t *testing.T) {
 	must(err)
 	var accountBefore string
 	must(db.QueryRow("SELECT password_hash FROM tw_accounts WHERE username='admin'").Scan(&accountBefore))
+	_, err = db.Exec("DROP TABLE tw_publisher_keys")
+	must(err)
 	_, err = db.Exec("DROP TABLE tw_pack_access")
 	must(err)
 	_, err = db.Exec("UPDATE tw_schema SET version=3")
@@ -130,8 +132,8 @@ func TestManagedAccessAcceptance(t *testing.T) {
 	must(err)
 	var version int
 	must(db.QueryRow("SELECT version FROM tw_schema").Scan(&version))
-	if version != 4 {
-		t.Fatal("schema3 to schema4 migration failed")
+	if version != 5 {
+		t.Fatal("schema3 to schema5 migration failed")
 	}
 	var accountAfter string
 	must(db.QueryRow("SELECT password_hash FROM tw_accounts WHERE username='admin'").Scan(&accountAfter))
@@ -326,7 +328,7 @@ func TestManagedAccessAcceptance(t *testing.T) {
 		runMaint("restore", false)
 		must(db.QueryRow("SELECT version FROM tw_schema").Scan(&version))
 		must(db.QueryRow("SELECT COUNT(*) FROM tw_pack_access").Scan(&rows))
-		if version != 4 || rows != 2 {
+		if version != 5 || rows != 2 {
 			t.Fatal("stale restore damaged new access data")
 		}
 	}
@@ -366,7 +368,7 @@ func TestManagedAccessAcceptance(t *testing.T) {
 				time.Sleep(100 * time.Millisecond)
 			}
 			if !ready {
-				t.Fatal("schema4 compatible UI rollback not healthy")
+				t.Fatal("schema5 compatible UI rollback not healthy")
 			}
 			res, err := transport.Get(fallback.Portal.Origin + "/admin/management.js")
 			must(err)
@@ -391,10 +393,10 @@ func TestManagedAccessAcceptance(t *testing.T) {
 			}
 			must(db.QueryRow("SELECT version FROM tw_schema").Scan(&version))
 			must(db.QueryRow("SELECT COUNT(*) FROM tw_calls").Scan(&calls))
-			if version != 4 || calls != 0 {
+			if version != 5 || calls != 0 {
 				t.Fatal("fallback changed schema or called model")
 			}
-			t.Log("schema4-compatible UI rollback keeps new managed links and data; no SQL restore, no model calls; new client publication intentionally waits for restored current UI")
+			t.Log("schema5-compatible UI rollback keeps new managed links and data; no SQL restore, no model calls; new client publication intentionally waits for restored current UI")
 		}()
 	}
 	if *accessOldBinary != "" {
@@ -409,8 +411,8 @@ func TestManagedAccessAcceptance(t *testing.T) {
 		cmd := exec.CommandContext(ctx, *accessOldBinary, "serve", "-c", p)
 		out, err := cmd.CombinedOutput()
 		if err == nil || ctx.Err() != nil || !bytes.Contains(out, []byte("结构版本")) {
-			t.Fatal("schema3 binary did not reject schema4")
+			t.Fatal("schema3 binary did not reject schema5")
 		}
 	}
-	t.Log("schema3->4 preserves account; no credential backfill; server receipt and 8 concurrent retries stable; legacy preserved; wrong/revoked codes rejected; admin-only visibility; model calls0; full schema3 restore and old binary health before writes; stale restore refused after business/access writes; disposable database removed by deferred cleanup")
+	t.Log("schema3->5 preserves account; no credential backfill; server receipt and 8 concurrent retries stable; legacy preserved; wrong/revoked codes rejected; admin-only visibility; model calls0; full schema3 restore and old binary health before writes; stale restore refused after business/access writes; disposable database removed by deferred cleanup")
 }

@@ -1,4 +1,4 @@
-// access-maint makes private schema3 backups and refuses stale schema4 restores.
+// access-maint makes private schema3/4 backups and refuses restores after business or credential writes.
 package main
 
 import (
@@ -146,7 +146,7 @@ func private(path string, b []byte) {
 	check(f.Close())
 }
 func allowed(before, after snapshot) bool {
-	if before.Schema != 3 || after.Schema != 4 || before.Database != after.Database || !reflect.DeepEqual(before.Files, after.Files) {
+	if (before.Schema != 3 && before.Schema != 4) || after.Schema != 5 && !(before.Schema == 3 && after.Schema == 4) || before.Database != after.Database || !reflect.DeepEqual(before.Files, after.Files) {
 		return false
 	}
 	for name, want := range before.Tables {
@@ -155,7 +155,7 @@ func allowed(before, after snapshot) bool {
 		}
 	}
 	for name, current := range after.Tables {
-		if _, exists := before.Tables[name]; !exists && (name != "tw_pack_access" || current.Rows != 0) {
+		if _, exists := before.Tables[name]; !exists && ((name != "tw_pack_access" || before.Schema != 3) && name != "tw_publisher_keys" || current.Rows != 0) {
 			return false
 		}
 	}
@@ -191,7 +191,7 @@ func run() {
 	current := state(db, d, c, *path)
 	switch mode {
 	case "backup":
-		require(current.Schema == 3, "backup requires schema3")
+		require(current.Schema == 3 || current.Schema == 4, "backup requires schema3 or schema4")
 		var active int64
 		check(db.QueryRow("SELECT COUNT(*) FROM tw_tasks WHERE status IN ('queued','running')").Scan(&active))
 		require(active == 0, "idle queue required")
@@ -211,7 +211,7 @@ func run() {
 		raw, err := json.Marshal(current)
 		check(err)
 		private(filepath.Join(*backup, "snapshot.json"), raw)
-		fmt.Println(`{"backup_schema":3,"private_sql_snapshot":true,"business_rows_unchanged":true}`)
+		fmt.Printf("{\"backup_schema\":%d,\"private_sql_snapshot\":true,\"business_rows_unchanged\":true}\n", current.Schema)
 	case "guard", "restore":
 		raw, err := os.ReadFile(filepath.Join(*backup, "snapshot.json"))
 		check(err)
@@ -219,7 +219,7 @@ func run() {
 		check(json.Unmarshal(raw, &before))
 		require(allowed(before, current), "STALE_BACKUP_REFUSED: business writes or access credentials exist")
 		if mode == "guard" {
-			fmt.Println(`{"schema3_restore_allowed":true,"new_business_writes":false}`)
+			fmt.Printf("{\"restore_schema\":%d,\"new_business_writes\":false}\n", before.Schema)
 			return
 		}
 		if !*isolated {
@@ -230,8 +230,12 @@ func run() {
 		check(err)
 		require(digest(dump) == before.DumpSHA, "backup checksum mismatch")
 		require(allowed(before, state(db, d, c, *path)), "STALE_BACKUP_REFUSED: state changed before restore")
-		_, err = db.Exec("DROP TABLE tw_pack_access")
-		check(err)
+		for name := range current.Tables {
+			if _, exists := before.Tables[name]; !exists {
+				_, err = db.Exec("DROP TABLE `" + name + "`")
+				check(err)
+			}
+		}
 		restoreDSN := d.Clone()
 		restoreDSN.MultiStatements = true
 		restore, err := sql.Open("mysql", restoreDSN.FormatDSN())
@@ -241,8 +245,8 @@ func run() {
 		check(err)
 		final := state(db, d, c, *path)
 		before.DumpSHA = ""
-		require(reflect.DeepEqual(before, final), "restored schema3 fingerprint mismatch")
-		fmt.Println(`{"restored_schema":3,"all_original_rows_and_publications_preserved":true}`)
+		require(reflect.DeepEqual(before, final), "restored original schema fingerprint mismatch")
+		fmt.Printf("{\"restored_schema\":%d,\"all_original_rows_and_publications_preserved\":true}\n", before.Schema)
 	default:
 		panic(errors.New("unknown operation"))
 	}

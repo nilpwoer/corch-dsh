@@ -1,6 +1,6 @@
 {
   "name": "@polus-ai/corch-dsh-desktop",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "type": "module",
   "main": "main.mjs",
@@ -8,11 +8,12 @@
   "license": "MIT",
   "files": [
     "*.mjs",
+    "publisher-preload.cjs",
     "README.md",
     "README.zh.md"
   ],
   "scripts": {
-    "test": "node --test policy.test.mjs module-resolution.test.mjs",
+    "test": "node --test policy.test.mjs module-resolution.test.mjs publisher.test.mjs publisher-vault.test.mjs",
     "package:win": "node ../../scripts/package-windows-desktop.mjs"
   },
   "dependencies": {

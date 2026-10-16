@@ -15,12 +15,15 @@ import (
 	"github.com/fanzy531/corch-dsh/worker/internal/domain"
 	"github.com/fanzy531/corch-dsh/worker/internal/packaccess"
 	"github.com/fanzy531/corch-dsh/worker/internal/published"
+	"github.com/fanzy531/corch-dsh/worker/internal/publisherauth"
 	"github.com/fanzy531/corch-dsh/worker/internal/runtimecfg"
 	"github.com/fanzy531/corch-dsh/worker/internal/store"
 )
 
 type fakeManagement struct {
 	active   bool
+	keysMu   sync.Mutex
+	keys     map[string]publisherauth.Key
 	accessMu sync.Mutex
 	access   map[string]packaccess.View
 }

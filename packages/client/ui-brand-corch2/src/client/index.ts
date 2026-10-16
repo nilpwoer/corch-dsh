@@ -8,7 +8,7 @@ import type {
   HeroBrandNameOwnerProps,
 } from '@deepseek-ai/dsh-client-ui-conversation/client'
 
-const CORCH_NAME = 'Corch Dev Build'
+const CORCH_NAME = 'Corch DSH'
 const CORCH_HERO_SUFFIX = '//orchestrate your daily work.'
 const BEBAS_NEUE_URL = 'https://fonts.loli.net/css2?family=Bebas+Neue:wght@200;400;700&display=swap'
 

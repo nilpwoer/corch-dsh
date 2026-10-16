@@ -163,7 +163,7 @@ func TestPublishSettingsAcceptance(t *testing.T) {
 	}
 	ready()
 	var schema int
-	if err := db.QueryRow("SELECT version FROM tw_schema").Scan(&schema); err != nil || schema != 4 {
+	if err := db.QueryRow("SELECT version FROM tw_schema").Scan(&schema); err != nil || schema != 5 {
 		t.Fatal("additive version 2 migration failed")
 	}
 	newClient := func() *http.Client {

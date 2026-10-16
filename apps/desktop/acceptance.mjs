@@ -64,7 +64,7 @@ async function assertStopped(origin,pid){
 }
 try{
   await launch()
-  await page.getByRole('dialog',{name:'内测声明'}).waitFor()
+  await page.getByRole('dialog',{name:'欢迎使用 Corch DSH'}).waitFor()
   await page.getByRole('button',{name:'继续',exact:true}).click()
   const onboarding=page.getByRole('dialog',{name:'添加一个 API Key 开始使用'})
   await onboarding.waitFor()
@@ -160,7 +160,7 @@ try{
   const restarted=JSON.parse(await readFile(join(data,'runtime.json'),'utf8'))
   assert.equal(restarted.local_origin,firstOrigin)
   assert.equal((await rpc('session.list')).items.length,1)
-  assert.equal(await page.getByRole('dialog',{name:'内测声明'}).count(),0)
+  assert.equal(await page.getByRole('dialog',{name:'欢迎使用 Corch DSH'}).count(),0)
   assert.equal(await page.getByRole('dialog',{name:/API Key/}).count(),0)
   assert.equal(generation,0);assert.deepEqual(pageErrors,[])
   await desktop.close();desktop=undefined

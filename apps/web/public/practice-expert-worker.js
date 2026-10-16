@@ -24,7 +24,7 @@ export async function mountWorkerInterview(app) {
       body: body === undefined ? undefined : JSON.stringify(body),
     })
     const value = await response.json()
-    if (!response.ok) throw Object.assign(new Error(value.error_code || `HTTP_${response.status}`), { status: response.status, data: value })
+    if (!response.ok) throw Object.assign(new Error(({INVALID_INVITATION:'访问口令不正确，请检查分享链接或向主持人获取新口令。',ACCESS_REVOKED:'此访问口令已撤销，请联系主持人获取新链接。',INTERVIEW_SESSION_REQUIRED:'访谈会话已过期，请从分享链接重新进入。',NOT_FOUND:'未找到此访谈，请检查分享链接或联系主持人。'}[value.error_code]) || value.error_code || '请求未完成，请重试。'), { status: response.status, data: value })
     return value
   }
   let context
@@ -34,7 +34,7 @@ export async function mountWorkerInterview(app) {
     let packs = []
     if (failure.data?.entry_mode === 'list' && !requestedPack) packs = await api('/browser/packs')
     const needsCode = failure.data?.invitation_mode !== 'none'
-    app.innerHTML = `<main class="main"><section class="panel auth-card"><h2>实践专家访谈</h2><p>请选择主持人提供的访谈，不需要注册账号。</p><form id="portal-start"><label for="portal-key">访谈题包</label>${packs.length ? `<select id="portal-key">${packs.map(p => `<option value="${esc(p.key)}">${esc(p.fieldnoteId)} · v${p.version}</option>`).join('')}</select>` : `<input id="portal-key" value="${esc(requestedPack)}" required placeholder="主持人提供的题包标识">`}${needsCode ? '<label for="portal-code">访谈口令</label><input id="portal-code" type="password" autocomplete="off" required>' : ''}<button class="btn primary">开始访谈</button><p id="portal-error" role="alert"></p></form></section></main>`
+    app.innerHTML = `<main class="main"><section class="panel auth-card"><h2>实践专家访谈</h2><p>确认主持人提供的访谈信息后开始，无需注册账号。</p><form id="portal-start"><label for="portal-key">访谈题包</label>${packs.length ? `<select id="portal-key">${packs.map(p => `<option value="${esc(p.key)}">${esc(p.fieldnoteId)} · v${p.version}</option>`).join('')}</select>` : `<input id="portal-key" value="${esc(requestedPack)}" required placeholder="主持人提供的题包标识">`}${needsCode ? '<label for="portal-code">访谈口令</label><input id="portal-code" type="password" autocomplete="off" required>' : ''}<button class="btn primary">开始访谈</button><p id="portal-error" role="alert"></p></form></section></main>`
     if (needsCode && sharedCode) document.querySelector('#portal-code').value = sharedCode
     document.querySelector('#portal-start').onsubmit = async event => {
       event.preventDefault()
