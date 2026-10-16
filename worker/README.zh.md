@@ -182,7 +182,7 @@ hash-password --output <新建私有文件> 从标准输入读取密码，以随
 
 `GET /admin/api/packs/{key}/access` 仅向已认证管理员返回当前口令及片段分享地址，设置 `Cache-Control: no-store`。同路径 `POST` 接受明确的 `create`、`rotate` 或 `revoke` 操作，以及当前修订号和题包哈希；过时写入返回 409。为允许授权管理员和重试读取，口令在现有 MySQL 权限保护下可恢复保存，数据库备份和客户端数据应按凭据保护。不增加管理员凭据、加密主密钥或公开口令接口；不得记录口令或将其放入查询参数。
 
-`/admin/?configure={key}` 只显示当前题包编辑器和访问控制，`/admin/?view=reports` 独立提供报告查看及下载，导航保留两项功能。新客户端在传输前要求 Worker 支持服务端口令；旧客户端仍可发布旧载荷并保留原口令。
+管理菜单将题包管理、访谈报告、API Key 和系统设置分开。`/admin/?configure={key}` 在当前题包内打开设置；`/admin/?view=reports` 管理报告，`/admin/?view=settings` 管理全局提示词。菜单选中态、刷新和浏览器返回保持当前页面。新客户端在传输前要求 Worker 支持服务端口令；旧客户端仍可发布旧载荷并保留原口令。
 
 ### 发布 API Key
 

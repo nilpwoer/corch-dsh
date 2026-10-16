@@ -375,7 +375,7 @@ func TestManagedAccessAcceptance(t *testing.T) {
 			management, err := io.ReadAll(res.Body)
 			res.Body.Close()
 			must(err)
-			if bytes.Contains(management, []byte("accessAuthority")) {
+			if bytes.Contains(management, []byte("loadPublisherKeys")) {
 				t.Fatal("fallback did not select earlier management UI")
 			}
 			body, _ := json.Marshal(map[string]string{"key": "FN-access-v1", "code": active.Access.Code})
@@ -396,7 +396,7 @@ func TestManagedAccessAcceptance(t *testing.T) {
 			if version != 5 || calls != 0 {
 				t.Fatal("fallback changed schema or called model")
 			}
-			t.Log("schema5-compatible UI rollback keeps new managed links and data; no SQL restore, no model calls; new client publication intentionally waits for restored current UI")
+			t.Log("schema5-compatible earlier UI keeps managed links and data; no SQL restore, no model calls; native Key uploads remain in the compatible backend")
 		}()
 	}
 	if *accessOldBinary != "" {

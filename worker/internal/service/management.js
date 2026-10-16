@@ -56,7 +56,7 @@ const openSettings=async key=>{
   const view=await api(settingsPath(key))
   if(generation!==settingsGeneration)return
   settingsView={...view,key}
-  el('settings-title').textContent=key?'题包访谈设置':'全局默认提示词'
+  el('settings-title').textContent=key?'题包访谈设置':'全局提示词'
   el('settings-description').textContent=key?`${key} · 配置修订 ${view.revision} · 不修改已有访谈`:'题包未覆盖时使用这里的提示词；现有模型和输出校验保持不变'
   el('policy-fields').hidden=!key
   el('policy-inherit').checked=!view.settings.policy
@@ -71,7 +71,7 @@ const openSettings=async key=>{
     for(const stage of ['analyze','compose'])el(kind+'-'+stage).value=view.effective[kind][stage]
   }
   document.querySelectorAll('.inherit-label').forEach(e=>e.textContent=key?'继承全局默认提示词':'使用服务配置中的默认提示词')
-  el('advanced-prompts').open=!key;el('settings-message').textContent='';updateInheritance();showPage('runtime-settings',key?'题包访谈设置':'全局提示词',key||'题包未覆盖时使用这里的提示词')
+  el('advanced-prompts').open=!key;el('settings-message').textContent='';updateInheritance();showPage('runtime-settings',key?'题包访谈设置':'系统设置',key||'题包未覆盖时使用这里的提示词')
   history.replaceState(null,'',key?'?configure='+encodeURIComponent(key):'?view=settings')
   el('settings-close').hidden=!key;el('pack-access').hidden=!key
   if(key)await loadAccess(key)
@@ -139,6 +139,7 @@ el('publisher-key-copy').onclick=action(async()=>{try{await navigator.clipboard.
 el('publisher-key-dismiss').onclick=clearPublisherToken
 window.addEventListener('pagehide',clearPublisherToken)
 const loadRequestedSettings=async()=>{
+  settingsGeneration++
   const query=new URLSearchParams(location.search),key=query.get('configure')
   if(key){if(!/^[a-zA-Z0-9_-]{1,100}$/.test(key))throw new Error('题包文件键无效');await openSettings(key)}
   else if(query.get('view')==='publisher-keys')await loadPublisherKeys()

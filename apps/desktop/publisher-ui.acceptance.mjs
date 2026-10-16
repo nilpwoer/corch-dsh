@@ -62,7 +62,9 @@ async function createKey(name,expiry){
   return value
 }
 async function publish(){
-  const window=desktop.waitForEvent('window')
+  await page.getByRole('button',{name:'问题包',exact:true}).click()
+  const window=desktop.waitForEvent('window',{timeout:30000})
+  void window.catch(()=>undefined) // Preserve a click failure if its owned waiter closes during cleanup.
   await page.getByRole('button',{name:'发布并打开 SPA',exact:true}).click()
   const participant=await window;participant.setDefaultTimeout(20000)
   await participant.locator('#portal-code').waitFor()
@@ -81,15 +83,22 @@ try{
   await launch()
   await page.getByRole('dialog',{name:'欢迎使用 Corch DSH'}).waitFor();await shot(page,'01-product-welcome')
   await page.getByRole('button',{name:'继续',exact:true}).click()
-  const onboarding=page.getByRole('dialog',{name:'添加一个 API Key 开始使用'});await onboarding.waitFor();await onboarding.getByRole('button',{name:'以后再说',exact:true}).click()
+  const onboarding=page.getByRole('dialog',{name:'添加一个 API Key 开始使用'});await onboarding.waitFor();await onboarding.getByRole('button',{name:'稍后配置',exact:true}).click()
   assert.equal((await page.title()).includes('Corch Dev Build'),false)
   await page.getByRole('button',{name:'专家访谈',exact:true}).click()
   const ids=[]
   for(let n=0;n<2;n++){
     await page.getByRole('button',{name:'新建专家访谈',exact:false}).click()
     await page.getByRole('heading',{name:'新建实践专家访谈',exact:true}).waitFor()
-    const rows=await page.evaluate(async()=>{const method='session.list';const r=await fetch('/api/'+method,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({type:'client-request',rpcId:crypto.randomUUID(),method,payload:{}})});return(await r.json()).result.value.items})
-    ids.push(rows.find(r=>!ids.includes(r.sessionId)).sessionId)
+    let created
+    for(let attempt=0;attempt<100;attempt++){
+      const rows=await page.evaluate(async()=>{const method='session.list';const r=await fetch('/api/'+method,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({type:'client-request',rpcId:crypto.randomUUID(),method,payload:{}})});return(await r.json()).result.value.items})
+      created=rows.find(r=>!ids.includes(r.sessionId))
+      if(created)break
+      await page.waitForTimeout(100)
+    }
+    assert.ok(created,'New host session must finish creation before synthetic data is seeded')
+    ids.push(created.sessionId)
   }
   firstSession=ids[0]
   const row=(id,fieldnote,title,publication)=>({record:{id,fieldnoteId:fieldnote,title,expert:'合成专家',industry:'合成课程',status:'已确认问题包',updated:'合成'},profile:{name:'合成专家',role:'合成教师',industry:'合成课程',years:'10',stage:'成熟期',experience:'合成课堂核对'},questions:[{id:'Q01',title:'课堂核对',type:'开放回答',question:'请描述课堂核对过程。',sourceRefs:[]},{id:'Q02',title:'判断依据',type:'开放回答',question:'如何判断核对结果？',sourceRefs:[]},{id:'Q03',title:'责任边界',type:'开放回答',question:'如何界定责任边界？',sourceRefs:[]}],questionPackMeta:{packId:'synthetic-ui-pack-'+fieldnote,version:1,generatedAt:'2026-10-16T00:00:00Z',sourceSessionId:id,checksum:'synthetic',globalReferences:[]},publication})
@@ -122,7 +131,9 @@ try{
   await desktop.close();desktop=undefined
   const vault=JSON.parse(await readFile(join(data,'worker-publisher.json'),'utf8'))
   assert.equal(JSON.stringify(vault).includes(token),false)
-  await launch();await openInterview()
+  await launch()
+  await page.getByRole('dialog',{name:'添加一个 API Key 开始使用'}).getByRole('button',{name:'稍后配置',exact:true}).click()
+  await openInterview()
   await settings();await page.getByText('已保存 '+token.slice(0,16)+'… · '+fixture.origin,{exact:true}).waitFor();assert.equal(await page.getByLabel('发布 API Key',{exact:true}).inputValue(),'');await page.getByRole('button',{name:'返回访谈',exact:true}).click()
   const encrypted=await desktop.evaluate(({safeStorage},{record,expected})=>({available:safeStorage.isEncryptionAvailable(),matches:JSON.parse(safeStorage.decryptString(Buffer.from(record.ciphertext,'base64'))).token===expected}),{record:vault,expected:token})
   assert.deepEqual(encrypted,{available:true,matches:true});check('actual Electron OS encryption persists across restart with no plaintext browser storage')
@@ -130,9 +141,11 @@ try{
   assert.equal((await desktop.context().cookies(fixture.origin)).filter(c=>c.name==='teaching_admin').length,0)
   assert.equal(await participant.evaluate(()=>window.corchPublication===undefined&&typeof process==='undefined'),true)
   share=await page.getByLabel('Worker 访谈地址',{exact:true}).inputValue();key=new URL(share).searchParams.get('fieldnoteId')
+  assert.equal(await page.locator('main').evaluate(e=>e.scrollWidth<=e.clientWidth),true)
   assert.equal(share.includes(token),false)
   await shot(page,'06-published-share');await shot(participant,'07-spa-entry')
   await page.getByRole('button',{name:'复制链接',exact:true}).click()
+  await page.getByRole('status').filter({hasText:'链接已复制'}).waitFor()
   assert.equal(await desktop.evaluate(({clipboard})=>clipboard.readText()),share)
   check('first configured no-Cookie publish opens participant; actual clipboard equals share URL')
   await participant.locator('#portal-start button').click();await participant.locator('#portal-error').filter({hasText:'追问策略'}).waitFor()
@@ -151,9 +164,16 @@ try{
   await manager.getByRole('link',{name:'访谈报告',exact:true}).click();await manager.getByRole('button',{name:'网页预览',exact:true}).click();await manager.frameLocator('#report-frame').getByRole('heading',{name:'合成访谈报告',exact:true}).waitFor()
   const download=manager.waitForEvent('download');await manager.getByRole('link',{name:'下载 PDF',exact:true}).click();const file=await download;await file.saveAs(join(out,'synthetic-report.pdf'));assert.equal((await readFile(join(out,'synthetic-report.pdf'))).subarray(0,5).toString(),'%PDF-')
   await shot(manager,'10-report-page-separated')
-  await manager.getByRole('link',{name:'题包管理',exact:true}).click();await manager.locator('[data-settings="'+key+'"]').click();await manager.goBack();assert.equal(await manager.locator('#pack-list').isVisible(),true)
+  await manager.getByRole('link',{name:'题包管理',exact:true}).click();await manager.locator('[data-settings="'+key+'"]').click();await manager.locator('#runtime-settings').waitFor({state:'visible'});await manager.goBack();await manager.locator('#pack-list').waitFor({state:'visible'})
+  let releaseSettings,startedSettings
+  const settingsGate=new Promise(resolve=>{releaseSettings=resolve}),settingsStarted=new Promise(resolve=>{startedSettings=resolve})
+  const delayedSettings=async route=>{const response=await route.fetch();startedSettings();await settingsGate;await route.fulfill({response})}
+  await manager.route('**/admin/api/packs/'+key+'/settings',delayedSettings)
+  await manager.locator('[data-settings="'+key+'"]').click();await settingsStarted;await manager.goBack();await manager.locator('#pack-list').waitFor({state:'visible'})
+  releaseSettings();await manager.waitForLoadState('networkidle');await manager.unroute('**/admin/api/packs/'+key+'/settings',delayedSettings)
+  assert.equal(new URL(manager.url()).search,'');assert.equal(await manager.locator('#pack-list').isVisible(),true)
   await manager.setViewportSize({width:390,height:844});await manager.getByRole('link',{name:'API Key',exact:true}).click();await shot(manager,'11-admin-menu-narrow');assert.equal(await manager.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true)
-  await manager.getByRole('link',{name:'系统设置',exact:true}).focus();await manager.keyboard.press('Enter');await manager.locator('#settings-title').filter({hasText:'系统设置'}).waitFor();check('four selected menus, separate reports/settings, refresh/back, keyboard and narrow screen')
+  await manager.getByRole('link',{name:'系统设置',exact:true}).focus();await manager.keyboard.press('Enter');await manager.getByRole('heading',{name:'系统设置',exact:true,level:1}).waitFor();check('four selected menus, separate reports/settings, refresh/back, keyboard and narrow screen')
   await manager.setViewportSize({width:1280,height:900})
   await manager.getByRole('link',{name:'API Key',exact:true}).click();manager.once('dialog',d=>d.accept());await manager.locator('[data-revoke-publisher]').first().click();await manager.locator('#publisher-key-message').filter({hasText:'已撤销'}).waitFor()
   await failPublish('已撤销');await shot(page,'12-revoked-key-inline');check('revoked Key never opens a login or participant window')
@@ -176,12 +196,13 @@ try{
   let saved=await page.evaluate(key=>JSON.parse(localStorage.getItem(key)),recordKey);assert.equal(saved.find(r=>r.record.id===firstSession).questionPackMeta.version,1)
   await page.getByRole('button',{name:'编辑问题',exact:true}).first().click();await page.getByRole('textbox',{name:'问题正文',exact:true}).fill('请描述修改后的课堂核对过程。');await page.getByRole('button',{name:'保存修改',exact:true}).click();await page.getByRole('heading',{name:'问题包已准备好',exact:true}).waitFor()
   await page.getByRole('button',{name:'原生会话',exact:true}).click();await openInterview();await page.getByText('请描述修改后的课堂核对过程。',{exact:true}).waitFor();await shot(page,'14-edited-version-ready');check('no-op save preserves version; real edit survives reopen and resets published status')
-  const allStorage=await page.evaluate(()=>JSON.stringify(localStorage));assert.equal(allStorage.includes(token),false)
-  assert.equal((await readFile(join(data,'backend.log'),'utf8')).includes(token),false)
+  const allStorage=await page.evaluate(()=>JSON.stringify(localStorage));assert.equal(/dsh_pub_[a-f0-9]{64}/.test(allStorage),false)
+  assert.equal(/dsh_pub_[a-f0-9]{64}/.test(await readFile(join(data,'backend.log'),'utf8')),false)
   assert.equal(errors.length,0)
   passed=true
   await writeFile(join(out,'verification.json'),JSON.stringify({passed,version:'0.1.5',actual_packaged_exe:true,actual_edge_browser:true,actual_worker_http_assets:true,account_and_key_storage:'synthetic; SQL verified separately',checks,screens,page_errors:errors,production_changed:false,real_model_tested:false,microphone_tested:false},null,2)+'\n')
 }catch(error){
+  if(manager&&!manager.isClosed())await shot(manager,'failure-manager').catch(()=>undefined)
   if(page&&!page.isClosed()){await shot(page,'failure-redacted').catch(()=>undefined);await writeFile(join(out,'failure.txt'),safe(error.stack))}
   throw error
 }finally{

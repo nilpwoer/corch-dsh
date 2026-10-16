@@ -179,7 +179,7 @@ New clients omit invitation credentials from publication JSON. An authenticated 
 
 `GET /admin/api/packs/{key}/access` returns the current code and fragment-only share URL to an authenticated administrator with `Cache-Control: no-store`. `POST` on that path accepts explicit `create`, `rotate` or `revoke`, the current revision and publication hash. Stale writes fail with 409. The code is recoverably stored under existing MySQL access controls so authorized administrators and retries can retrieve it; protect database dumps and client data as credentials. No new administrator credential, encryption master key or public invitation endpoint is introduced. Never log the code or put it in a query.
 
-`/admin/?configure={key}` shows only that package editor and its access controls. `/admin/?view=reports` owns report browsing/downloads; navigation preserves both functions. Legacy browser publication clients require Worker invitation support before transfer; older clients can still publish their legacy payloads and retain their codes.
+The management menus separate packages, interview reports, API Keys and system settings. `/admin/?configure={key}` opens settings inside that package; `/admin/?view=reports` owns reports and `/admin/?view=settings` owns global prompts. Selected menu state, refresh and browser back retain the current page. Legacy browser publication clients require Worker invitation support before transfer; older clients can still publish their legacy payloads and retain their codes.
 
 ### Publishing API Keys
 
