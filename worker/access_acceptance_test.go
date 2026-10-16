@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -31,11 +32,75 @@ import (
 var accessOldBinary = flag.String("access-old-binary", "", "Schema3 binary used only against the disposable access acceptance database")
 var accessMaintBinary = flag.String("access-maint-binary", "", "Guarded backup/restore helper used only against the disposable access database")
 var accessFallbackBinary = flag.String("access-fallback-binary", "", "Schema4-compatible earlier UI build used only against disposable access data")
+var accessDatabaseName = flag.String("access-database-name", "", "Predeclared disposable tw_access_accept_ database; never a production database")
+var accessDropDatabase = flag.Bool("access-drop-database", false, "Explicit cleanup of the predeclared disposable database only")
+
+var accessDatabasePattern = regexp.MustCompile(`^tw_access_accept_[0-9a-f]{32}$`)
+
+func TestManagedAccessDatabaseNameGuard(t *testing.T) {
+	for _, name := range []string{"production", "tw_access_accept_", "tw_access_accept_0000000000000000000000000000000g", "tw_access_accept_00000000000000000000000000000000;DROP DATABASE x"} {
+		if accessDatabasePattern.MatchString(name) {
+			t.Fatal("unsafe isolated database name accepted")
+		}
+	}
+	if !accessDatabasePattern.MatchString("tw_access_accept_00000000000000000000000000000000") {
+		t.Fatal("exact isolated database name rejected")
+	}
+}
+
+func TestManagedAccessDatabaseAbsent(t *testing.T) {
+	if *mysqlConfigPath == "" || *accessDatabaseName == "" {
+		t.Skip("requires explicit connection and predeclared isolated database")
+	}
+	if !accessDatabasePattern.MatchString(*accessDatabaseName) {
+		t.Fatal("isolated database name guard")
+	}
+	raw, err := os.ReadFile(*mysqlConfigPath)
+	if err != nil {
+		t.Fatal("isolated connection input unavailable")
+	}
+	var source struct {
+		Database struct {
+			DSN string `yaml:"dsn"`
+		} `yaml:"database"`
+	}
+	if yaml.Unmarshal(raw, &source) != nil {
+		t.Fatal("isolated connection input invalid")
+	}
+	d, err := driver.ParseDSN(source.Database.DSN)
+	if err != nil || d.DBName == *accessDatabaseName {
+		t.Fatal("isolated connection selection refused")
+	}
+	d.DBName = ""
+	db, err := sql.Open("mysql", d.FormatDSN())
+	if err != nil {
+		t.Fatal("isolated database check unavailable")
+	}
+	defer db.Close()
+	if *accessDropDatabase {
+		if _, err := db.Exec("DROP DATABASE IF EXISTS `" + *accessDatabaseName + "`"); err != nil {
+			t.Fatal("predeclared isolated database cleanup failed")
+		}
+	}
+	var count int
+	if db.QueryRow("SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = ?", *accessDatabaseName).Scan(&count) != nil || count != 0 {
+		t.Fatal("predeclared test database is present or cannot be checked")
+	}
+	t.Log("isolated_database_absent=" + *accessDatabaseName)
+}
 
 func TestManagedAccessAcceptance(t *testing.T) {
 	if *mysqlConfigPath == "" {
 		t.Skip("requires explicit isolated MySQL acceptance input")
 	}
+	name := *accessDatabaseName
+	if name == "" {
+		name = "tw_access_accept_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	}
+	if !accessDatabasePattern.MatchString(name) {
+		t.Fatal("isolated database name guard")
+	}
+	t.Log("isolated_database=" + name)
 	must := func(err error) {
 		t.Helper()
 		if err != nil {
@@ -52,15 +117,14 @@ func TestManagedAccessAcceptance(t *testing.T) {
 	must(yaml.Unmarshal(raw, &source))
 	d, err := driver.ParseDSN(source.Database.DSN)
 	must(err)
+	if d.DBName == name {
+		t.Fatal("source database cannot be the isolated database")
+	}
 	d.DBName = ""
 	d.ParseTime = true
 	admin, err := sql.Open("mysql", d.FormatDSN())
 	must(err)
 	defer admin.Close()
-	name := "tw_access_accept_" + strings.ReplaceAll(uuid.NewString(), "-", "")
-	if !strings.HasPrefix(name, "tw_access_accept_") || len(name) != 49 {
-		t.Fatal("isolated database name guard")
-	}
 	_, err = admin.Exec("CREATE DATABASE `" + name + "` CHARACTER SET utf8mb4 COLLATE utf8mb4_bin")
 	must(err)
 	defer func() { _, err := admin.Exec("DROP DATABASE `" + name + "`"); must(err) }()
@@ -76,6 +140,7 @@ func TestManagedAccessAcceptance(t *testing.T) {
 		c.Providers[k] = p
 	}
 	root := t.TempDir()
+	t.Log("isolated_temp_root=" + root)
 	packs := filepath.Join(root, "packs")
 	must(os.Mkdir(packs, 0700))
 	hash, err := accounts.Hash("synthetic-access-test-only")

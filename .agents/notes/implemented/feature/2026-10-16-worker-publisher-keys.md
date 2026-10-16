@@ -31,3 +31,5 @@ Schema5 adds an empty Key table; schema4 executables reject it. Before all new w
 ## Verification
 
 HTTP/native tests cover no-Cookie first upload, negative scope checks, hash-only/one-time disclosure, expiry/revocation, stable retries, cancellation and duplicate merging. Isolated MySQL acceptance verifies migration, restoration and retained data. Actual EXE/browser acceptance covers saved configuration/reload, single-click entry, error guidance and separate pages. These synthetic checks do not establish real model, microphone or production deployment acceptance.
+
+Isolated access acceptance accepts a predeclared `tw_access_accept_` name with exactly 32 hexadecimal UUID characters. It validates the name before opening a connection and refuses the configured source database. A separate absence check can explicitly drop only that validated test database, allowing cleanup to be verified after a failed rehearsal as well as a successful one.
