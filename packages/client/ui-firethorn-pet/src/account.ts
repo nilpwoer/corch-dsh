@@ -44,7 +44,11 @@ function optionalPoints(...values: unknown[]): number | null {
   return null
 }
 
-/** Parse the DeepSeek balance response without exposing its raw payload. */
+/**
+ * Parse the DeepSeek balance response without exposing its raw payload.
+ * @param payload - The untrusted provider JSON.
+ * @returns Valid account values, or undefined when a usable balance is absent.
+ */
 export function parseDeepSeekBalanceResponse(payload: unknown): AccountValues | undefined {
   const root = record(payload)
   if (root === undefined) return undefined
@@ -63,7 +67,11 @@ export function parseDeepSeekBalanceResponse(payload: unknown): AccountValues | 
   }
 }
 
-/** Validate the JSON response received by the browser from the host route. */
+/**
+ * Validate the JSON response received by the browser from the host route.
+ * @param value - The untrusted host JSON.
+ * @returns The validated success or error response, or undefined for invalid fields.
+ */
 export function parseFirethornPetAccountResponse(value: unknown): FirethornPetAccountResponse | undefined {
   const candidate = record(value)
   const points = candidate?.points === null ? null : finiteNumber(candidate?.points)

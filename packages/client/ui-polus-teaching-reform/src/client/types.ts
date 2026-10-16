@@ -5,6 +5,7 @@ import type { GlobalReferenceDocument } from './interviewTypes.ts'
 export type { InterviewProfile, ExpertMaterial } from './interviewTypes.ts'
 import type { InterviewProfile, ExpertMaterial } from './interviewTypes.ts'
 
+/** Session-scoped interview generation, command observation, and document preview inputs. */
 export type TeachingReformProps = PropsRuntime<'conversation.details.context'> & {
   sessionId: SessionId
   generateInterview: (id: SessionId, profile: InterviewProfile) => Promise<string>

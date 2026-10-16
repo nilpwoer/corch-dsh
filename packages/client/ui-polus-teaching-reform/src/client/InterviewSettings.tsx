@@ -69,7 +69,7 @@ export function InterviewSettings({ onClose, onPreviewDocument, initialTab }: In
   useEffect(() => {
     if (activeTab !== 'worker') return
     let current = true
-    void readPublisherStatus().then((value) => { if (current) setPublisherStatus(value.configured ? `已保存 ${value.prefix}… · ${value.origin}` : '尚未配置发布 API Key') }).catch((reason) => { if (current) setPublisherStatus(reason instanceof Error ? reason.message : '无法读取发布授权') })
+    void readPublisherStatus().then((value) => { if (current) setPublisherStatus(value.configured ? `已保存 ${value.prefix}… · ${value.origin}` : '尚未配置发布 API Key') }).catch((reason: unknown) => { if (current) setPublisherStatus(reason instanceof Error ? reason.message : '无法读取发布授权') })
     return () => { current = false }
   }, [activeTab])
   const [showArchived, setShowArchived] = useState(false)

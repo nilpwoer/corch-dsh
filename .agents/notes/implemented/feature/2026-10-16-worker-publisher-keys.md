@@ -14,6 +14,8 @@ Worker administrators create named, revocable, optionally expiring upload Keys. 
 
 The UI derives published status from the current version's receipt and needs only one publication click after review. Advanced prompts are collapsed; reports, settings and Key management are separate pages. The [invitation decision](2026-10-15-worker-owned-invitations.md) owns participant credentials. The older browser bridge remains supported; native publication does not depend on it.
 
+The [original implementation plan](../../../../docs/worker-spa-implementation-plan.md) retains its explicitly requested Chinese-only form through a single-file translation exclusion. Generated catalogs follow their owning source; existing paired runtime and UI documentation retains both languages with confirmed content hashes. The Corch branding package documents its browser-only behavior and external font dependency.
+
 ## Alternatives considered
 
 **Administrator Cookies.** They cannot guarantee direct first-use publication and grant administrator identity beyond upload needs.
