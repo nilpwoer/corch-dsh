@@ -30,6 +30,6 @@
 
 生成追加会话历史，未改变的前缀按提供方行为继续复用。发布与设置不发送模型请求。
 
-## 已知限制
+## 已知限制与待办事项
 
 原生发布需要新版桌面发布接口和支持上传 Key 的 Worker。[Loader 验收](../../../apps/web/tests/worker-publication.e2e.ts) 使用 `DSH_WORKER_SIDEBAR_PACKAGE`；[原生验收](../../../apps/desktop/publisher-ui.acceptance.mjs) 使用实际 EXE 和隔离 Worker HTTP/页面。SQL 验收单独检查数据库存储与迁移。合成替身不能证明真实模型质量或麦克风通过验收。[授权决策](../../../.agents/notes/implemented/feature/2026-10-16-worker-publisher-keys.zh.md) 记录凭据权限与回退限制。

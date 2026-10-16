@@ -30,6 +30,6 @@ Generation appends the rendered user message; its size depends on supplied infor
 
 Generation appends to session history, preserving reusable unchanged prefixes according to provider behavior. Publishing and settings send no model request.
 
-## Known limitations
+## Known Limitations and Deferred Work
 
 Native publication requires the current desktop broker and a Worker supporting upload Keys. [Loader acceptance](../../../apps/web/tests/worker-publication.e2e.ts) uses `DSH_WORKER_SIDEBAR_PACKAGE`; [native acceptance](../../../apps/desktop/publisher-ui.acceptance.mjs) exercises the actual EXE and isolated Worker HTTP/assets. SQL acceptance separately verifies database storage and migration. Synthetic fixtures do not establish real model quality or microphone acceptance. The [authorization decision](../../../.agents/notes/implemented/feature/2026-10-16-worker-publisher-keys.md) records credential scope and rollback constraints.

@@ -115,6 +115,7 @@ try{
   await failPublish('访谈设置');await shot(page,'04-missing-key-inline');check('missing Key gives inline settings shortcut without login')
   edge=await chromium.launch({channel:'msedge',headless:false})
   const adminContext=await edge.newContext({viewport:{width:1280,height:900},locale:'zh-CN',timezoneId:'UTC',acceptDownloads:true})
+  adminContext.on('page',p=>p.on('pageerror',error=>errors.push(error.message)))
   manager=await adminContext.newPage();manager.setDefaultTimeout(20000)
   await adminContext.route('**/*',route=>new URL(route.request().url()).origin===fixture.origin?route.continue():route.abort())
   await manager.goto(fixture.origin+'/admin/?view=publisher-keys')
