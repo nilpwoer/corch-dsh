@@ -1,7 +1,7 @@
 const el=id=>document.getElementById(id)
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))
 const api=async(path,options={})=>{
-  const response=await fetch('/admin/api/'+path,{credentials:'same-origin',...options})
+  const response=await fetch('/admin/api/'+path,{credentials:'same-origin',cache:'no-store',...options})
   const value=await response.json()
   if(!response.ok)throw Object.assign(new Error(({INVALID_PUBLISHER_KEY:'请填写 Key 名称，并选择未来的有效期。',ADMIN_SESSION_REQUIRED:'登录已过期，请重新登录管理端。',INVALID_LOGIN:'用户名或密码不正确，请重试。',SETTINGS_REVISION_CONFLICT:'配置已在其他页面更新，请刷新后重试。'}[value.error_code])||'操作未完成，请刷新页面后重试。'),{status:response.status})
   return value
@@ -62,6 +62,7 @@ const openSettings=async key=>{
   el('policy-inherit').checked=!view.settings.policy
   el('policy-scope').value=view.policy?.scope||''
   el('policy-count').value=view.policy?.maxFollowups??''
+  el('policy-effective').textContent=({package:'使用题包策略',override:'使用已保存覆盖',built_in:'使用内置默认'}[view.policy_source]||'')+(view.policy?' · '+(view.policy.scope==='interview'?'整场':'每题')+'最多 '+view.policy.maxFollowups+' 次':'')
   if(key&&!view.policy){
     el('policy-inherit').checked=false
     el('settings-description').textContent=key+' · 尚未配置追问策略，请明确选择计数范围和次数（0 表示不追问）'
@@ -74,6 +75,7 @@ const openSettings=async key=>{
   el('advanced-prompts').open=!key;el('settings-message').textContent='';updateInheritance();showPage('runtime-settings',key?'题包访谈设置':'系统设置',key||'题包未覆盖时使用这里的提示词')
   history.replaceState(null,'',key?'?configure='+encodeURIComponent(key):'?view=settings')
   el('settings-close').hidden=!key;el('pack-access').hidden=!key
+  el('settings-preview').hidden=true
   if(key)await loadAccess(key)
   el('runtime-settings').scrollIntoView({block:'start',behavior:'instant'})
 }
@@ -83,6 +85,8 @@ const loadAccess=async key=>{
   if(settingsView?.key!==key)return
   accessView={...result,key}
   const v=result.access
+  const preview=new URL(result.url);preview.searchParams.set('preview','new')
+  el('settings-preview').href=preview.href;el('settings-preview').hidden=!['active','not_required'].includes(v.status)
   el('access-code').type='password';el('access-code').value=v.code||'';el('access-reveal').textContent='显示口令'
   el('access-description').textContent=(v.source==='legacy'?'保留既有题包口令':'Worker 生成并验证')+' · '+({active:'有效',revoked:'已撤销',missing:'尚未生成'}[v.status]||v.status)
   el('access-create').hidden=v.status!=='missing';el('access-rotate').hidden=!v.code;el('access-revoke').hidden=v.status!=='active'
@@ -109,12 +113,12 @@ el('settings-form').onsubmit=action(async()=>{
   for(const kind of ['followup','report'])if(!el(kind+'-inherit').checked)settings[kind]={analyze:el(kind+'-analyze').value,compose:el(kind+'-compose').value}
   if(view.key&&!el('policy-inherit').checked){
     const count=Number(el('policy-count').value)
-    if(el('policy-count').value===''||!Number.isSafeInteger(count)||count<0||!el('policy-scope').value)throw new Error('请选择计数范围并填写非负整数次数')
+    if(el('policy-count').value===''||!Number.isSafeInteger(count)||count<0||count>2||!el('policy-scope').value)throw new Error('请选择计数范围，追问次数为 0 到 2。')
     settings.policy={scope:el('policy-scope').value,maxFollowups:count}
   }
-  await api(settingsPath(view.key),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:view.revision,publication_hash:view.publication_hash,settings})})
+  const saved=await api(settingsPath(view.key),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:view.revision,publication_hash:view.publication_hash,settings})})
   if(settingsView===view){
-    await openSettings(view.key);el('settings-message').textContent='已保存，新进入的访谈将采用此配置'
+    await openSettings(view.key);el('settings-message').textContent='已保存 · 修订 '+saved.revision+' · 新访谈生效'
     if(transfer?.receipt&&transfer.key===view.key)await publishTransferred()
   }
 })

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import css from './InterviewSettings.module.css'
 import { normalizeWorkerOrigin, readWorkerOrigin, saveWorkerOrigin, readPublisherStatus, savePublisherKey } from './workerPublishing.ts'
-import { hydrateCorpusDocuments, seedCorpusDocuments } from './globalReferenceCorpus.ts'
+import { hydrateCorpusDocuments, seedCorpusDocuments, resolveCorpusDocument } from './globalReferenceCorpus.ts'
 import { buildInterviewPromptTemplate, INTERVIEW_SYSTEM_PROMPT_STORAGE_KEY } from './interviewPrompt.ts'
 
 /** The reusable methodology/reference layer shared by all interviews. */
@@ -41,7 +41,7 @@ export function readGlobalReferenceDocuments(): GlobalReferenceDocument[] {
 
 /** Return active, non-archived documents in a stable order for generation. */
 export function getEnabledGlobalReferenceDocuments(): GlobalReferenceDocument[] {
-  return readGlobalReferenceDocuments().filter(item => item.enabled && item.archivedAt === undefined)
+  return readGlobalReferenceDocuments().filter(item => item.enabled && item.archivedAt === undefined).map(resolveCorpusDocument)
 }
 
 function writeGlobalReferenceDocuments(documents: readonly GlobalReferenceDocument[]): void {
@@ -73,6 +73,7 @@ export function InterviewSettings({ onClose, onPreviewDocument, initialTab }: In
     return () => { current = false }
   }, [activeTab])
   const [showArchived, setShowArchived] = useState(false)
+  const [referenceSearch, setReferenceSearch] = useState('')
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draft, setDraft] = useState<Pick<GlobalReferenceDocument, 'title' | 'markdown'> | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -116,9 +117,9 @@ export function InterviewSettings({ onClose, onPreviewDocument, initialTab }: In
     setPromptSaved(false)
   }
 
-  const visibleDocuments = useMemo(() => documents.filter(item => showArchived || item.archivedAt === undefined), [documents, showArchived])
+  const visibleDocuments = useMemo(() => documents.filter(item => (showArchived || item.archivedAt === undefined) && (!referenceSearch.trim() || `${item.id}\n${item.title}\n${resolveCorpusDocument(item).markdown}`.toLocaleLowerCase().includes(referenceSearch.trim().toLocaleLowerCase()))), [documents, showArchived, referenceSearch])
   const activeCount = documents.filter(item => item.enabled && item.archivedAt === undefined).length
-  const groupedDocuments = useMemo(() => (['S', 'A', 'B'] as const).map(tier => ({ tier, documents: visibleDocuments.filter(item => item.tier === tier) })), [visibleDocuments])
+  const groupedDocuments = useMemo(() => (['S', 'A', 'B', undefined] as const).map(tier => ({ tier: tier ?? '未分级', documents: visibleDocuments.filter(item => item.tier === tier) })), [visibleDocuments])
   const editingDocument = editingId === null ? undefined : documents.find(item => item.id === editingId)
 
   const startEdit = (document: GlobalReferenceDocument): void => {
@@ -207,9 +208,9 @@ export function InterviewSettings({ onClose, onPreviewDocument, initialTab }: In
       {activeTab === 'references' && <section className={css.section}>
         <div className={css.sectionHeader}><div><h2>全局基础文献池</h2><p>当前有 {activeCount} 份启用文献。生成问题包时将读取启用且未归档的文献，并记录版本快照。</p></div><div className={css.actions}><button type="button" className={css.ghostButton} onClick={() => { setShowArchived(value => !value) }}>{showArchived ? '隐藏已归档' : '显示已归档'}</button></div></div>
         <div className={css.notice}><strong>作用范围</strong><span>这里的文献规定访谈方法、问题框架和来源标准；每个项目的专家信息与上传资料仍单独生效。</span></div>
-        {visibleDocuments.length === 0 && <div className={css.empty}><strong>{showArchived ? '暂无文献' : '基础文献池为空'}</strong><span>当前版本只接入内置 v1.0 文献池，暂不支持在这里上传或编辑文献。</span></div>}
-        <div className={css.documentGroups}>{groupedDocuments.map(group => <section className={css.documentGroup} key={group.tier}><div className={css.groupHeader}><strong>{group.tier} 级文献</strong><span>{group.tier === 'S' ? '核心方法论 · 必引底座' : group.tier === 'A' ? '专题方法 · 按需引用' : '实证案例 · 补充参考'}</span></div><div className={css.documentList}>{group.documents.map(document => <article className={`${css.documentCard} ${document.archivedAt !== undefined ? css.archived : ''}`} key={document.id}>
-          <div className={css.documentMain}><div className={css.documentTitle}><span className={css.documentId}>{document.id}</span><strong>{document.title}</strong>{document.archivedAt !== undefined && <span className={css.archiveBadge}>已归档</span>}{document.enabled && document.archivedAt === undefined && <span className={css.enabledBadge}>启用中</span>}</div><div className={css.documentMeta}>v{document.version} · {document.sourceFile ?? '用户文献'} · {document.markdown.length.toLocaleString()} 字</div></div>
+        {visibleDocuments.length === 0 && <div className={css.empty}><strong>{showArchived ? '暂无文献' : '基础文献池为空'}</strong><span>未找到匹配文献。请调整检索条件或显示已归档文献。</span></div>}
+        <label className={css.field}><span>检索文献全文或章节</span><input aria-label="检索文献全文或章节" value={referenceSearch} onChange={(event) => { setReferenceSearch(event.currentTarget.value) }} placeholder="输入文献名、章节或正文关键词" /></label><div className={css.documentGroups}>{groupedDocuments.map(group => <section className={css.documentGroup} key={group.tier}><div className={css.groupHeader}><strong>{group.tier === '未分级' ? '未分级文献' : `${group.tier} 级文献`}</strong><span>{group.tier === 'S' ? '核心方法论 · 必引底座' : group.tier === 'A' ? '专题方法 · 按需引用' : group.tier === 'B' ? '实证案例 · 补充参考' : '用户提供 · 尚未指定方法优先级'}</span></div><div className={css.documentList}>{group.documents.map(document => <article className={`${css.documentCard} ${document.archivedAt !== undefined ? css.archived : ''}`} key={document.id}>
+          <div className={css.documentMain}><div className={css.documentTitle}><span className={css.documentId}>{document.id}</span><strong>{document.title}</strong>{document.archivedAt !== undefined && <span className={css.archiveBadge}>已归档</span>}{document.enabled && document.archivedAt === undefined && <span className={css.enabledBadge}>启用中</span>}</div><div className={css.documentMeta}>v{document.version} · {resolveCorpusDocument(document).sourceFile ?? '用户文献'} · {resolveCorpusDocument(document).markdown.length.toLocaleString()} 字</div></div>
           <div className={css.documentActions}>{onPreviewDocument !== undefined && <button type="button" className={css.ghostButton} onClick={() => { onPreviewDocument(document) }}>预览</button>}{document.archivedAt === undefined && document.origin !== 'bundled-corpus' && <><button type="button" className={css.ghostButton} onClick={() => { startEdit(document) }}>编辑</button><button type="button" className={document.enabled ? css.toggleOn : css.toggleOff} onClick={() => { toggleDocument(document) }}>{document.enabled ? '停用' : '启用'}</button><button type="button" className={css.dangerButton} onClick={() => { archiveDocument(document) }}>归档</button></>}{document.archivedAt === undefined && document.origin === 'bundled-corpus' && <button type="button" className={document.enabled ? css.toggleOn : css.toggleOff} onClick={() => { toggleDocument(document) }}>{document.enabled ? '停用' : '启用'}</button>}{document.archivedAt !== undefined && <><button type="button" className={css.ghostButton} onClick={() => { restoreDocument(document) }}>恢复</button><button type="button" className={css.dangerButton} onClick={() => { deleteDocument(document) }}>永久删除</button></>}</div>
         </article>)}</div></section>)}</div>
       </section>}

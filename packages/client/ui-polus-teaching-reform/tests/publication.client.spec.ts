@@ -22,20 +22,20 @@ test('export retains policy, public alias, hints and sources without deleted que
   assert.equal(p.publicFieldnoteId, 'FN-public')
   assert.equal(p.questionPackMeta.version, 2)
 })
-test('new exports defer policy to Worker and legacy exports retain their counting policy', () => {
+test('new exports include a two-follow-up package default and retain explicit lower limits', () => {
   const managed = createPublication({ ...input, interviewPolicy: undefined }, 'now')
-  assert.equal(managed.interviewPolicy, undefined)
-  assert.ok(!JSON.stringify(managed).includes('interviewPolicy'))
+  assert.deepEqual(managed.interviewPolicy, { scope: 'per_question', maxFollowups: 2 })
+  assert.deepEqual(managed.questions[0]?.followupPolicy, { input: 'text', maxFollowups: 2 })
   const serverInvitation = createPublication({ ...input, invitation: undefined, interviewPolicy: undefined }, 'now')
   assert.ok(!JSON.stringify(serverInvitation).includes('invitation'))
   assert.throws(() => createPublication({ ...input, goal: '' }, 'now'))
   assert.throws(() => createPublication({ ...input, interviewPolicy: { scope: 'interview', maxFollowups: -1 } }, 'now'))
-  const p = createPublication({ ...input, interviewPolicy: { scope: 'interview', maxFollowups: 3 } }, 'now')
+  const p = createPublication({ ...input, interviewPolicy: { scope: 'interview', maxFollowups: 2 } }, 'now')
   assert.equal(p.interviewPolicy?.scope, 'interview')
 })
 
 test('export rejects invalid form values and missing metadata before producing an upload', () => {
-  for (const value of [Number.NaN, 1.5, -1]) {
+  for (const value of [Number.NaN, 1.5, -1, 3]) {
     assert.throws(() => createPublication({ ...input, interviewPolicy: { scope: 'per_question', maxFollowups: value } }, 'now'))
   }
   assert.throws(() => createPublication({ ...input, interviewPolicy: { scope: 'unsupported', maxFollowups: 1 } as never }, 'now'))

@@ -85,7 +85,9 @@ export function createPublisher({ vault, fetchImpl = fetch, openParticipant, tim
           try { value = JSON.parse(raw) } catch { throw fail('INVALID_RECEIPT', 'Worker 返回了无效发布回执。') }
           const receipt = publisherReceipt(value, origin, input.key)
           if (controller.signal.aborted) throw fail('PUBLISH_CANCELLED', '发布已取消；已上传的同版本题包可安全重试。')
-          await openParticipant(receipt.url)
+          const preview = new URL(receipt.url)
+          preview.searchParams.set('preview', 'new')
+          await openParticipant(preview.href)
           return receipt
         } catch (error) {
           if (error[brokerFailure]) throw error

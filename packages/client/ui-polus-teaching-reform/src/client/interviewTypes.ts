@@ -13,6 +13,7 @@ export type GlobalReferenceDocument = {
   archivedAt?: string
   tier?: ReferenceTier
   sourceFile?: string
+  sourceHash?: string
   origin?: 'bundled-corpus' | 'user'
   summary?: string
 }

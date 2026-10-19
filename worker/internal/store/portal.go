@@ -113,7 +113,7 @@ func (s *Store) NewParticipantSession(ctx context.Context, entry published.Entry
 		return "", ParticipantSession{}, err
 	}
 	token := hex.EncodeToString(raw[:])
-	copy := entry.Pack
+	copy := entry.Pack.NewInterviewCopy()
 	copy.Invitation = nil
 	data, err := json.Marshal(copy)
 	if err != nil {

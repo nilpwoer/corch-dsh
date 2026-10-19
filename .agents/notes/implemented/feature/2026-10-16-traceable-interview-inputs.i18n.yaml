@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-10-16-traceable-interview-inputs.md
+2026-10-16-traceable-interview-inputs.md: 0b40f08d4c3f8c194636a74e30f87a1fef519c33
+2026-10-16-traceable-interview-inputs.zh.md: 7071cc04e8b5938ed1eb34528bcc8aa60b6b5092

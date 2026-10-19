@@ -119,4 +119,9 @@
 .shareLayout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; min-width: 0; }
 .shareLayout > .card { min-width: 0; }
 .shareCode { display: block; margin: 16px 0; letter-spacing: .18em; font-size: 24px; overflow-wrap: anywhere; color: var(--dsw-alias-fg-primary); }
+.shareLinkControl { position: relative; min-width: 0; }
+.shareLinkControl input { padding-right: 50px; }
+.copyLinkButton { position: absolute; top: 3px; right: 3px; bottom: 3px; display: grid; place-items: center; width: 36px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--dsw-alias-fg-secondary); cursor: pointer; }
+.copyLinkButton:hover { background: var(--dsw-alias-bg-module-platform); color: var(--dsw-alias-fg-primary); }
+.copyLinkButton:focus-visible { outline: 2px solid var(--dsw-alias-button-primary-fill); outline-offset: 1px; }
 .publishLock { border: 0; margin: 0; padding: 0; min-width: 0; }

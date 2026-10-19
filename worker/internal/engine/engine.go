@@ -161,6 +161,9 @@ func (e *Engine) Process(ctx context.Context, t store.Task, in store.Input, r co
 		if a.Skipped {
 			return domain.FollowupResult{Status: "skipped", AllowSkip: true}, nil
 		}
+		if !domain.FollowupTextEligible(q, a) {
+			return domain.FollowupResult{Status: "needs_review", AllowSkip: true, Reason: "NO_TEXT_INPUT"}, nil
+		}
 		count, limit := domain.FollowupLimit(sub.Snapshot, in.Followups, q.ID, r.Pipeline.MaxFollowups)
 		if count >= limit {
 			return domain.FollowupResult{Status: "needs_review", AllowSkip: true, Reason: "FOLLOWUP_LIMIT"}, nil

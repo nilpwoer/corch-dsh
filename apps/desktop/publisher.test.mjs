@@ -27,6 +27,8 @@ test('first configured publication sends only the upload Key, opens the particip
   assert.deepEqual(a, b)
   assert.equal(calls.length, 1)
   assert.equal(opened.length, 1)
+  assert.equal(new URL(opened[0]).searchParams.get('preview'), 'new')
+  assert.equal(new URL(a.url).searchParams.has('preview'), false)
   assert.equal(calls[0].url, `${origin}/publish/api/packs/${key}`)
   assert.equal(calls[0].options.headers.Authorization, `Bearer ${token}`)
   assert.equal(calls[0].options.credentials, 'omit')

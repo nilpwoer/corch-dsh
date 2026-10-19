@@ -1,4 +1,9 @@
 /** Question-pack parsing and provenance shared by the workbench and CLI. No browser state. */
+import { questionFollowupPolicy } from './questionFollowup.ts'
+import type { QuestionFollowupPolicy } from './questionFollowup.ts'
+import { referenceExcerpts } from './globalReferenceCorpus.ts'
+import type { ReferenceExcerpt } from './globalReferenceCorpus.ts'
+import type { GlobalReferenceDocument } from './interviewTypes.ts'
 /** One normalized generated question, retaining optional source evidence and editing metadata. */
 export type InterviewQuestion = {
   id: string
@@ -7,6 +12,7 @@ export type InterviewQuestion = {
   question: string
   helper?: string
   followUp?: string
+  followupPolicy?: QuestionFollowupPolicy
   options?: readonly string[]
   sourceRefs?: readonly QuestionSourceRef[]
   deleted?: boolean
@@ -31,7 +37,15 @@ export type QuestionPackMeta = {
   generatedAt: string
   sourceSessionId: string
   checksum: string
-  globalReferences?: readonly { id: string; title: string; version: number; contentHash: string }[]
+  globalReferences?: readonly {
+    id: string
+    title: string
+    version: number
+    contentHash: string
+    sourceFile?: string
+    sourceHash?: string
+    excerpts?: readonly ReferenceExcerpt[]
+  }[]
 }
 
 function normalizeSourceRefs(value: unknown): readonly QuestionSourceRef[] | undefined {
@@ -140,12 +154,14 @@ function normalizeStructuredQuestions(value: unknown): ParsedQuestionPack | null
       return text === '' ? undefined : text
     }
     const sourceRefs = normalizeSourceRefs(row.sourceRefs)
+    const type = typeof row.type === 'string' ? row.type : '开放式叙述'
     const helper = normalizePromptField(row.helper)
     const followUp = normalizePromptField(row.followUp)
     return {
       id: `Q${String(index + 1).padStart(2, '0')}`,
       title: String(row.title ?? `问题 ${index + 1}`),
-      type: String(row.type ?? '开放式叙述'),
+      type,
+      followupPolicy: questionFollowupPolicy({ type, ...(options ? { options } : {}) }),
       question: String(row.question ?? ''),
       ...(sourceRefs === undefined ? {} : { sourceRefs }),
       ...(options !== undefined && options.length > 0 ? { options } : {}),
@@ -242,7 +258,7 @@ export function parseAgentQuestionPack(text: string): ParsedQuestionPack | null 
     const sourceRefs: readonly QuestionSourceRef[] | undefined = source === undefined
       ? undefined
       : [{ sourceType: 'model_inference', title: source, locator: 'Agent 返回的问题包文本', rationale: '来源由 Agent 在兼容 Markdown 输出中声明，发布前仍需主持人核验。', confidence: 'medium', requiresConfirmation: true }]
-    const parsed: InterviewQuestion = { id: `Q${number.padStart(2, '0')}`, title, type, question, ...(sourceRefs === undefined ? {} : { sourceRefs }), ...(options !== undefined && options.length > 0 ? { options } : {}) }
+    const parsed: InterviewQuestion = { id: `Q${number.padStart(2, '0')}`, title, type, question, followupPolicy: questionFollowupPolicy({ type, ...(options ? { options } : {}) }), ...(sourceRefs === undefined ? {} : { sourceRefs }), ...(options !== undefined && options.length > 0 ? { options } : {}) }
     if (helper !== undefined && helper !== '无') parsed.helper = helper
     if (followUp !== undefined) parsed.followUp = followUp
     if (confirmation !== undefined) parsed.helper = parsed.helper === undefined ? `专家确认点：${confirmation}` : `${parsed.helper}；专家确认点：${confirmation}`
@@ -261,10 +277,14 @@ export function createQuestionPackMeta(input: {
   generatedAt: string
   packId: string
   version: number
-  references: readonly { id: string; title: string; version: number; markdown: string }[]
+  references: readonly (Pick<GlobalReferenceDocument, 'id' | 'title' | 'version' | 'markdown'> & Partial<GlobalReferenceDocument>)[]
 }): QuestionPackMeta {
   return { packId: input.packId, version: input.version, generatedAt: input.generatedAt,
     sourceSessionId: input.sessionId, checksum: checksumQuestionPack(input.questions),
     globalReferences: input.references.map(document => ({ id: document.id, title: document.title,
-      version: document.version, contentHash: checksumText(document.markdown) })) }
+      version: document.version, contentHash: checksumText(document.markdown),
+      ...(document.sourceFile ? { sourceFile: document.sourceFile } : {}),
+      ...(document.sourceHash ? { sourceHash: document.sourceHash } : {}),
+      excerpts: referenceExcerpts({ enabled: true, updatedAt: '', ...document }),
+    })) }
 }

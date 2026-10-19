@@ -35,6 +35,7 @@ type SettingsView struct {
 	Settings        runtimecfg.Settings           `json:"settings"`
 	Effective       map[string]runtimecfg.Prompts `json:"effective"`
 	Policy          *domain.FollowupPolicy        `json:"policy,omitempty"`
+	PolicySource    string                        `json:"policy_source,omitempty"`
 }
 
 func readRuntimeSetting(tx *gorm.DB, key string, entry *published.Entry) (runtimeSetting, runtimecfg.Settings, error) {
@@ -66,6 +67,9 @@ func (s *Store) readResolvedRuntime(tx *gorm.DB, entry *published.Entry) (runtim
 	if entry != nil {
 		row, pack, err = readRuntimeSetting(tx, "pack:"+entry.Key, entry)
 		policy = entry.Pack.Policy
+		if policy == nil {
+			policy = domain.NewInterviewPolicy(nil)
+		}
 	}
 	settings := global
 	if entry != nil {
@@ -82,6 +86,13 @@ func (s *Store) ReadRuntimeSettings(ctx context.Context, entry *published.Entry)
 	view := SettingsView{Revision: row.Revision, Settings: settings, Effective: map[string]runtimecfg.Prompts{"followup": {Analyze: f.Followup.Pipeline.Analyze, Compose: f.Followup.Pipeline.Compose}, "report": {Analyze: f.Report.Pipeline.Analyze, Compose: f.Report.Pipeline.Compose}}, Policy: f.Policy}
 	if entry != nil {
 		view.PublicationHash = entry.Hash
+		view.PolicySource = "package"
+		if entry.Pack.Policy == nil {
+			view.PolicySource = "built_in"
+		}
+		if settings.Policy != nil {
+			view.PolicySource = "override"
+		}
 	}
 	return view, nil
 }
@@ -90,6 +101,9 @@ func (s *Store) ReadRuntimeSettings(ctx context.Context, entry *published.Entry)
 func (s *Store) SaveRuntimeSettings(ctx context.Context, entry *published.Entry, revision int64, value runtimecfg.Settings) (SettingsView, error) {
 	if err := value.Validate(entry == nil); err != nil {
 		return SettingsView{}, err
+	}
+	if value.Policy != nil && *value.Policy.MaxFollowups > domain.MaxQuestionFollowups {
+		return SettingsView{}, domain.Fail("INVALID_FOLLOWUP_POLICY", 400)
 	}
 	key, hash := "global", ""
 	if entry != nil {

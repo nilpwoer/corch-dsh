@@ -54,6 +54,9 @@ func Resolve(c config.Config, global, pack Settings, original *domain.FollowupPo
 		f.Policy = pack.Policy
 	}
 	if f.Policy != nil {
+		f.Policy = domain.NewInterviewPolicy(f.Policy)
+	}
+	if f.Policy != nil {
 		policy := *f.Policy
 		if policy.MaxFollowups != nil {
 			limit := *policy.MaxFollowups

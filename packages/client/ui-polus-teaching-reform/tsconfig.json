@@ -1,7 +1,7 @@
 {
   "extends": "../../../tsconfig.base.client.json",
-  "compilerOptions": { "rootDir": "src", "outDir": "lib/types", "types": ["node"] },
-  "include": ["src"],
+  "compilerOptions": { "rootDir": "src", "outDir": "lib/types", "types": ["node"], "resolveJsonModule": true },
+  "include": ["src", "src/references/bundled-corpus.json"],
   "references": [
     { "path": "../../client/runtime" },
     { "path": "../../client/ui-conversation" },

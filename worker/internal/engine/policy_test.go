@@ -63,3 +63,42 @@ func TestZeroAndWholeInterviewLimitsDoNotCallModels(t *testing.T) {
 		}
 	}
 }
+
+func TestOnlyActualTextInputsCanCallFollowupModels(t *testing.T) {
+	text := "这是其他方式的真实说明"
+	for _, tc := range []struct {
+		name, kind        string
+		options, selected []string
+		text              string
+		wantCalls         int
+	}{
+		{"consent", "授权确认", []string{"同意", "其他"}, []string{"同意"}, "", 0},
+		{"pure choice", "单项选择", []string{"甲", "乙"}, []string{"甲"}, "", 0},
+		{"other not selected", "多项选择", []string{"甲", "其他"}, []string{"甲"}, text, 0},
+		{"other empty", "多项选择", []string{"甲", "其他"}, []string{"其他"}, "", 0},
+		{"other written", "多项选择", []string{"甲", "其他"}, []string{"其他"}, text, 2},
+		{"open written", "开放回忆", nil, nil, text, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := policyInput("per_question", 2)
+			policy := domain.QuestionPolicy(tc.kind, tc.options)
+			in.Submit.Snapshot.Questions[0].FollowupPolicy = &policy
+			in.Submit.Snapshot.Questions[0].Options = tc.options
+			in.Submit.Snapshot.Answers[0].TextInput = &tc.text
+			in.Submit.Snapshot.Answers[0].SelectedOptions = tc.selected
+			model := &controlledStages{status: "incomplete"}
+			_, err := (&Engine{Model: model}).Process(context.Background(), store.Task{}, in, config.Release{}, config.Queue{})
+			if err != nil || len(model.calls) != tc.wantCalls {
+				t.Fatalf("unexpected model calls %d, err %v", len(model.calls), err)
+			}
+			if tc.wantCalls > 0 {
+				in.Followups = []domain.Followup{{QuestionID: "Q01"}, {QuestionID: "Q01"}}
+				model.calls = nil
+				_, err = (&Engine{Model: model}).Process(context.Background(), store.Task{}, in, config.Release{}, config.Queue{})
+				if err != nil || len(model.calls) != 0 {
+					t.Fatal("third followup called a model")
+				}
+			}
+		})
+	}
+}

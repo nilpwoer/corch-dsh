@@ -11,17 +11,22 @@ import (
 )
 
 type Question struct {
-	ID            string          `json:"id"`
-	Text          string          `json:"text"`
-	RequiredSlots []string        `json:"required_slots"`
-	FollowUp      string          `json:"followUp,omitempty"`
-	SourceRefs    json.RawMessage `json:"sourceRefs,omitempty"`
+	ID             string                  `json:"id"`
+	Text           string                  `json:"text"`
+	RequiredSlots  []string                `json:"required_slots"`
+	FollowUp       string                  `json:"followUp,omitempty"`
+	SourceRefs     json.RawMessage         `json:"sourceRefs,omitempty"`
+	FollowupPolicy *QuestionFollowupPolicy `json:"followup_policy,omitempty"`
+	Options        []string                `json:"options,omitempty"`
 }
 type Answer struct {
-	QuestionID string `json:"question_id"`
-	Text       string `json:"text"`
-	Skipped    bool   `json:"skipped"`
-	Confirmed  bool   `json:"confirmed"`
+	QuestionID      string   `json:"question_id"`
+	Text            string   `json:"text"`
+	Skipped         bool     `json:"skipped"`
+	Confirmed       bool     `json:"confirmed"`
+	TextInput       *string  `json:"text_input,omitempty"`
+	SelectedOptions []string `json:"selected_options,omitempty"`
+	Supplements     []string `json:"supplements,omitempty"`
 }
 type Profile struct {
 	Name       string `json:"name"`
@@ -70,6 +75,11 @@ func FollowupLimit(in Snapshot, history []Followup, questionID string, legacyLim
 	if in.Pack != nil {
 		limit = *in.Pack.Policy.MaxFollowups
 		scope = in.Pack.Policy.Scope
+	}
+	for _, q := range in.Questions {
+		if q.ID == questionID && q.FollowupPolicy != nil && q.FollowupPolicy.MaxFollowups < limit {
+			limit = q.FollowupPolicy.MaxFollowups
+		}
 	}
 	count := 0
 	for _, f := range history {
@@ -174,11 +184,16 @@ func (s Submit) Validate() error {
 		return bad()
 	}
 	seen := map[string]bool{}
+	questions := map[string]Question{}
 	for _, q := range in.Questions {
 		if !identifier.MatchString(q.ID) || seen[q.ID] || strings.TrimSpace(q.Text) == "" || len(q.Text) > 30000 || len(q.RequiredSlots) > 30 {
 			return bad()
 		}
 		seen[q.ID] = true
+		questions[q.ID] = q
+		if q.FollowupPolicy != nil && q.FollowupPolicy.Validate() != nil {
+			return bad()
+		}
 		slots := map[string]bool{}
 		for _, slot := range q.RequiredSlots {
 			if slot == "" || len(slot) > 100 || slots[slot] {
@@ -196,6 +211,29 @@ func (s Submit) Validate() error {
 			return bad()
 		}
 		answers[a.QuestionID] = a
+		if q := questions[a.QuestionID]; q.FollowupPolicy != nil {
+			if a.TextInput == nil || len(*a.TextInput) > 60000 || len(a.Supplements) > MaxQuestionFollowups || a.Text != StructuredAnswerText(a) {
+				return bad()
+			}
+			allowed, selected := map[string]bool{}, map[string]bool{}
+			for _, option := range q.Options {
+				allowed[option] = true
+			}
+			for _, option := range a.SelectedOptions {
+				if !allowed[option] || selected[option] {
+					return bad()
+				}
+				selected[option] = true
+			}
+			for _, text := range a.Supplements {
+				if len(text) > 30000 {
+					return bad()
+				}
+			}
+			if q.FollowupPolicy.Input == "none" && *a.TextInput != "" {
+				return bad()
+			}
+		}
 		if a.Confirmed && !a.Skipped && strings.TrimSpace(a.Text) == "" {
 			return bad()
 		}

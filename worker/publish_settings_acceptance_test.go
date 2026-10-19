@@ -244,7 +244,8 @@ func TestPublishSettingsAcceptance(t *testing.T) {
 		if code != 200 || json.Unmarshal(body, &value) != nil {
 			t.Fatalf("enter synthetic session: %d %s", code, body)
 		}
-		value.Snapshot.Answers = []domain.Answer{{QuestionID: "q_task", Text: answerText, Confirmed: true}}
+		text := answerText
+		value.Snapshot.Answers = []domain.Answer{{QuestionID: "q_task", Text: answerText, TextInput: &text, Confirmed: true}}
 		return value.Snapshot
 	}
 	oldSnapshot := enter(owner, "FN-settings-v1")
@@ -256,6 +257,23 @@ func TestPublishSettingsAcceptance(t *testing.T) {
 	zero := 0
 	stale := perPack
 	perPack = save(settingsPath, perPack, runtimecfg.Settings{Policy: &domain.FollowupPolicy{Scope: "interview", MaxFollowups: &zero}})
+	readBack := read(settingsPath)
+	if readBack.Revision != perPack.Revision || readBack.PolicySource != "override" || readBack.Settings.Policy == nil || *readBack.Settings.Policy.MaxFollowups != 0 || readBack.Policy.Scope != "interview" {
+		t.Fatal("saved package policy did not survive a fresh GET")
+	}
+	var savedPolicy []byte
+	var savedRevision int64
+	if err := db.QueryRow("SELECT contents,revision FROM tw_runtime_settings WHERE scope_key=?", "pack:FN-settings-v1").Scan(&savedPolicy, &savedRevision); err != nil {
+		t.Fatal(err)
+	}
+	var persisted runtimecfg.Settings
+	if json.Unmarshal(savedPolicy, &persisted) != nil || persisted.Policy == nil || *persisted.Policy.MaxFollowups != 0 || persisted.Policy.Scope != "interview" || savedRevision != perPack.Revision {
+		t.Fatal("policy PUT did not commit the expected SQL record")
+	}
+	tooMany := 3
+	if code, _ := request(manager, "PUT", settingsPath, "", map[string]any{"revision": perPack.Revision, "publication_hash": perPack.PublicationHash, "settings": runtimecfg.Settings{Policy: &domain.FollowupPolicy{Scope: "per_question", MaxFollowups: &tooMany}}}); code != 400 {
+		t.Fatal("editable ceiling above two was accepted")
+	}
 	if code, _ := request(manager, "PUT", settingsPath, "", map[string]any{"revision": stale.Revision, "publication_hash": stale.PublicationHash, "settings": stale.Settings}); code != 409 {
 		t.Fatal("stale settings overwrote newer revision")
 	}
@@ -286,6 +304,10 @@ func TestPublishSettingsAcceptance(t *testing.T) {
 	write()
 	process = start(binary, configuration)
 	ready()
+	afterRestart := read(settingsPath)
+	if afterRestart.Revision != perPack.Revision || afterRestart.Settings.Policy == nil || *afterRestart.Settings.Policy.MaxFollowups != 0 || afterRestart.Policy.Scope != "interview" {
+		t.Fatal("saved policy changed after Worker restart")
+	}
 	submit := func(client *http.Client, kind, key string, snapshot domain.Snapshot) store.Task {
 		value := domain.Submit{Kind: kind, Snapshot: snapshot}
 		if kind == "followup" {
@@ -399,6 +421,13 @@ func TestPublishSettingsAcceptance(t *testing.T) {
 	const legacyPath = "/admin/api/packs/FN-legacy-policy-v1"
 	if code, _ := request(manager, "POST", legacyPath, "", legacyPack); code != 201 {
 		t.Fatal("legacy package without policy upload failed")
+	}
+	defaultView := read(legacyPath + "/settings")
+	if defaultView.Policy == nil || *defaultView.Policy.MaxFollowups != 2 || defaultView.Policy.Scope != "per_question" || defaultView.PolicySource != "built_in" {
+		t.Fatal("missing publication policy did not get the built-in default")
+	}
+	if initial := enter(newClient(), "FN-legacy-policy-v1"); initial.Pack.Policy.MaxFollowups == nil || *initial.Pack.Policy.MaxFollowups != 2 || initial.Questions[0].FollowupPolicy == nil {
+		t.Fatal("unconfigured legacy publication could not start immediately")
 	}
 	save(legacyPath+"/settings", read(legacyPath+"/settings"), runtimecfg.Settings{Policy: &domain.FollowupPolicy{Scope: "interview", MaxFollowups: &zero}})
 	if legacy := enter(newClient(), "FN-legacy-policy-v1"); legacy.Pack.Policy.Scope != "interview" || *legacy.Pack.Policy.MaxFollowups != 0 {

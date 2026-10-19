@@ -10,9 +10,9 @@ In interview settings, save the Worker origin and a publishing API Key created i
 
 Choose **发布并打开 SPA** after reviewing the current questions. The native process uploads immediately, validates the matching receipt and opens the participant page. No second confirmation or administrator login occurs. Missing, expired, revoked or invalid authorization produces a readable inline error and a settings shortcut. Duplicate clicks share one request; a failed or cancelled operation can retry the same immutable bytes. Changed content requires a new version. Editing unchanged content preserves the version. The displayed status follows the current version's successful receipt.
 
-New publications omit invitation credentials. The Worker returns the participant invitation and fragment-only share URL with the upload receipt. Browser storage retains that receipt for display/copy; it never contains the publishing Key. Legacy invitation data remains available for byte-stable original-version retries, while new versions omit it. Anyone receiving the full share link receives its invitation. The Worker removes the fragment from history, pre-fills the code and waits for participant entry; it does not automatically start an interview.
+New publications omit invitation credentials. Worker returns the invitation in a fragment-only share URL. The participant page consumes and removes that fragment and enters directly. Native preview requests a new interview; refreshing retains its frozen session. Browser storage holds the receipt for sharing and never the publishing Key. Anyone receiving the complete link receives its invitation.
 
-The question-package toolbar provides JSON download and new-version actions. The preview presents the invitation and link. Configure follow-up scope/count and inherited or overridden prompts in the separate [Worker editor](../../../worker/README.md#management-settings-and-interview-freezing). New packages do not infer a policy; participant entry requires an explicit publication policy or saved package override. Same-version upload preserves separate Worker settings. Reports have their own management page.
+The question-package toolbar provides JSON download and new-version actions. The link-field icon copies the complete share URL and announces success. Publications carry a default per-question limit of two and a question input policy: consent and pure choices never request follow-ups; conditional Other requires both the selected option and written text. Worker inherits that policy until an administrator saves a 0–2 override with per-question or interview scope. Settings affect new interviews; same-version uploads preserve separate overrides. See [Worker settings](../../../worker/README.md#management-settings-and-interview-freezing).
 
 ## Model Experience
 
@@ -20,11 +20,11 @@ The question-package toolbar provides JSON download and new-version actions. The
 
 #### What the model sees
 
-Generation submits the [rendered interview prompt](src/client/interviewPrompt.ts) through `session.prompt` on the existing session, including expert information, supplied materials and enabled references. Publication, edits, settings and report viewing make no model requests.
+Generation renders the saved global template from **专家访谈 → 访谈设置 → 系统提示词** and sends it as a user message through the current session’s `session.prompt`. This field controls question-package generation; it does not change the Host’s system-message role or the Worker’s follow-up/report prompts. Expert fields, supplied materials and enabled reference passages replace the documented placeholders. Existing generated packages retain their content.
 
 #### Token effect
 
-Generation appends the rendered user message; its size depends on supplied information. Publication and settings add no model input tokens.
+The fourteen supplied Markdown documents are embedded in the client. Full-text search and preview read their exact bodies. Enabled sources contribute bounded verbatim passages with original-file line/column positions; generated metadata retains source hashes and excerpts through publication. The total built-in reference context is below 42,000 characters. Existing user text, titles and enable/archive choices win over seed updates. Missing bodies fail explicitly; OCR metadata is not verified bibliography and Markdown positions do not assert printed page numbers. Generation appends this rendered user message; publication and settings make no model call.
 
 #### KV Cache effect
 

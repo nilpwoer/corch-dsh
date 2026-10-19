@@ -22,15 +22,16 @@ type SourceRef struct {
 	RequiresConfirmation bool   `json:"requiresConfirmation,omitempty"`
 }
 type Question struct {
-	ID            string      `json:"id"`
-	Title         string      `json:"title"`
-	Type          string      `json:"type"`
-	Question      string      `json:"question"`
-	Helper        string      `json:"helper,omitempty"`
-	FollowUp      string      `json:"followUp,omitempty"`
-	Options       []string    `json:"options,omitempty"`
-	SourceRefs    []SourceRef `json:"sourceRefs,omitempty"`
-	RequiredSlots []string    `json:"required_slots,omitempty"`
+	ID             string                         `json:"id"`
+	Title          string                         `json:"title"`
+	Type           string                         `json:"type"`
+	Question       string                         `json:"question"`
+	Helper         string                         `json:"helper,omitempty"`
+	FollowUp       string                         `json:"followUp,omitempty"`
+	Options        []string                       `json:"options,omitempty"`
+	SourceRefs     []SourceRef                    `json:"sourceRefs,omitempty"`
+	RequiredSlots  []string                       `json:"required_slots,omitempty"`
+	FollowupPolicy *domain.QuestionFollowupPolicy `json:"followupPolicy,omitempty"`
 }
 type Profile struct {
 	Name       string          `json:"name"`
@@ -103,6 +104,15 @@ func Parse(raw []byte) (Pack, string, error) {
 			return p, "", fmt.Errorf("invalid or duplicate published question")
 		}
 		seen[q.ID] = true
+		if q.FollowupPolicy != nil {
+			if err := q.FollowupPolicy.Validate(); err != nil {
+				return p, "", err
+			}
+			expected := domain.QuestionPolicy(q.Type, q.Options)
+			if q.FollowupPolicy.Input != expected.Input || configPolicyOptions(q.FollowupPolicy.OtherOptions) != configPolicyOptions(expected.OtherOptions) {
+				return p, "", domain.Fail("QUESTION_INPUT_POLICY_MISMATCH", 400)
+			}
+		}
 	}
 	// Hash the complete JSON, including metadata and policy, independently of formatting and object key order.
 	var value any
@@ -159,7 +169,31 @@ func (e Entry) Snapshot(id string) (domain.Snapshot, error) {
 		if err != nil {
 			return in, err
 		}
-		in.Questions = append(in.Questions, domain.Question{ID: q.ID, Text: q.Question, FollowUp: q.FollowUp, SourceRefs: refs})
+		question := domain.Question{ID: q.ID, Text: q.Question, FollowUp: q.FollowUp, SourceRefs: refs, FollowupPolicy: q.FollowupPolicy}
+		if q.FollowupPolicy != nil {
+			question.Options = q.Options
+		}
+		in.Questions = append(in.Questions, question)
 	}
 	return in, nil
+}
+
+func configPolicyOptions(values []string) string {
+	raw, _ := json.Marshal(values)
+	if len(values) == 0 {
+		return "[]"
+	}
+	return string(raw)
+}
+
+// NewInterviewCopy fills answer controls only for new sessions; saved sessions stay immutable.
+func (p Pack) NewInterviewCopy() Pack {
+	p.Questions = append([]Question(nil), p.Questions...)
+	for i := range p.Questions {
+		if p.Questions[i].FollowupPolicy == nil {
+			policy := domain.QuestionPolicy(p.Questions[i].Type, p.Questions[i].Options)
+			p.Questions[i].FollowupPolicy = &policy
+		}
+	}
+	return p
 }
