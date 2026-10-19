@@ -35,7 +35,9 @@ test('target configuration excludes credentials and share invitations stay in fr
 test('native Key configuration never writes the token to browser persistence', async () => {
   const token='dsh_pub_'+'a'.repeat(64)
   const configure=vi.fn(async () => ({ ok:true as const,value:{ configured:true,origin:'https://worker.example.com',prefix:token.slice(0,16) } }))
-  window.corchPublication={ configure,status:vi.fn(async()=>({ ok:true,value:{ configured:false } })),publish:vi.fn(),cancel:vi.fn() }
+  window.corchPublication={
+    configure,status:vi.fn(async()=>({ ok:true as const,value:{ configured:false } })),publish:vi.fn(),cancel:vi.fn(),
+  }
   await savePublisherKey('https://worker.example.com',token)
   assert.deepEqual(configure.mock.calls[0],[{ origin:'https://worker.example.com',token }])
   assert.equal(JSON.stringify(localStorage).includes(token),false)
