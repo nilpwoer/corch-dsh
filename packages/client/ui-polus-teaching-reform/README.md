@@ -12,7 +12,9 @@ Choose **发布并打开 SPA** after reviewing the current questions. The native
 
 New publications omit invitation credentials. Worker returns the invitation in a fragment-only share URL. The participant page consumes and removes that fragment and enters directly. Native preview requests a new interview; refreshing retains its frozen session. Browser storage holds the receipt for sharing and never the publishing Key. Anyone receiving the complete link receives its invitation.
 
-The question-package toolbar provides JSON download and new-version actions. The link-field icon copies the complete share URL and announces success. Publications carry a default per-question limit of two and a question input policy: consent and pure choices never request follow-ups; conditional Other requires both the selected option and written text. Worker inherits that policy until an administrator saves a 0–2 override with per-question or interview scope. Settings affect new interviews; same-version uploads preserve separate overrides. See [Worker settings](../../../worker/README.md#management-settings-and-interview-freezing).
+The question-package toolbar provides JSON download and new-version actions. The link-field icon copies the complete share URL and announces success. Publications carry a default per-question limit of two and a question input policy: pure choices never request follow-ups; conditional Other requires both the selected option and written text. Worker inherits that policy until an administrator saves a 0–2 override with per-question or interview scope. Settings affect new interviews; same-version uploads preserve separate overrides. See [Worker settings](../../../worker/README.md#management-settings-and-interview-freezing).
+
+Each generated question declares `answerMode`: `text` (text only, no options), `choice` (options only), `mixed` (options plus a permanent text field), or `other` (text only after selecting Other). The host editor preserves this choice through save, reload and publication; input-bearing questions allow at most two follow-ups on actual text. Records without the field keep their legacy behavior. To repair a saved mixed question, select its mode and publish a new version for a new interview; pinned interviews remain unchanged. Explicit modes require an updated client and Worker, with no database migration. See the [answer-mode decision](../../../.agents/notes/implemented/feature/2026-10-20-explicit-interview-answer-modes.md).
 
 ## Model Experience
 
@@ -20,7 +22,7 @@ The question-package toolbar provides JSON download and new-version actions. The
 
 #### What the model sees
 
-Generation renders the saved global template from **专家访谈 → 访谈设置 → 系统提示词** and sends it as a user message through the current session’s `session.prompt`. This field controls question-package generation; it does not change the Host’s system-message role or the Worker’s follow-up/report prompts. Expert fields, supplied materials and enabled reference passages replace the documented placeholders. Existing generated packages retain their content.
+Generation renders the saved global template from **专家访谈 → 访谈设置 → 系统提示词** and sends it as a user message through the current session’s `session.prompt`. This field controls question-package generation; it does not change the Host’s system-message role or the Worker’s follow-up/report prompts. Expert fields, supplied materials and enabled reference passages replace the documented placeholders. A stored template missing the mandatory answer-mode protocol receives that protocol in the rendered request. Existing generated packages retain their content.
 
 #### Token effect
 

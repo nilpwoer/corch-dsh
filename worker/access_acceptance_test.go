@@ -304,7 +304,7 @@ func TestManagedAccessAcceptance(t *testing.T) {
 	}
 	var first receipt
 	must(json.Unmarshal(request("POST", "/admin/api/packs/FN-access-v1", payload, 201, true), &first))
-	if len(first.Access.Code) != 40 || first.Access.Source != "worker" {
+	if !regexp.MustCompile(`^[0-9]{6}$`).MatchString(first.Access.Code) || first.Access.Source != "worker" {
 		t.Fatal("server receipt did not contain generated access")
 	}
 	var wg sync.WaitGroup
@@ -351,7 +351,7 @@ func TestManagedAccessAcceptance(t *testing.T) {
 	request("POST", "/admin/api/packs/FN-manual-v1/access", manualBody, 401, false)
 	var created receipt
 	must(json.Unmarshal(request("POST", "/admin/api/packs/FN-manual-v1/access", manualBody, 200, true), &created))
-	if len(created.Access.Code) != 40 {
+	if !regexp.MustCompile(`^[0-9]{6}$`).MatchString(created.Access.Code) {
 		t.Fatal("explicit admin creation failed")
 	}
 	checkResponse, err := client.Get(c.Portal.Origin + "/admin/api/packs/FN-access-v1/access")
@@ -370,7 +370,7 @@ func TestManagedAccessAcceptance(t *testing.T) {
 		return result
 	}
 	changed := rotate("rotate", first.Access.Revision, 200)
-	if changed.Access.Code == first.Access.Code || len(changed.Access.Code) != 40 {
+	if changed.Access.Code == first.Access.Code || !regexp.MustCompile(`^[0-9]{6}$`).MatchString(changed.Access.Code) {
 		t.Fatal("explicit rotation failed")
 	}
 	request("POST", "/portal/api/session", body, 401, false)

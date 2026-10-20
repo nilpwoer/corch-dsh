@@ -10,7 +10,11 @@ DSH publications carry profile, metadata and optional question hints that the lo
 
 ## Decision
 
+Explicit answer controls and legacy compatibility are defined by the [answer-mode decision](2026-10-20-explicit-interview-answer-modes.md); auxiliary options in mixed questions do not suppress their text field.
+
 The [portal service](../../../../worker/internal/service/portal.go) serves the existing SPA assets at root and the legacy filename. An independent portal configuration leaves loopback preview restrictions intact. Participant entry mode, invitation mode and report visibility are explicit selectable options; participant routes remain disabled until those choices are configured. No default product decision is inferred from an implementation test.
+
+The Worker participant view keeps the question navigation and gives the answer card the remaining width in a two-column grid, retaining the template's height, scrolling and mobile breakpoint rules. It omits the model-name badge, persistent draft/freeze banner and right-hand information cards. The explicitly excluded host-only helper sentence is filtered only during display; other hints, stored publication data, submitted answers and model behavior remain intact. The welcome text, confirmed-question count and navigation remain available; completing the final question still opens the existing confirmation and report flow without a separate review shortcut.
 
 The [publication module](../../../../worker/internal/published/pack.go) accepts DSH fields without requiring slots, retains optional followUp and sourceRefs, and requires an explicit package-owned follow-up policy for portal sessions. The engine receives the goal, background, answer history and optional hints as data. It can accept sufficient answers without composing another question. Both pre-model and final transactional checks enforce published follow-up counts.
 

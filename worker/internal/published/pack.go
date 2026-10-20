@@ -25,6 +25,7 @@ type Question struct {
 	ID             string                         `json:"id"`
 	Title          string                         `json:"title"`
 	Type           string                         `json:"type"`
+	AnswerMode     *string                        `json:"answerMode,omitempty"`
 	Question       string                         `json:"question"`
 	Helper         string                         `json:"helper,omitempty"`
 	FollowUp       string                         `json:"followUp,omitempty"`
@@ -104,11 +105,24 @@ func Parse(raw []byte) (Pack, string, error) {
 			return p, "", fmt.Errorf("invalid or duplicate published question")
 		}
 		seen[q.ID] = true
+		mode := ""
+		if q.AnswerMode != nil {
+			mode = *q.AnswerMode
+			if mode == "" {
+				return p, "", domain.Fail("INVALID_ANSWER_MODE", 400)
+			}
+		}
+		expected, modeErr := domain.ExplicitQuestionPolicy(mode, q.Type, q.Options)
+		if modeErr != nil {
+			return p, "", modeErr
+		}
+		if q.AnswerMode != nil && q.FollowupPolicy == nil {
+			return p, "", domain.Fail("QUESTION_INPUT_POLICY_MISMATCH", 400)
+		}
 		if q.FollowupPolicy != nil {
 			if err := q.FollowupPolicy.Validate(); err != nil {
 				return p, "", err
 			}
-			expected := domain.QuestionPolicy(q.Type, q.Options)
 			if q.FollowupPolicy.Input != expected.Input || configPolicyOptions(q.FollowupPolicy.OtherOptions) != configPolicyOptions(expected.OtherOptions) {
 				return p, "", domain.Fail("QUESTION_INPUT_POLICY_MISMATCH", 400)
 			}

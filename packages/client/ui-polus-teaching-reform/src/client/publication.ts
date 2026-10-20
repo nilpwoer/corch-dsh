@@ -1,4 +1,5 @@
 import { MAX_QUESTION_FOLLOWUPS, questionFollowupPolicy } from './questionFollowup.ts'
+import type { AnswerMode } from './questionFollowup.ts'
 
 /** Package defaults inherited by Worker until an administrator saves an override. */
 export type InterviewPolicy = { scope: 'per_question' | 'interview'; maxFollowups: number }
@@ -9,7 +10,13 @@ export type InterviewPolicy = { scope: 'per_question' | 'interview'; maxFollowup
  * @param publishedAt - Publication timestamp supplied by the host.
  * @returns the versioned upload payload, excluding deleted questions and deletion metadata.
  */
-export function createPublication<T extends { deleted?: boolean; deletedAt?: string; type?: string; options?: readonly string[] }>(input: {
+export function createPublication<T extends {
+  deleted?: boolean
+  deletedAt?: string
+  type?: string
+  options?: readonly string[]
+  answerMode?: AnswerMode
+}>(input: {
   fieldnoteId: string
   publicFieldnoteId: string
   goal: string

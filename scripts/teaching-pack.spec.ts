@@ -16,7 +16,7 @@ test('real CLI entry uses the Host session carrier and exports shared validated 
   const root = await mkdtemp(join(tmpdir(), 'dsh-teaching-cli-'))
   await writeFile(join(root, 'request.json'), JSON.stringify(request))
   const methods: string[] = []
-  const modelText = JSON.stringify({ questions: Array.from({ length: 4 }, (_, index) => ({ title: `Fixture ${index + 1}`, question: 'Synthetic fixture question',
+  const modelText = JSON.stringify({ questions: Array.from({ length: 4 }, (_, index) => ({ title: `Fixture ${index + 1}`, question: 'Synthetic fixture question', answerMode: ['text', 'choice', 'mixed', 'other'][index], ...(index === 0 ? {} : { options: ['Standard', 'Other: specify'] }),
     sourceRefs: [{ sourceType: 'model_inference', title: 'Fixture source', rationale: 'Test fixture only', confidence: 'low', requiresConfirmation: true }] })) })
   let prompted = false
   const server = createServer(async (req, res) => {
@@ -46,8 +46,37 @@ test('real CLI entry uses the Host session carrier and exports shared validated 
     if (!address || typeof address === 'string') throw new Error('No fixture listener')
     const result = await run(process.execPath, ['--import', 'tsx/esm', 'scripts/teaching-pack.ts', '--host', `http://127.0.0.1:${address.port}/`,
       '--request', join(root, 'request.json'), '--output', join(root, 'output')], { cwd: process.cwd(), timeout: 30000 })
-    const pack = JSON.parse(await readFile(join(root, 'output/publication.json'), 'utf8'))
+    const pack = JSON.parse(await readFile(join(root, 'output/publication.json'), 'utf8')) as {
+      questions: { id: string; answerMode: string; followupPolicy: { input: string; maxFollowups: number } }[]
+      questionPackMeta: { sourceSessionId: string }
+      interviewPolicy: typeof request.interviewPolicy
+      invitation: { code: string }
+    }
     expect(pack.questions).toHaveLength(4)
+    expect(pack.questions.map((q: { answerMode: string; followupPolicy: { input: string; maxFollowups: number } }) => [q.answerMode, q.followupPolicy.input, q.followupPolicy.maxFollowups])).toMatchInlineSnapshot(`
+      [
+        [
+          "text",
+          "text",
+          2,
+        ],
+        [
+          "choice",
+          "none",
+          0,
+        ],
+        [
+          "mixed",
+          "text",
+          2,
+        ],
+        [
+          "other",
+          "other",
+          2,
+        ],
+      ]
+    `)
     expect(pack.questionPackMeta.sourceSessionId).toBe('fixture-session')
     expect(pack.interviewPolicy).toEqual(request.interviewPolicy)
     expect(result.stdout).not.toContain(pack.invitation.code)

@@ -4,6 +4,8 @@ import { CORE_METHOD_RULES, generationExcerpt } from './globalReferenceCorpus.ts
 
 export const INTERVIEW_SYSTEM_PROMPT_STORAGE_KEY = 'dsh.practice-expert-system-prompt.v1'
 
+const ANSWER_MODE_INSTRUCTIONS = '回答控件协议：每题必须提供 answerMode，且只能为 text（仅文字，不带 options）、choice（纯选择，不显示输入框）、mixed（选项辅助＋始终显示文字输入框）或 other（仅选中“其他”才显示输入框，必须提供对应选项）。type 只描述题目主题或单选/多选，不决定是否允许文字输入。经历、真实任务和证据叙述应使用 text 或 mixed；辅助选项不能代替开放叙述。授权或明确仅需选择的题使用 choice；只有明确要求其他补充的选择题使用 other。不要给所有题统一使用 choice 或 other。有文字输入的题每题最多追问 2 次；不要自行输出 followupPolicy，该策略由系统依据 answerMode 生成。'
+
 /** The single source of truth for both the prompt sent to DSH and the UI preview. */
 export function buildInterviewPromptTemplate(): string {
   return [
@@ -23,6 +25,7 @@ export function buildInterviewPromptTemplate(): string {
     '上传资料默认已由主持人确认。你只能对资料做结构化归类，不得补写原文没有出现的事实；问题的sourceRefs应优先引用uploaded_document并保留文件名和章节定位。',
     '可引用来源范围：project_goal=本次访谈任务书；expert_profile=专家信息表（按行业、岗位、年限、职业阶段或经验边界定位）；global_reference=本次输入的全局基础文献池文档；methodology=实践专家访谈法问题包模板；uploaded_document=仅当本次确实提供上传材料时使用；official_standard/job_description=仅当输入中确实提供对应文件或条目时使用；domain_knowledge=LLM 行业知识补充；model_inference=模型根据现有输入做出的待核验推断。不要虚构不存在的文件、页码、条款或专家原话。',
     '只输出一个完整的 ```json 代码块，不要在代码块前后输出解释文字。JSON 顶层包含 overview（简短访谈概览）、packId（可选）和 questions 数组；每个问题包含 title、type、question、options（可选数组）、helper（可选）、followUp（可选）和 sourceRefs（必填数组）。每个 sourceRefs 条目必须包含 sourceType、title、rationale、confidence 四个字段；confidence 只能是 high、medium、low。可选字段包括 locator、excerpt、requiresConfirmation。sourceType 只能使用 project_goal、expert_profile、uploaded_document、methodology、global_reference、official_standard、job_description、domain_knowledge、model_inference 之一。没有可验证来源时，不要省略 sourceRefs，也不要编造文件或引用，应使用 model_inference、confidence=low、requiresConfirmation=true，并明确说明待核验。不要在 JSON 中省略问题，问题编号由插件按数组顺序生成 Q01、Q02……。',
+    ANSWER_MODE_INSTRUCTIONS,
     '问题包必须覆盖授权、经历校准、核心职责、真实任务、工具/协作/判断、质量证据、难点例外、职业阶段差异、迁移边界和最终确认。',
   ].join('\n')
 }
@@ -55,7 +58,7 @@ export function buildInterviewPromptFromTemplate(
   const materialsText = profile.materials?.length
     ? profile.materials.map(material => `--- ${material.name} ---\n${material.markdown}`).join('\n')
     : '本次没有上传专家资料。'
-  return template
+  const rendered = template
     .replaceAll('{{expert.name}}', profile.name)
     .replaceAll('{{expert.industry}}', profile.industry)
     .replaceAll('{{expert.role}}', profile.role)
@@ -64,4 +67,5 @@ export function buildInterviewPromptFromTemplate(
     .replaceAll('{{expert.experience}}', profile.experience)
     .replaceAll('{{global_reference_pool}}', referenceText)
     .replaceAll('{{expert.materials}}', materialsText)
+  return rendered.includes(ANSWER_MODE_INSTRUCTIONS) ? rendered : `${rendered}\n${ANSWER_MODE_INSTRUCTIONS}`
 }

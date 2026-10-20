@@ -5,6 +5,7 @@ import (
 	"github.com/fanzy531/corch-dsh/worker/internal/domain"
 	"github.com/fanzy531/corch-dsh/worker/internal/packaccess"
 	"github.com/fanzy531/corch-dsh/worker/internal/published"
+	"regexp"
 	"testing"
 )
 
@@ -58,7 +59,7 @@ func (f *fakeManagement) ChangePackAccess(ctx context.Context, e published.Entry
 	}
 	switch action {
 	case "create", "rotate":
-		code, err := packaccess.Generate()
+		code, err := packaccess.Rotate(v.Code)
 		if err != nil {
 			return v, err
 		}
@@ -93,7 +94,7 @@ func TestAccessCredentialsAreServerGeneratedAndLegacyIsReadOnly(t *testing.T) {
 	e := published.Entry{Key: "synthetic-v1", Hash: "synthetic-hash"}
 	ctx := context.Background()
 	v, err := f.EnsurePackAccess(ctx, e)
-	if err != nil || len(v.Code) != 40 || v.Source != "worker" {
+	if err != nil || !regexp.MustCompile(`^[0-9]{6}$`).MatchString(v.Code) || v.Source != "worker" {
 		t.Fatal("server generation failed")
 	}
 	retry, err := f.EnsurePackAccess(ctx, e)

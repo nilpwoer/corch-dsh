@@ -5,7 +5,10 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/hex"
+	"fmt"
+	"io"
+	"math/big"
+
 	"github.com/fanzy531/corch-dsh/worker/internal/domain"
 	"github.com/fanzy531/corch-dsh/worker/internal/published"
 )
@@ -30,13 +33,27 @@ func Legacy(entry published.Entry) View {
 	return v
 }
 
-// Generate uses 160 random bits; publication identity and process restarts do not determine a code.
+// Generate uniformly samples a six-digit invitation, preserving leading zeros.
 func Generate() (string, error) {
-	var raw [20]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return "", err
+	return generate(rand.Reader, "")
+}
+
+// Rotate samples a new six-digit invitation that differs from the existing code.
+func Rotate(previous string) (string, error) {
+	return generate(rand.Reader, previous)
+}
+
+func generate(random io.Reader, previous string) (string, error) {
+	for {
+		value, err := rand.Int(random, big.NewInt(1_000_000))
+		if err != nil {
+			return "", err
+		}
+		code := fmt.Sprintf("%06d", value.Int64())
+		if code != previous {
+			return code, nil
+		}
 	}
-	return hex.EncodeToString(raw[:]), nil
 }
 
 // Check never returns the expected invitation or makes legacy fallback after revocation.

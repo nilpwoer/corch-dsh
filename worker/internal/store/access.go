@@ -91,7 +91,7 @@ func (s *Store) ChangePackAccess(ctx context.Context, entry published.Entry, rev
 			}
 			row.Status = "revoked"
 		} else {
-			code, err := packaccess.Generate()
+			code, err := packaccess.Rotate(row.Code)
 			if err != nil {
 				return err
 			}

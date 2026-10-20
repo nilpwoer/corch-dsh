@@ -67,21 +67,28 @@ func TestZeroAndWholeInterviewLimitsDoNotCallModels(t *testing.T) {
 func TestOnlyActualTextInputsCanCallFollowupModels(t *testing.T) {
 	text := "这是其他方式的真实说明"
 	for _, tc := range []struct {
-		name, kind        string
+		name, kind, mode  string
 		options, selected []string
 		text              string
 		wantCalls         int
 	}{
-		{"consent", "授权确认", []string{"同意", "其他"}, []string{"同意"}, "", 0},
-		{"pure choice", "单项选择", []string{"甲", "乙"}, []string{"甲"}, "", 0},
-		{"other not selected", "多项选择", []string{"甲", "其他"}, []string{"甲"}, text, 0},
-		{"other empty", "多项选择", []string{"甲", "其他"}, []string{"其他"}, "", 0},
-		{"other written", "多项选择", []string{"甲", "其他"}, []string{"其他"}, text, 2},
-		{"open written", "开放回忆", nil, nil, text, 2},
+		{"consent", "授权确认", "", []string{"同意", "其他"}, []string{"同意"}, "", 0},
+		{"pure choice", "单项选择", "", []string{"甲", "乙"}, []string{"甲"}, "", 0},
+		{"other not selected", "多项选择", "", []string{"甲", "其他"}, []string{"甲"}, text, 0},
+		{"other empty", "多项选择", "", []string{"甲", "其他"}, []string{"其他"}, "", 0},
+		{"other written", "多项选择", "", []string{"甲", "其他"}, []string{"其他"}, text, 2},
+		{"open written", "开放回忆", "", nil, nil, text, 2},
+		{"mixed regular selection and text", "单项选择", "mixed", []string{"甲", "其他"}, []string{"甲"}, text, 2},
+		{"mixed without selection", "任务深挖", "mixed", []string{"甲", "其他"}, nil, text, 2},
+		{"mixed blank text", "任务深挖", "mixed", []string{"甲", "其他"}, []string{"甲"}, "", 0},
+		{"explicit pure choice with other", "开放回忆", "choice", []string{"甲", "其他"}, []string{"其他"}, "", 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			in := policyInput("per_question", 2)
-			policy := domain.QuestionPolicy(tc.kind, tc.options)
+			policy, policyErr := domain.ExplicitQuestionPolicy(tc.mode, tc.kind, tc.options)
+			if policyErr != nil {
+				t.Fatal(policyErr)
+			}
 			in.Submit.Snapshot.Questions[0].FollowupPolicy = &policy
 			in.Submit.Snapshot.Questions[0].Options = tc.options
 			in.Submit.Snapshot.Answers[0].TextInput = &tc.text
@@ -92,11 +99,20 @@ func TestOnlyActualTextInputsCanCallFollowupModels(t *testing.T) {
 				t.Fatalf("unexpected model calls %d, err %v", len(model.calls), err)
 			}
 			if tc.wantCalls > 0 {
-				in.Followups = []domain.Followup{{QuestionID: "Q01"}, {QuestionID: "Q01"}}
-				model.calls = nil
-				_, err = (&Engine{Model: model}).Process(context.Background(), store.Task{}, in, config.Release{}, config.Queue{})
-				if err != nil || len(model.calls) != 0 {
-					t.Fatal("third followup called a model")
+				for count := 1; count <= 2; count++ {
+					in.Followups = make([]domain.Followup, count)
+					for i := range in.Followups {
+						in.Followups[i].QuestionID = "Q01"
+					}
+					model.calls = nil
+					_, err = (&Engine{Model: model}).Process(context.Background(), store.Task{}, in, config.Release{}, config.Queue{})
+					wantCalls := tc.wantCalls
+					if count == 2 {
+						wantCalls = 0
+					}
+					if err != nil || len(model.calls) != wantCalls {
+						t.Fatalf("followup history %d: calls %d, err %v", count, len(model.calls), err)
+					}
 				}
 			}
 		})

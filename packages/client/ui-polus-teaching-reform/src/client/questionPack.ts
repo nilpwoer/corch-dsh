@@ -1,6 +1,6 @@
 /** Question-pack parsing and provenance shared by the workbench and CLI. No browser state. */
-import { questionFollowupPolicy } from './questionFollowup.ts'
-import type { QuestionFollowupPolicy } from './questionFollowup.ts'
+import { answerModeError, questionFollowupPolicy } from './questionFollowup.ts'
+import type { AnswerMode, QuestionFollowupPolicy } from './questionFollowup.ts'
 import { referenceExcerpts } from './globalReferenceCorpus.ts'
 import type { ReferenceExcerpt } from './globalReferenceCorpus.ts'
 import type { GlobalReferenceDocument } from './interviewTypes.ts'
@@ -9,6 +9,7 @@ export type InterviewQuestion = {
   id: string
   title: string
   type: string
+  answerMode?: AnswerMode
   question: string
   helper?: string
   followUp?: string
@@ -111,6 +112,8 @@ export function validateQuestionPack(questions: readonly InterviewQuestion[]): s
     const expected = `Q${String(index + 1).padStart(2, '0')}`
     if (ids[index] !== expected) return `问题编号不连续：第 ${index + 1} 个问题应为 ${expected}，实际为 ${ids[index] ?? '空'}。`
     if (!questions[index]?.question.trim()) return `${expected} 缺少问题正文。`
+    const modeError = answerModeError(questions[index]?.answerMode, questions[index]?.options)
+    if (modeError !== null) return `${expected} ${modeError}`
     const refs = questions[index]?.sourceRefs
     if (refs === undefined || refs.length === 0) return `${expected} 缺少 sourceRefs，无法确认问题生成依据。请让 Agent 按协议重新生成。`
     for (const [refIndex, ref] of refs.entries()) {
@@ -155,13 +158,18 @@ function normalizeStructuredQuestions(value: unknown): ParsedQuestionPack | null
     }
     const sourceRefs = normalizeSourceRefs(row.sourceRefs)
     const type = typeof row.type === 'string' ? row.type : '开放式叙述'
+    if (answerModeError(row.answerMode, options) !== null) throw new Error('Invalid answerMode')
+    const answerMode = row.answerMode as AnswerMode | undefined
     const helper = normalizePromptField(row.helper)
     const followUp = normalizePromptField(row.followUp)
     return {
       id: `Q${String(index + 1).padStart(2, '0')}`,
       title: String(row.title ?? `问题 ${index + 1}`),
       type,
-      followupPolicy: questionFollowupPolicy({ type, ...(options ? { options } : {}) }),
+      ...(answerMode === undefined ? {} : { answerMode }),
+      followupPolicy: questionFollowupPolicy({
+        type, ...(options ? { options } : {}), ...(answerMode === undefined ? {} : { answerMode }),
+      }),
       question: String(row.question ?? ''),
       ...(sourceRefs === undefined ? {} : { sourceRefs }),
       ...(options !== undefined && options.length > 0 ? { options } : {}),

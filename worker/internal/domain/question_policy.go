@@ -18,6 +18,44 @@ type QuestionFollowupPolicy struct {
 var choiceType = regexp.MustCompile(`选择|单选|多选|choice|radio|checkbox`)
 var otherOption = regexp.MustCompile(`(?i)^(其他|其它|other)($|[\s\p{Z}:：（(])`)
 
+// ExplicitQuestionPolicy validates new answer modes without reinterpreting legacy packs.
+func ExplicitQuestionPolicy(mode, kind string, options []string) (QuestionFollowupPolicy, error) {
+	if mode == "" {
+		return QuestionPolicy(kind, options), nil
+	}
+	bad := func() (QuestionFollowupPolicy, error) {
+		return QuestionFollowupPolicy{}, Fail("INVALID_ANSWER_MODE", 400)
+	}
+	if mode == "text" {
+		if len(options) != 0 {
+			return bad()
+		}
+		return QuestionFollowupPolicy{Input: "text", MaxFollowups: MaxQuestionFollowups}, nil
+	}
+	if len(options) == 0 {
+		return bad()
+	}
+	switch mode {
+	case "choice":
+		return QuestionFollowupPolicy{Input: "none"}, nil
+	case "mixed":
+		return QuestionFollowupPolicy{Input: "text", MaxFollowups: MaxQuestionFollowups}, nil
+	case "other":
+		var other []string
+		for _, option := range options {
+			if otherOption.MatchString(strings.TrimSpace(option)) {
+				other = append(other, option)
+			}
+		}
+		if len(other) == 0 {
+			return bad()
+		}
+		return QuestionFollowupPolicy{Input: "other", MaxFollowups: MaxQuestionFollowups, OtherOptions: other}, nil
+	default:
+		return bad()
+	}
+}
+
 // QuestionPolicy follows the participant controls; consent never has a text input.
 func QuestionPolicy(kind string, options []string) QuestionFollowupPolicy {
 	kind = strings.ToLower(strings.TrimSpace(kind))
