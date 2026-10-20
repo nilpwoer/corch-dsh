@@ -1853,6 +1853,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
     occupants: [
       '@polus-ai/dsh-client-ui-teaching-reform CurriculumSidebar',
       '@polus-ai/dsh-client-ui-teaching-reform InterviewSidebar',
+      '@polus-ai/dsh-client-ui-teaching-reform JdSearchSidebar',
       'client-ui-workspace WorkspaceBrowser',
     ],
     replaceRisk: 'none',

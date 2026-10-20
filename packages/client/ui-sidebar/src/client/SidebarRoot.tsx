@@ -51,7 +51,7 @@ export function SidebarRoot({
   renderSlotChain,
 }: SidebarRootComponentProps) {
   const sidebarMode = useSidebarMode()
-  const setSidebarMode = (mode: 'sessions' | 'curriculum' | 'interviews'): void => {
+  const setSidebarMode = (mode: 'sessions' | 'curriculum' | 'interviews' | 'jd-search'): void => {
     if (mode === 'sessions') closeDetails()
     else openDetails()
     selectSidebarMode(mode)

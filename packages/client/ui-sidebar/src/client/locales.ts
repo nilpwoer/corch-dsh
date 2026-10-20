@@ -12,6 +12,7 @@ export const zh = {
   'appRail.projects': '项目（已移除）',
   'appRail.curriculum': '课程建设',
   'appRail.interviews': '专家访谈',
+  'appRail.jdSearch': 'JD 搜索',
   'appRail.settings': '设置',
 } satisfies Record<string, string>
 
@@ -30,5 +31,6 @@ export const en = {
   'appRail.projects': 'Projects (removed)',
   'appRail.curriculum': 'Curriculum builder',
   'appRail.interviews': 'Expert interviews',
+  'appRail.jdSearch': 'JD search',
   'appRail.settings': 'Settings',
 } satisfies Record<SidebarKey, string>

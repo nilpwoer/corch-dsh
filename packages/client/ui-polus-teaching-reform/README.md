@@ -16,6 +16,10 @@ The question-package toolbar provides JSON download and new-version actions. The
 
 Every expert question has a permanent text field. Generation, Markdown conversion, editing and publication normalize controls to `text` (no options) or `mixed` (auxiliary options), retaining only substantive answer choices. Generic Other/please-specify controls and non-applicable exit controls are omitted; the permanent text field accepts all narrative and supplements. Matching identifies whole control labels, including observed variants, rather than deleting business text containing those words. Legacy stored modes remain readable; participant rendering also applies to published packs and resumed interviews. Update the Worker executable and HTML/JS assets, then refresh the expert page to repair existing packs without republishing, client installation or database migration. Updated generation and editing require the client assets. Existing answers, sessions and pinned follow-up ceilings, including zero, remain unchanged. See the [narrative-input decision](../../../.agents/notes/implemented/bug-fix/2026-10-20-always-visible-expert-input.md).
 
+## JD search
+
+The JD workbench infers job titles, searches public pages, reads source bodies, filters results, and derives work tasks and professional abilities from retained jobs. It uses the exact selected DSH session and the configured model plus native DeepSeek search/HTTP fetch providers. All shipped presets enable fetch. Returned source URLs must match a successful fetch from the current request; redirects use their final URL. Unmatched model links and failed fetches are omitted. Original-source links, exclusion/restoration and recoverable empty/error feedback remain available. Search-project saving and authenticated browser collection are unavailable; result state is in memory, while the ordinary model transcript remains in its isolated session. See the [source-evidence decision](../../../.agents/notes/implemented/feature/2026-10-20-jd-search-integration.md).
+
 ## Model Experience
 
 ### Question-package generation
@@ -31,6 +35,20 @@ The fourteen supplied Markdown documents are embedded in the client. Full-text s
 #### KV Cache effect
 
 Generation appends to session history, preserving reusable unchanged prefixes according to provider behavior. Publishing and settings send no model request.
+
+### JD inference, search and analysis
+
+#### What the model sees
+
+Role inference receives the major and optional direction. Search receives the chosen titles, platforms, region, publication window and count limit, with instructions to use real source bodies and return JSON. Analysis receives only retained public job summaries and identifiers, and returns tasks and ability labels. These are user messages in the owning session; Worker publication credentials and private expert records are absent.
+
+#### Token effect
+
+Inference, search and analysis are separate model operations. Native web search incurs auxiliary provider calls; fetched bodies and retained job summaries add context. The five-result test mode is an upper limit, not a guarantee. Source matching, exclusion and displaying results make no extra model call.
+
+#### KV Cache effect
+
+Operations append to the same owning session and can reuse its unchanged prefix. A new JD session has separate history.
 
 ## Known Limitations and Deferred Work
 

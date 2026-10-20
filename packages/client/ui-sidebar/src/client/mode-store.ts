@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react'
 
 /** The workbench surfaces that share the sidebar browser region. */
-export type SidebarMode = 'sessions' | 'curriculum' | 'interviews'
+export type SidebarMode = 'sessions' | 'curriculum' | 'interviews' | 'jd-search'
 
 let currentMode: SidebarMode = 'sessions'
 const listeners = new Set<() => void>()

@@ -75,7 +75,7 @@ export interface SidebarSectionOwnerProps {
 }
 
 /** The two browser surfaces that share the native sidebar region. */
-export type SidebarMode = 'sessions' | 'curriculum' | 'interviews'
+export type SidebarMode = 'sessions' | 'curriculum' | 'interviews' | 'jd-search'
 
 /**
  * Owner share of the sidebar settings seat: the column display state the
