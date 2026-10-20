@@ -10,11 +10,11 @@ const { build } = createRequire(require.resolve('tsx'))('esbuild')
 const output = resolve(process.argv[2] || '.artifacts/answer-modes')
 await mkdir(output, { recursive: true })
 const source = await readFile(new URL('../../apps/web/public/practice-expert-worker.js', import.meta.url), 'utf8')
-const template = (await readFile(new URL('../../apps/web/public/practice-expert-interview-spa.html', import.meta.url), 'utf8'))
-  .replace('<script>', '<script>window.__TEACHING_PORTAL__=true;</script><script>')
+const previewTemplate = await readFile(new URL('../../apps/web/public/practice-expert-interview-spa.html', import.meta.url), 'utf8')
+const template = previewTemplate.replace('<script>', '<script>window.__TEACHING_PORTAL__=true;</script><script>')
 const origin = 'http://127.0.0.1:43149'
-const questions = ['text', 'choice', 'mixed', 'other'].map((answerMode, i) => ({ id: `Q0${i + 1}`, title: `合成${answerMode}题`, type: '单项选择', answerMode,
-  question: '固定合成任务，不包含真实受访者信息。', ...(answerMode === 'text' ? {} : { options: ['常规方式', '其他（请说明）'] }),
+const questions = ['text', 'choice', 'mixed', 'other', undefined].map((answerMode, i) => ({ id: `Q0${i + 1}`, title: `合成${answerMode}题`, type: '单项选择', answerMode,
+  question: '固定合成任务，不包含真实受访者信息。', ...(answerMode === 'text' ? {} : { options: ['常规方式', '其他（请说明）', '暂不使用', '保留尾部正常选项'] }),
   followupPolicy: { input: answerMode === 'choice' ? 'none' : answerMode === 'other' ? 'other' : 'text', maxFollowups: answerMode === 'choice' ? 0 : 2,
     ...(answerMode === 'other' ? { otherOptions: ['其他（请说明）'] } : {}) },
   sourceRefs: [{ sourceType: 'model_inference', title: '固定合成数据', rationale: '离线验证', confidence: 'low', requiresConfirmation: true }],
@@ -58,11 +58,12 @@ try {
   await page.getByText('合成mixed题', { exact: false }).first().waitFor()
   const choiceCard = page.locator('details').filter({ has: page.locator('summary').filter({ hasText: '合成choice题' }) })
   await choiceCard.getByRole('button', { name: '编辑问题', exact: true }).click()
-  await choiceCard.getByLabel('回答模式', { exact: true }).selectOption('mixed')
+  assert.equal(await choiceCard.getByLabel('回答模式', { exact: true }).count(), 0)
+  await choiceCard.getByRole('textbox').first().fill('合成choice题已编辑')
   await choiceCard.getByRole('button', { name: '保存修改', exact: true }).click()
   await page.reload()
   const publication = await page.evaluate(() => window.exportSyntheticPublication())
-  assert.deepEqual(publication.questions.map(q => q.answerMode), ['text', 'mixed', 'mixed', 'other'])
+  assert.deepEqual(publication.questions.map(q => q.answerMode), ['text', 'mixed', 'mixed', 'mixed', 'mixed'])
   assert.equal(publication.questionPackMeta.version, 2)
   assert.equal(publication.questions[1].followupPolicy.input, 'text')
   await page.screenshot({ path: resolve(output, 'host-mode-edit.png'), fullPage: true })
@@ -72,7 +73,7 @@ try {
   const participant = await browser.newContext({ viewport: { width: 1440, height: 1000 } })
   const spa = await participant.newPage()
   spa.on('pageerror', e => errors.push(e.message))
-  const value = { interview_id: 'synthetic-mode-interview', frozen: false, snapshot: null, tasks: [], poll_interval_ms: 20,
+  const value = { interview_id: 'synthetic-mode-interview', frozen: false, snapshot: { input_version: 1, answers: [{ question_id: 'Q05', text: '历史文字', text_input: '历史文字', selected_options: ['暂不使用'], supplements: [], confirmed: true }] }, tasks: [], poll_interval_ms: 20,
     pack: { ...publication, questions }, snapshot_template: { questions: questions.map(q => ({ id: q.id, text: q.question, options: q.options, followup_policy: q.followupPolicy })),
       pack: { key: 'synthetic-modes', goal: '离线验证', policy: { scope: 'per_question', maxFollowups: 2 } } } }
   const submissions = [], tasks = new Map()
@@ -91,8 +92,8 @@ try {
   })
   await spa.goto(origin + '/?fieldnoteId=synthetic-modes')
   await spa.locator('#answer').fill('合成开放文字'); assert.equal(await spa.locator('[data-option]').count(), 0)
-  await spa.locator('[data-go="1"]').click(); assert.equal(await spa.locator('#answer').count(), 0)
-  await spa.locator('[data-option="1"]').check(); assert.equal(await spa.locator('#answer').count(), 0)
+  await spa.locator('[data-go="1"]').click(); assert.equal(await spa.locator('#answer').count(), 1)
+  await spa.locator('[data-option="3"]').check(); assert.equal(await spa.locator('#answer').count(), 1)
   await spa.locator('[data-go="2"]').click(); await spa.locator('#answer').fill('合成混合回答')
   await spa.locator('[data-option="0"]').check(); assert.equal(await spa.locator('#answer').inputValue(), '合成混合回答')
   await spa.locator('#save-draft').click(); await spa.reload(); await spa.locator('#answer').waitFor()
@@ -104,14 +105,61 @@ try {
   await spa.locator('#confirm').click(); await spa.getByRole('button', { name: '继续下一步', exact: true }).waitFor()
   const mixed = submissions[0].snapshot.answers.find(a => a.question_id === 'Q03')
   assert.equal(mixed.text_input, '合成混合回答'); assert.deepEqual(mixed.selected_options, ['常规方式'])
-  await spa.locator('[data-go="3"]').click(); assert.equal(await spa.locator('#answer').count(), 0)
-  await spa.locator('[data-option="0"]').check(); assert.equal(await spa.locator('#answer').count(), 0)
-  await spa.locator('[data-option="1"]').check(); await spa.locator('#answer').fill('合成其他补充')
-  await spa.locator('[data-option="0"]').check(); assert.equal(await spa.locator('#answer').count(), 0)
-  await spa.locator('[data-option="1"]').check(); assert.equal(await spa.locator('#answer').inputValue(), '合成其他补充')
+  await spa.locator('[data-go="3"]').click(); assert.equal(await spa.locator('#answer').count(), 1)
+  await spa.locator('[data-option="0"]').check(); assert.equal(await spa.locator('#answer').count(), 1)
+  await spa.locator('#answer').fill('合成其他补充')
+  assert.equal(await spa.locator('[data-option="2"]').count(), 0)
+  await spa.locator('[data-option="3"]').check()
+  await spa.locator('[data-option="0"]').check(); assert.equal(await spa.locator('#answer').count(), 1)
+  await spa.locator('[data-option="3"]').check(); assert.equal(await spa.locator('#answer').inputValue(), '合成其他补充')
+  assert.deepEqual(submissions[0].snapshot.answers.find(a => a.question_id === 'Q05').selected_options, ['暂不使用'])
+  await spa.locator('[data-go="4"]').click()
+  assert.equal(await spa.locator('#answer').inputValue(), '历史文字')
+  assert.equal(await spa.locator('#answer').count(), 1)
+  assert.equal(await spa.locator('[data-option="2"]').count(), 0)
+  await spa.locator('#answer').fill('旧题包未选其他也能直接回答')
+  await spa.locator('[data-option="3"]').check()
+  await spa.locator('#confirm').click()
+  await spa.getByRole('button', { name: '继续下一步', exact: true }).waitFor()
+  const legacy = submissions.at(-1).snapshot.answers.find(a => a.question_id === 'Q05')
+  assert.equal(legacy.text_input, '旧题包未选其他也能直接回答')
+  assert.deepEqual(legacy.selected_options, ['保留尾部正常选项'])
+  await spa.reload()
+  assert.equal(await spa.locator('#answer').inputValue(), '旧题包未选其他也能直接回答')
+  await spa.screenshot({ path: resolve(output, 'legacy-default-input.png'), fullPage: true })
   await participant.close()
+  const previewContext = await browser.newContext({ viewport: { width: 1440, height: 1000 } })
+  const preview = await previewContext.newPage()
+  preview.on('pageerror', e => errors.push(e.message))
+  await preview.route('**/*', async route => {
+    const url = new URL(route.request().url())
+    if (url.origin !== origin) { escaped++; await route.abort(); return }
+    if (url.pathname === '/') await route.fulfill({ contentType: 'text/html', body: previewTemplate })
+    else if (url.pathname === '/interviews/synthetic-preview.json') await route.fulfill({ json: { ...publication, questions } })
+    else { productionRequests++; await route.abort() }
+  })
+  await preview.goto(origin + '/?fieldnoteId=synthetic-preview')
+  await preview.locator('#answer').waitFor()
+  await preview.locator('button.step').nth(1).click()
+  assert.equal(await preview.locator('#answer').count(), 1)
+  assert.equal(await preview.locator('[data-option="2"]').count(), 0)
+  await preview.locator('#answer').fill('预览默认直接输入')
+  await preview.locator('[data-option="3"]').check()
+  await preview.reload()
+  await preview.locator('button.step').nth(1).click()
+  assert.equal(await preview.locator('#answer').inputValue(), '预览默认直接输入')
+  assert.equal(await preview.locator('[data-option="3"]').isChecked(), true)
+  await preview.screenshot({ path: resolve(output, 'local-preview-default-input.png'), fullPage: true })
+  await preview.route('**/interviews/synthetic-preview.json', route => route.fulfill({ json: {
+    ...publication, questions: questions.map(q => ({ ...q, question: q.question + ' 已更新' })),
+  } }))
+  await preview.reload()
+  await preview.locator('button.step').nth(1).click()
+  assert.equal(await preview.locator('#answer').inputValue(), '')
+  assert.equal(await preview.evaluate(() => JSON.parse(localStorage.getItem('practice-expert-interview:synthetic-preview')).answers.Q02.text), '预览默认直接输入')
+  await previewContext.close()
   assert.equal(escaped, 0); assert.equal(productionRequests, 0); assert.deepEqual(errors, [])
-  const proof = { passed: true, host_edit_save_reload_republish: true, four_modes: true, mixed_draft_and_payload: true, conditional_other: true,
-    desktop_and_mobile: true, production_requests: 0, paid_model_calls: 0, scope: 'Actual host React and participant JS; all network intercepted, fixed synthetic data; model ceiling tested separately in Worker engine tests' }
+  const proof = { passed: true, host_edit_save_reload_republish: true, four_modes: true, mixed_draft_and_payload: true, legacy_without_other_selection: true, retired_option_hidden_with_stable_indices: true, generic_other_controls_hidden: true,
+    desktop_and_mobile: true, local_preview: true, preview_rejects_different_questions: true, historical_retired_selection_preserved: true, production_requests: 0, paid_model_calls: 0, scope: 'Actual host React and participant JS; all network intercepted, fixed synthetic data; model ceiling tested separately in Worker engine tests' }
   await writeFile(resolve(output, 'browser-verification.json'), JSON.stringify(proof, null, 2) + '\n'); console.log(JSON.stringify(proof))
 } finally { await browser.close() }

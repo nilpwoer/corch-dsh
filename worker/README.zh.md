@@ -201,4 +201,4 @@ HTTPS 服务必须包含[发布接口反代片段](deploy/teaching-worker.publis
 
 ## 回答模式
 
-题包通过显式 `answerMode` 区分文字、选择、混合及其他条件输入控件。`mixed` 保留辅助选项和常驻输入框。输入策略必须匹配模式；显式模式缺少策略或策略矛盾时拒绝发布。缺少字段的旧题包保留原有推导。客户端与 Worker 需配套更新，再由主持人审核并发布供新访谈使用的新题包版本；已保存访谈固定原版本，无需数据库迁移。参见[回答模式](../.agents/notes/implemented/feature/2026-10-20-explicit-interview-answer-modes.zh.md)。
+发布解析继续严格校验旧 `text`、`choice`、`mixed`、`other` 模式及输入策略。专家渲染始终显示叙述输入框，过滤“其他/请补充”和“不适用/暂不适用/暂不使用”等兜底控件，不重新编号选项或丢弃历史选择。含相关词的实质业务选项与题干保持完整。Worker 允许旧题独立于选项提交叙述文字；固定追问上限继续有效。更新 Worker 可执行程序与 HTML/JS 资源并刷新页面后，现有发布和恢复中的访谈直接修复，无需重新发布或迁移数据库。新的生成、编辑和本地预览需要更新客户端。参见[叙述输入](../.agents/notes/implemented/bug-fix/2026-10-20-always-visible-expert-input.zh.md)。

@@ -74,7 +74,7 @@ func TestOnlyActualTextInputsCanCallFollowupModels(t *testing.T) {
 	}{
 		{"consent", "授权确认", "", []string{"同意", "其他"}, []string{"同意"}, "", 0},
 		{"pure choice", "单项选择", "", []string{"甲", "乙"}, []string{"甲"}, "", 0},
-		{"other not selected", "多项选择", "", []string{"甲", "其他"}, []string{"甲"}, text, 0},
+		{"other not selected", "多项选择", "", []string{"甲", "其他"}, []string{"甲"}, text, 2},
 		{"other empty", "多项选择", "", []string{"甲", "其他"}, []string{"其他"}, "", 0},
 		{"other written", "多项选择", "", []string{"甲", "其他"}, []string{"其他"}, text, 2},
 		{"open written", "开放回忆", "", nil, nil, text, 2},

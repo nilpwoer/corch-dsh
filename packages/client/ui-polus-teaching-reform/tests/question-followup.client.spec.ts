@@ -22,6 +22,6 @@ test('published questions carry input conditions with the package default', () =
     questionPackMeta: { version: 1 }, invitation: undefined, interviewPolicy: undefined,
   }, 'synthetic')
   assert.deepEqual(result.interviewPolicy, { scope: 'per_question', maxFollowups: 2 })
-  assert.deepEqual(result.questions.map(q => q.followupPolicy.input), ['none', 'text', 'other'])
-  assert.deepEqual(result.questions.map(q => q.followupPolicy.maxFollowups), [0, 2, 2])
+  assert.deepEqual(result.questions.map(q => q.followupPolicy.input), ['text', 'text', 'text'])
+  assert.deepEqual(result.questions.map(q => q.followupPolicy.maxFollowups), [2, 2, 2])
 })

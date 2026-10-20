@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-10-20-explicit-interview-answer-modes.md
-2026-10-20-explicit-interview-answer-modes.md: 03064fda2edeb4c33c256bad8de6abc23e8f28de
-2026-10-20-explicit-interview-answer-modes.zh.md: 6c774967fb237cc6701919f7c580b93456a904bd
+2026-10-20-explicit-interview-answer-modes.md: 52cc92176680d539c5f295e1246ef2caf2ce4629
+2026-10-20-explicit-interview-answer-modes.zh.md: ee446b79c5c451ce64274974a66fe69d2a7efa25

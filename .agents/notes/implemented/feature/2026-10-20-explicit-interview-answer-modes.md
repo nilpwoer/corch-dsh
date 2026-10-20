@@ -10,6 +10,8 @@ Generated interview questions use options as memory aids even when their main an
 
 ## Decision
 
+The [permanent narrative-input decision](../bug-fix/2026-10-20-always-visible-expert-input.md) supersedes the generation and conditional-rendering rules below. This note remains the rationale for accepted legacy wire modes, strict publication validation and pinned session storage; new drafts normalize to text or mixed controls.
+
 Each new generated question declares `answerMode`: `text` has a permanent text field and no options; `choice` has options and no text field; `mixed` has options and a permanent text field; `other` has options and a conditional text field triggered by a matching Other label. `type` retains topic and single/multiple-selection information. The client validates incompatible or unknown modes, retains modes through parsing, edits, browser persistence and export, and derives the per-question policy again at publication. Saved custom generation templates receive the same mandatory control protocol as the default template.
 
 Worker publication parsing validates the explicit mode against its options and input policy, rejecting missing or contradictory policies. Text and mixed modes map to `input: text`, choice to `none`, and conditional Other to `other`. Actual nonblank text is required for model eligibility, with at most two published follow-ups per question; existing lower limits still apply. The [portal](2026-10-13-worker-interview-portal.md) retains the pinned publication and derived snapshot policy. Presentation changes do not replace either publication or snapshot data.

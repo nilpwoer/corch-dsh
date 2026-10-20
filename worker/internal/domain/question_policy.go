@@ -8,7 +8,7 @@ import (
 
 const MaxQuestionFollowups = 2
 
-// QuestionFollowupPolicy pins the answer control and its per-question ceiling.
+// QuestionFollowupPolicy retains published input metadata and its per-question ceiling.
 type QuestionFollowupPolicy struct {
 	Input        string   `json:"input"`
 	MaxFollowups int      `json:"maxFollowups"`
@@ -119,26 +119,16 @@ func NewInterviewPolicy(original *FollowupPolicy) *FollowupPolicy {
 	return &FollowupPolicy{Scope: scope, MaxFollowups: &limit}
 }
 
-// FollowupTextEligible uses structured fields, never text scraped from selection labels.
+// FollowupTextEligible accepts actual narrative text independently of legacy option gates.
+// Frozen per-question and interview ceilings remain enforced by FollowupLimit.
 func FollowupTextEligible(q Question, a Answer) bool {
 	if q.FollowupPolicy == nil {
 		return true // Existing frozen interviews retain their published behavior.
 	}
-	p := q.FollowupPolicy
-	if p.Input == "none" || a.TextInput == nil || strings.TrimSpace(*a.TextInput) == "" {
+	if a.TextInput == nil || strings.TrimSpace(*a.TextInput) == "" {
 		return false
 	}
-	if p.Input == "text" {
-		return true
-	}
-	for _, selected := range a.SelectedOptions {
-		for _, other := range p.OtherOptions {
-			if selected == other {
-				return true
-			}
-		}
-	}
-	return false
+	return true
 }
 
 // StructuredAnswerText is the evidence text preserved alongside editable answer fields.

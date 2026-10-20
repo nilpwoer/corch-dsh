@@ -1,4 +1,4 @@
-import { MAX_QUESTION_FOLLOWUPS, questionFollowupPolicy } from './questionFollowup.ts'
+import { MAX_QUESTION_FOLLOWUPS, normalizeQuestionControls } from './questionFollowup.ts'
 import type { AnswerMode } from './questionFollowup.ts'
 
 /** Package defaults inherited by Worker until an administrator saves an override. */
@@ -34,7 +34,7 @@ export function createPublication<T extends {
   if (!input.questionPackMeta || !Number.isSafeInteger(input.questionPackMeta.version) || input.questionPackMeta.version < 1) throw new Error('问题包尚未生成有效版本。')
   const questions = input.questions.filter(question => !question.deleted).map((question) => {
     const { deleted: _deleted, deletedAt: _deletedAt, ...kept } = question
-    return { ...kept, followupPolicy: questionFollowupPolicy(question) }
+    return normalizeQuestionControls(kept)
   })
   if (!questions.length) throw new Error('问题包没有有效问题。')
   return {

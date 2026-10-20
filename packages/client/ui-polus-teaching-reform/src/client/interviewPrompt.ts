@@ -4,7 +4,7 @@ import { CORE_METHOD_RULES, generationExcerpt } from './globalReferenceCorpus.ts
 
 export const INTERVIEW_SYSTEM_PROMPT_STORAGE_KEY = 'dsh.practice-expert-system-prompt.v1'
 
-const ANSWER_MODE_INSTRUCTIONS = '回答控件协议：每题必须提供 answerMode，且只能为 text（仅文字，不带 options）、choice（纯选择，不显示输入框）、mixed（选项辅助＋始终显示文字输入框）或 other（仅选中“其他”才显示输入框，必须提供对应选项）。type 只描述题目主题或单选/多选，不决定是否允许文字输入。经历、真实任务和证据叙述应使用 text 或 mixed；辅助选项不能代替开放叙述。授权或明确仅需选择的题使用 choice；只有明确要求其他补充的选择题使用 other。不要给所有题统一使用 choice 或 other。有文字输入的题每题最多追问 2 次；不要自行输出 followupPolicy，该策略由系统依据 answerMode 生成。'
+const ANSWER_MODE_INSTRUCTIONS = '回答控件协议：每题必须提供 answerMode，只能为 text（仅文字，无 options）或 mixed（实质回答选项＋始终显示文字输入框）。所有专家题默认显示文字输入框，不依赖是否勾选选项。type 只描述题目主题或单选/多选。options 只能包含实质回答选项，不得提供“不适用”“暂不适用”“暂不使用”等兜底项；“其他”“其他，请补充”“其他或补充”也不是选项，专家直接在始终显示的文字框填写回答或补充说明。正常业务文字中出现“不适用”或“其他部门”等词语不受影响。不得生成 choice 或 other 模式。有文字回答的题每题最多追问 2 次；不要自行输出 followupPolicy。'
 
 /** The single source of truth for both the prompt sent to DSH and the UI preview. */
 export function buildInterviewPromptTemplate(): string {

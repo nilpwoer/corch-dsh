@@ -28,7 +28,7 @@ func TestQuestionPolicyMatchesTextControls(t *testing.T) {
 	}
 }
 
-func TestConditionalOtherRequiresSelectedOptionAndWrittenText(t *testing.T) {
+func TestLegacyOtherAllowsWrittenTextWithoutSelectingOther(t *testing.T) {
 	p := QuestionPolicy("单项选择", []string{"标准选项", "其他"})
 	q := Question{ID: "Q1", FollowupPolicy: &p}
 	text, blank := "一个真实例子", "  "
@@ -38,7 +38,7 @@ func TestConditionalOtherRequiresSelectedOptionAndWrittenText(t *testing.T) {
 		want bool
 	}{
 		{"other text", Answer{TextInput: &text, SelectedOptions: []string{"其他"}}, true},
-		{"not selected", Answer{TextInput: &text, SelectedOptions: []string{"标准选项"}}, false},
+		{"not selected", Answer{TextInput: &text, SelectedOptions: []string{"标准选项"}}, true},
 		{"empty", Answer{TextInput: &blank, SelectedOptions: []string{"其他"}}, false},
 		{"missing", Answer{SelectedOptions: []string{"其他"}}, false},
 	} {
@@ -79,5 +79,28 @@ func TestNewPolicyCapsNewSessionsWithoutChangingHistoricalValues(t *testing.T) {
 	count, limit := FollowupLimit(snapshot, []Followup{{QuestionID: "Q1"}, {QuestionID: "Q2"}}, "Q1", 7)
 	if count != 2 || limit != 2 {
 		t.Fatal("interview or per-question ceiling bypassed")
+	}
+}
+
+func TestLegacyChoiceAcceptsNarrativeWithoutChangingPolicyOrHistory(t *testing.T) {
+	text := "补充真实经历"
+	policy := QuestionFollowupPolicy{Input: "none", MaxFollowups: 0}
+	q := Question{ID: "Q01", Text: "叙述任务", Options: []string{"正常", "暂不使用"}, FollowupPolicy: &policy}
+	a := Answer{QuestionID: "Q01", TextInput: &text, SelectedOptions: []string{"暂不使用"}, Confirmed: true}
+	a.Text = StructuredAnswerText(a)
+	submit := Submit{Kind: "followup", QuestionID: "Q01", Snapshot: Snapshot{InterviewID: "synthetic", InputVersion: 2, QuestionPackVersion: 1, Questions: []Question{q}, Answers: []Answer{a}}}
+	if err := submit.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if !FollowupTextEligible(q, a) {
+		t.Fatal("narrative gated by a retired control")
+	}
+	_, limit := FollowupLimit(submit.Snapshot, nil, q.ID, 2)
+	if limit != 0 || policy.Input != "none" || a.SelectedOptions[0] != "暂不使用" {
+		t.Fatal("historical policy or answer changed")
+	}
+	submit.Snapshot.Answers[0].SelectedOptions = []string{"forged"}
+	if submit.Validate() == nil {
+		t.Fatal("unknown selection accepted")
 	}
 }

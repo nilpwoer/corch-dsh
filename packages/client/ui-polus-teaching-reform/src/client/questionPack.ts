@@ -1,5 +1,5 @@
 /** Question-pack parsing and provenance shared by the workbench and CLI. No browser state. */
-import { answerModeError, questionFollowupPolicy } from './questionFollowup.ts'
+import { answerModeError, normalizeQuestionControls, questionFollowupPolicy } from './questionFollowup.ts'
 import type { AnswerMode, QuestionFollowupPolicy } from './questionFollowup.ts'
 import { referenceExcerpts } from './globalReferenceCorpus.ts'
 import type { ReferenceExcerpt } from './globalReferenceCorpus.ts'
@@ -69,6 +69,22 @@ function normalizeSourceRefs(value: unknown): readonly QuestionSourceRef[] | und
     } satisfies QuestionSourceRef]
   })
   return refs.length > 0 ? refs : undefined
+}
+
+function splitQuestionOptions(helper: string): string[] {
+  const options: string[] = []
+  let depth = 0
+  let current = ''
+  for (const character of helper) {
+    if (character === '(' || character === '（') depth += 1
+    if (character === ')' || character === '）') depth = Math.max(0, depth - 1)
+    if (depth === 0 && /[\/／、；;|，]/.test(character)) {
+      if (current.trim()) options.push(current.trim())
+      current = ''
+    } else current += character
+  }
+  if (current.trim()) options.push(current.trim())
+  return options.filter(option => option !== '无')
 }
 
 /** Model text parsed into ordered questions and an optional declared pack identifier. */
@@ -177,7 +193,7 @@ function normalizeStructuredQuestions(value: unknown): ParsedQuestionPack | null
       ...(followUp === undefined ? {} : { followUp }),
     } satisfies InterviewQuestion
   })
-  return { questions, ...(typeof (value as { packId?: unknown }).packId === 'string' ? { declaredPackId: (value as { packId: string }).packId } : {}) }
+  return { questions: questions.map(normalizeQuestionControls), ...(typeof (value as { packId?: unknown }).packId === 'string' ? { declaredPackId: (value as { packId: string }).packId } : {}) }
 }
 
 /** Extract every top-level JSON object from a response that may contain prose,
@@ -262,7 +278,7 @@ export function parseAgentQuestionPack(text: string): ParsedQuestionPack | null 
     const title = (question.split(/[—、，,：:？?]/)[0] ?? '').slice(0, 18) || `问题 ${number}`
     const options = helper === undefined || helper === '无'
       ? undefined
-      : helper.split(/\s*(?:\/|、|；|;|\||，)\s*/).map(value => value.trim()).filter(value => value !== '' && value !== '无')
+      : splitQuestionOptions(helper)
     const sourceRefs: readonly QuestionSourceRef[] | undefined = source === undefined
       ? undefined
       : [{ sourceType: 'model_inference', title: source, locator: 'Agent 返回的问题包文本', rationale: '来源由 Agent 在兼容 Markdown 输出中声明，发布前仍需主持人核验。', confidence: 'medium', requiresConfirmation: true }]
@@ -270,7 +286,7 @@ export function parseAgentQuestionPack(text: string): ParsedQuestionPack | null 
     if (helper !== undefined && helper !== '无') parsed.helper = helper
     if (followUp !== undefined) parsed.followUp = followUp
     if (confirmation !== undefined) parsed.helper = parsed.helper === undefined ? `专家确认点：${confirmation}` : `${parsed.helper}；专家确认点：${confirmation}`
-    return parsed
+    return normalizeQuestionControls(parsed)
   }) }
 }
 

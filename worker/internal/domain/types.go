@@ -230,9 +230,6 @@ func (s Submit) Validate() error {
 					return bad()
 				}
 			}
-			if q.FollowupPolicy.Input == "none" && *a.TextInput != "" {
-				return bad()
-			}
 		}
 		if a.Confirmed && !a.Skipped && strings.TrimSpace(a.Text) == "" {
 			return bad()

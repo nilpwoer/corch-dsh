@@ -61,9 +61,9 @@ test('real CLI entry uses the Host session carrier and exports shared validated 
           2,
         ],
         [
-          "choice",
-          "none",
-          0,
+          "mixed",
+          "text",
+          2,
         ],
         [
           "mixed",
@@ -71,8 +71,8 @@ test('real CLI entry uses the Host session carrier and exports shared validated 
           2,
         ],
         [
-          "other",
-          "other",
+          "mixed",
+          "text",
           2,
         ],
       ]
