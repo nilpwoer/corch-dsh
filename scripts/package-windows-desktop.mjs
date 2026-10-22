@@ -7,7 +7,7 @@ import { dirname, join, resolve, relative, sep } from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { parseArgs } from 'node:util'
-import { copyPortableDesktopRuntime, sanitizeDesktopDebugLabels, verifyDesktopClosure } from './desktop-closure.mjs'
+import { copyPortableDesktopRuntime, desktopDependencyFile, sanitizeDesktopDebugLabels, verifyDesktopClosure } from './desktop-closure.mjs'
 import { buildFrozenDesktopRuntime } from './desktop-frozen-build.mjs'
 
 const root = resolve(import.meta.dirname, '..')
@@ -88,6 +88,7 @@ async function inventory(directory){
       await inventory(path)
     }else{
       if(/^\.env$|^\.credentials\.yaml$|^settings\.yaml$/.test(entry.name)) throw new Error(`Private configuration in package: ${local}`)
+      if(!desktopDependencyFile(path)) throw new Error(`Development file in portable payload: ${local}`)
       files.push({path:local,sha256:await sha(path)})
     }
   }

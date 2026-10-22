@@ -36,20 +36,45 @@ test('missing required peers fail even when the entry package itself exists',asy
   }finally{assert.ok(resolve(root).startsWith(resolve(tmpdir())+sep+'corch-closure-'));await rm(root,{recursive:true})}
 })
 
-test('workspace materialization copies publication files without source-private files',async()=>{
+test('workspace materialization retains runtime and declarations without private files, maps or compiler state',async()=>{
   const root=await mkdtemp(join(tmpdir(),'corch-closure-'))
   try{
     const source=join(root,'repo'),runtime=join(root,'runtime')
     await mkdir(join(source,'apps/desktop'),{recursive:true})
-    await mkdir(join(source,'vendor/utility/lib'),{recursive:true})
+    await mkdir(join(source,'vendor/utility/lib/types'),{recursive:true})
+    const nested=join(source,'vendor/utility/node_modules/external')
+    await mkdir(join(nested,'lib/types'),{recursive:true})
     await mkdir(runtime)
     await writeFile(join(source,'apps/desktop/package.json'),JSON.stringify({dependencies:{utility:'workspace:^'}}))
-    await writeFile(join(source,'vendor/utility/package.json'),JSON.stringify({name:'utility',version:'1.0.0',files:['lib/*.js']}))
+    await writeFile(join(source,'vendor/utility/package.json'),JSON.stringify({
+      name:'utility',version:'1.0.0',files:['lib'],dependencies:{external:'1.0.0'},
+    }))
     await writeFile(join(source,'vendor/utility/lib/index.js'),'export const value=1\n')
+    await writeFile(join(source,'vendor/utility/lib/types/index.d.ts'),'export declare const value: number\n')
+    await writeFile(join(source,'vendor/utility/lib/index.js.map'),'workspace source map')
+    await writeFile(join(source,'vendor/utility/lib/types/index.d.ts.map'),'workspace declaration map')
+    await writeFile(join(source,'vendor/utility/lib/tsconfig.tsbuildinfo'),'workspace compiler state')
+    await writeFile(join(nested,'package.json'),JSON.stringify({name:'external',version:'1.0.0'}))
+    await writeFile(join(nested,'lib/index.js'),'export const nested=1\n')
+    await writeFile(join(nested,'lib/types/index.d.ts'),'export declare const nested: number\n')
+    await writeFile(join(nested,'lib/index.js.map'),'external source map')
+    await writeFile(join(nested,'lib/types/index.d.ts.map'),'external declaration map')
+    await writeFile(join(nested,'lib/tsconfig.tsbuildinfo'),'external compiler state')
     await writeFile(join(source,'vendor/utility/.env'),'DO_NOT_COPY=private\n')
+    await writeFile(join(runtime,'package.json'),JSON.stringify({name:'desktop',dependencies:{utility:'1.0.0'}}))
     assert.deepEqual(await materializeDesktopWorkspaces(source,runtime),['utility'])
     assert.equal(await readFile(join(runtime,'node_modules/utility/lib/index.js'),'utf8'),'export const value=1\n')
+    assert.equal(await readFile(join(runtime,'node_modules/utility/lib/types/index.d.ts'),'utf8'),'export declare const value: number\n')
+    const copiedNested=join(runtime,'node_modules/utility/node_modules/external')
+    assert.equal(await readFile(join(copiedNested,'lib/index.js'),'utf8'),'export const nested=1\n')
+    assert.equal(await readFile(join(copiedNested,'lib/types/index.d.ts'),'utf8'),'export declare const nested: number\n')
+    for(const directory of [join(runtime,'node_modules/utility'),copiedNested]){
+      for(const file of ['lib/index.js.map','lib/types/index.d.ts.map','lib/tsconfig.tsbuildinfo']){
+        await assert.rejects(readFile(join(directory,file)),{code:'ENOENT'})
+      }
+    }
     await assert.rejects(readFile(join(runtime,'node_modules/utility/.env')), {code:'ENOENT'})
+    assert.equal(await verifyDesktopClosure(runtime),3)
     assert.deepEqual(await materializeDesktopWorkspaces(source,runtime),[])
   }finally{assert.ok(resolve(root).startsWith(resolve(tmpdir())+sep+'corch-closure-'));await rm(root,{recursive:true})}
 })

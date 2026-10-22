@@ -127,12 +127,13 @@ export async function materializeDesktopWorkspaces(root, runtime, installedRoot 
       const owned=relative(item.directory,await realpath(source))
       if(owned.startsWith('..')||isAbsolute(owned))throw new Error(`Publication file escaped ${name}`)
       await mkdir(dirname(join(target,file)),{recursive:true})
-      await cp(source,join(target,file),{recursive:true,dereference:false,filter:path=>!path.split(sep).includes('node_modules')})
+      await cp(source,join(target,file),{recursive:true,dereference:false,filter:path=>desktopDependencyFile(path)&&!path.split(sep).includes('node_modules')})
     }
     }
     const localModules=join(installedRoot,item.relativeDirectory,'node_modules')
     if(existsSync(localModules)){
       const copyInstalled=async(source,destination)=>{
+        if(!desktopDependencyFile(source))return
         const stat=await lstat(source)
         if(stat.isSymbolicLink()){
           const actual=await realpath(source)
