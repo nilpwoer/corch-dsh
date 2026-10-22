@@ -39,6 +39,8 @@ function scopeFixture(): {
 describe('firethorn pet settings card controller', () => {
   it('stages, saves, and resets the visibility override', async () => {
     const fixture = scopeFixture()
+    const set = vi.spyOn(fixture.scope, 'set')
+    const unset = vi.spyOn(fixture.scope, 'unset')
     const controller = new FirethornPetSettingsController(fixture.scope)
     const face = controller.inject()
     expect(face.hooks.firethornPetCard.getSnapshot()).toMatchObject({ enabled: true, dirty: false })
@@ -47,14 +49,14 @@ describe('firethorn pet settings card controller', () => {
     expect(face.hooks.firethornPetCard.getSnapshot()).toMatchObject({ enabled: false, dirty: true })
     face.save()
     await vi.waitFor(() => { expect(face.hooks.firethornPetCard.getSnapshot().saving).toBe(false) })
-    expect(fixture.scope.set).toHaveBeenCalledWith('enabled', false)
+    expect(set).toHaveBeenCalledWith('enabled', false)
     expect(face.hooks.firethornPetCard.getSnapshot()).toMatchObject({ enabled: false, dirty: false, overridden: true })
 
     face.reset()
     expect(face.hooks.firethornPetCard.getSnapshot()).toMatchObject({ enabled: true, dirty: true, overridden: false })
     face.save()
     await vi.waitFor(() => { expect(face.hooks.firethornPetCard.getSnapshot().saving).toBe(false) })
-    expect(fixture.scope.unset).toHaveBeenCalledWith('enabled')
+    expect(unset).toHaveBeenCalledWith('enabled')
     expect(fixture.snapshot().user).toBeUndefined()
     controller.dispose()
   })

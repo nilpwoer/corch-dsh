@@ -26,7 +26,7 @@ JD 研究使用独立、持久化的浏览器会话供用户亲自登录平台�
 
 ## 构建参考
 
-使用 Windows x64、受支持的 Node.js、pnpm11.7.0 和 Windows PowerShell/tar。先运行仓库正常构建，再执行：
+桌面装配与教学插件是私有工作区包，通过便携客户端分发，不加入上游 npm 发布序列。使用 Windows x64、受支持的 Node.js、pnpm11.7.0 和 Windows PowerShell/tar。先运行仓库正常构建，再执行：
 
 ```powershell
 pnpm --filter @polus-ai/corch-dsh-desktop run package:win --out C:\build\Corch-DSH

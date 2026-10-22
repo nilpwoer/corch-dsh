@@ -22,3 +22,18 @@ test('incomplete, unreferenced or empty questions cannot pass generation validat
     expect(validateQuestionPack(parsed!.questions)).not.toBeNull()
   }
 })
+
+test('structured text fields reject objects instead of publishing default object strings', () => {
+  for (const malformed of [
+    { question: { text: 'Nested question' } },
+    { title: ['Nested title'] },
+    { helper: { text: 'Nested helper' } },
+    { helper: [{ trigger: { text: 'Nested trigger' }, next: 'Next' }] },
+    { options: [{ label: { text: 'Nested option' } }] },
+    { sourceRefs: [{ ...questions[0]?.sourceRefs[0], rationale: { text: 'Nested source rationale' } }] },
+  ]) {
+    expect(parseAgentQuestionPack(JSON.stringify({
+      questions: questions.map(question => ({ ...question, ...malformed })),
+    }))).toBeNull()
+  }
+})

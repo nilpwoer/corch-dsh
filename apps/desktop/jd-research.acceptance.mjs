@@ -7,7 +7,7 @@ import { parseArgs } from 'node:util'
 import { backendEnvironment } from './policy.mjs'
 import { fixtureBody, startJdFixture } from './jd-research-fixture.mjs'
 
-const require = createRequire(new URL('../web/package.json', import.meta.url))
+const require = createRequire(import.meta.url)
 const { _electron: electron } = require('playwright')
 const { values } = parseArgs({ options: { exe: { type: 'string' }, data: { type: 'string' }, out: { type: 'string' }, source: { type: 'boolean' }, update: { type: 'boolean' } } })
 assert.ok(values.exe && values.data && values.out, 'Supply --exe, --data and --out')

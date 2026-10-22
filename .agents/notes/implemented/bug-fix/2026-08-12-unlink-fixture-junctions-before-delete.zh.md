@@ -12,6 +12,8 @@ install-lefthook 与 translation-pairing 的 fixture 把仓库真实的 `scripts
 
 `scripts/test-fixture-cleanup.ts` 拥有 junction 安全的 fixture 拆除：`unlinkFixtureLinks` 先遍历并解链所有重解析点，`removeFixtureSafely` 再删除已无链接的树（带 Windows 异步句柄重试）。所有受影响的 `afterEach` 和 `worktree remove` 前的钩子都调用它。通用规则记录在 `docs/defensive-patterns.md`：链接形态的路径用 unlink 删除，递归 `rmSync` 只留给确知为真实目录的路径。
 
+NodeNext 消费者检查在 Windows 使用目录 junction，在其他平台使用目录符号链接。它记录每个已创建链接，在递归清理临时目录前逐个解链。初始化失败输出真实错误消息，编译失败保留 TypeScript 诊断。真实子进程 fixture 覆盖编译成功及两类失败，并核验清理不会移除链接指向的源码。
+
 ## 考虑过的替代方案
 
 **只信任递归删除。** 否决：特定删除器是否跟随 junction 随工具和版本而异，而 `git worktree remove` 这一条路径已经摧毁过被跟踪文件；任何清理都不该拿仓库去赌这个行为。

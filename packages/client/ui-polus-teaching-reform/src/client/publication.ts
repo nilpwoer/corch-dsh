@@ -23,7 +23,7 @@ export function createPublication<T extends {
   profile: unknown
   questions: readonly T[]
   questionPackMeta: { version: number; [key: string]: unknown } | undefined
-  invitation: unknown | undefined
+  invitation: unknown
   interviewPolicy: InterviewPolicy | undefined
 }, publishedAt: string) {
   if (!input.goal.trim()) throw new Error('请填写本次访谈目标。')

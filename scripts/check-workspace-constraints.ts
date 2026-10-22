@@ -54,6 +54,11 @@ const experimentalPackageDirectory = /^packages\/experimental\/[^/]+$/
 const experimentalPackageNamePrefix = '@deepseek-ai/dsh-experimental-'
 /** Directories whose packages this repository publishes: one release member each. */
 const releaseMemberDirectory = /^(?:packages\/(?!experimental\/)[^/]+\/[^/]+|apps\/[^/]+|vendor\/[^/]+)$/
+/** Local product assemblies are distributed as a portable client, outside npm releases. */
+const privateProductPackages: Readonly<Record<string, string>> = {
+  'apps/desktop': '@polus-ai/corch-dsh-desktop',
+  'packages/client/ui-polus-teaching-reform': '@polus-ai/dsh-client-ui-teaching-reform',
+}
 
 const localArtifactDirs = new Set(['node_modules'])
 const appPackageFiles: Readonly<Record<string, readonly string[]>> = {
@@ -161,6 +166,8 @@ const packageFileExtras: Readonly<Record<string, readonly string[]>> = {
   // SQLite loads every statement from immutable package resources at runtime.
   '@deepseek-ai/dsh-session-persistence-sqlite': ['resources/sql/**/*.sql'],
   '@deepseek-ai/dsh-skill-badge': ['assets'],
+  '@deepseek-ai/dsh-client-ui-brand-corch2': ['assets/c.svg', 'assets/corch.svg'],
+  '@deepseek-ai/dsh-client-ui-firethorn-pet': ['assets/*.png'],
   '@deepseek-ai/dsh-subprocess-local': ['scripts/ensure-spawn-helper.mjs'],
 }
 
@@ -254,9 +261,17 @@ export function checkExperimentalManifest({ dir, manifest }: WorkspaceManifest):
   return errors
 }
 
-function checkWorkspace({ dir, manifest }: WorkspaceManifest): string[] {
+/** Validate one workspace's publication metadata and packaged files.
+ * @param workspace - Manifest and repository-relative directory.
+ * @returns Violations of the workspace's publication policy.
+ */
+export function checkWorkspace(workspace: WorkspaceManifest): string[] {
+  const { dir, manifest } = workspace
   const errors = checkExperimentalManifest({ dir, manifest })
   const label = manifest.name ?? dir
+  const isPrivateProduct = manifest.name !== undefined && privateProductPackages[dir] === manifest.name
+  if (isPrivateProduct && manifest.publishConfig !== undefined)
+    errors.push(`${label}: private product package must omit publishConfig`)
   const isLandlockPackageDir = dir.startsWith('native/landlock-run/packages/')
   const isPublicLandlockPackage = isLandlockPackageDir
     && manifest.name !== undefined
@@ -275,7 +290,7 @@ function checkWorkspace({ dir, manifest }: WorkspaceManifest): string[] {
       || manifest.repository.directory !== expectedDirectory) {
       errors.push(`${label}: published Landlock package repository must use ${repositoryUrl} with directory ${expectedDirectory} for trusted publishing`)
     }
-  } else if (releaseMemberDirectory.test(dir)) {
+  } else if (releaseMemberDirectory.test(dir) && !isPrivateProduct) {
     // Release members state that they are publishable: npm refuses a private
     // package, and the repository field is how a consumer finds the source of
     // the package it installed.

@@ -256,7 +256,7 @@ export function InterviewSidebar({
     window.addEventListener('interview-record-created', refresh)
     window.addEventListener('storage', refresh)
     const selectCreatedInterview = (event: Event): void => {
-      const id = (event as CustomEvent<{ id?: string }>).detail?.id
+      const id = (event as CustomEvent<{ id?: string } | null>).detail?.id
       if (id !== undefined) setSelected(id)
     }
     window.addEventListener('interview-selected', selectCreatedInterview)
@@ -329,13 +329,17 @@ function ProfileTab({ initialProfile, onGenerate, generating, error, onPreviewMa
   const submit = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault()
     const data = new FormData(event.currentTarget)
+    const text = (name: string): string => {
+      const value = data.get(name)
+      return typeof value === 'string' ? value.trim() : ''
+    }
     onGenerate({
-      name: String(data.get('name') ?? '').trim(),
-      industry: String(data.get('industry') ?? '').trim(),
-      role: String(data.get('role') ?? '').trim(),
-      years: String(data.get('years') ?? '').trim(),
-      stage: String(data.get('stage') ?? '').trim(),
-      experience: String(data.get('experience') ?? '').trim(),
+      name: text('name'),
+      industry: text('industry'),
+      role: text('role'),
+      years: text('years'),
+      stage: text('stage'),
+      experience: text('experience'),
       materials,
     })
   }
@@ -438,7 +442,7 @@ function SpaTab({ publicationSettings, publicationStatus }: SpaTabProps) {
   </div>
 }
 
-export function InterviewWorkbench(props: InterviewProps & { initialTab?: InterviewTab }): ReactNode {
+function InterviewWorkbench(props: InterviewProps & { initialTab?: InterviewTab }): ReactNode {
   const isNewInterview = !interviewRecords.some(item => item.id === selectedInterviewId)
   const selectedRecord = interviewRecords.find(item => item.id === selectedInterviewId)
   const recordProfile: InterviewProfile | undefined = selectedRecord === undefined ? undefined : { name: selectedRecord.expert, industry: selectedRecord.industry, role: '', years: '', stage: '', experience: '' }
@@ -507,8 +511,8 @@ export function InterviewWorkbench(props: InterviewProps & { initialTab?: Interv
       updateInterviewRecordStatus(selectedInterviewId, '生成失败，可重试')
     })
   }
-  useEffect(() => props.observeInterviewCommands(props.sessionId, (command) => {
-    if (command === 'regenerate' && generationStatus !== 'running') generate(profile)
+  useEffect(() => props.observeInterviewCommands(props.sessionId, () => {
+    if (generationStatus !== 'running') generate(profile)
   }), [props.sessionId, props.observeInterviewCommands, generationStatus, profile])
   const confirmPendingQuestionPack = (): void => {
     if (pendingQuestionPack === undefined) return
@@ -635,7 +639,7 @@ export function InterviewDetails(props: InterviewProps): ReactNode {
   const [workerSettings, setWorkerSettings] = useState(false)
   useEffect(() => {
     const open = (event: Event): void => {
-      setWorkerSettings((event as CustomEvent<{ tab?: unknown }>).detail?.tab === 'worker')
+      setWorkerSettings((event as CustomEvent<{ tab?: unknown } | null>).detail?.tab === 'worker')
       setSettingsOpen(true)
     }
     const close = (): void => { setSettingsOpen(false); setWorkerSettings(false) }

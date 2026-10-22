@@ -77,7 +77,7 @@ export async function generateTeachingPack(options: { host: string; request: str
     const events = history.events.map(row => row.event).filter(event => event.seq > baselineSeq)
     const end = events.findLast(event => event.type === 'turn/end')
     if (end !== undefined && events.some(event => event.type === 'user/message')) {
-      if (end.type !== 'turn/end' || end.data.reason.kind !== 'completed') throw new Error('DSH turn did not complete successfully')
+      if (end.data.reason.kind !== 'completed') throw new Error('DSH turn did not complete successfully')
       const assistant = events.findLast(event => event.type === 'assistant/message')
       if (assistant?.type !== 'assistant/message') throw new Error('DSH turn ended without an assistant result')
       const raw = assistant.data.message.content.filter(block => block.type === 'text').map(block => block.text).join('\n')
@@ -125,5 +125,5 @@ async function main(): Promise<void> {
   console.log(JSON.stringify(summary, null, 2))
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  main().catch((error) => { console.error(error instanceof Error ? error.message : 'Generation failed'); process.exitCode = 1 })
+  main().catch((error: unknown) => { console.error(error instanceof Error ? error.message : 'Generation failed'); process.exitCode = 1 })
 }

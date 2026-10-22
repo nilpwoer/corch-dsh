@@ -18,7 +18,10 @@ describe('App Rail', () => {
     const toggleSidebar = vi.fn()
     const renderSlot: PropsRenderSlots<'sidebar.settings'>['renderSlot'] = () => <button type="button" aria-label="Settings" />
     selectSidebarMode('curriculum')
-    render(<AppRail collapsed={false} toggleSidebar={toggleSidebar} openDetails={vi.fn()} closeDetails={vi.fn()} t={t} renderSlot={renderSlot} />)
+    render(
+      <AppRail collapsed={false} toggleSidebar={toggleSidebar} openDetails={vi.fn()}
+        closeDetails={vi.fn()} t={t} renderSlot={renderSlot} />,
+    )
     const native = screen.getByRole('button', { name: 'Native sessions' })
     const curriculum = screen.getByRole('button', { name: 'Curriculum builder' })
     expect(native.getAttribute('aria-pressed')).toBe('false')

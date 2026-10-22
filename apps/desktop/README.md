@@ -26,7 +26,7 @@ JD research uses a separate persistent browser session for human platform login 
 
 ## Build reference
 
-Use Windows x64, a supported Node.js release, pnpm11.7.0 and Windows PowerShell/tar. Run the normal repository build, then:
+The desktop assembly and teaching plugin are private workspace packages distributed through the portable client, outside the upstream npm release sequence. Use Windows x64, a supported Node.js release, pnpm11.7.0 and Windows PowerShell/tar. Run the normal repository build, then:
 
 ```powershell
 pnpm --filter @polus-ai/corch-dsh-desktop run package:win --out C:\build\Corch-DSH

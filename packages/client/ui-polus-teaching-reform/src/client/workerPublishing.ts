@@ -10,7 +10,7 @@ export type WorkerPublicationReceipt = { key: string; hash: string; url: string;
  */
 export function readWorkerReceipt(value: unknown): WorkerPublicationReceipt | undefined {
   if (typeof value !== 'object' || value === null) return undefined
-  const item = value as Partial<WorkerPublicationReceipt>
+  const item = value as Record<string, unknown>
   if (typeof item.key !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(item.key) || typeof item.hash !== 'string' || !/^[a-f0-9]{64}$/.test(item.hash) || typeof item.version !== 'number' || !Number.isSafeInteger(item.version) || item.version < 1 || typeof item.url !== 'string') return undefined
   try {
     const url = new URL(item.url)

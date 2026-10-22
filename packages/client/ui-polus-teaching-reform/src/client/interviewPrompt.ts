@@ -29,7 +29,7 @@ export function buildInterviewPromptTemplate(): string {
     '问题包必须覆盖授权、经历校准、核心职责、真实任务、工具/协作/判断、质量证据、难点例外、职业阶段差异、迁移边界和最终确认。',
   ].join('\n')
 }
-export function readInterviewSystemPromptTemplate(): string {
+function readInterviewSystemPromptTemplate(): string {
   if (typeof window === 'undefined') return buildInterviewPromptTemplate()
   try {
     const value = window.localStorage.getItem(INTERVIEW_SYSTEM_PROMPT_STORAGE_KEY)

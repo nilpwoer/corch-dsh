@@ -7,10 +7,16 @@
  */
 
 import { execFileSync } from 'node:child_process'
-import { existsSync, globSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, globSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 
 const root = resolve(import.meta.dirname, '..')
+const links: string[] = []
+
+function linkDirectory(target: string, link: string): void {
+  symlinkSync(target, link, process.platform === 'win32' ? 'junction' : 'dir')
+  links.push(link)
+}
 
 interface ExportTarget {
   types?: string
@@ -84,7 +90,7 @@ function linkPackage(pkg: WorkspacePackage, nodeModules: string): void {
   const parts = pkg.name.split('/')
   const link = resolve(nodeModules, ...parts)
   mkdirSync(dirname(link), { recursive: true })
-  symlinkSync(pkg.dir, link, 'dir')
+  linkDirectory(pkg.dir, link)
 }
 
 const packages = workspacePackages()
@@ -117,7 +123,7 @@ try {
   if (existsSync(rootTypes)) {
     const typesDir = resolve(nodeModules, '@types')
     mkdirSync(typesDir, { recursive: true })
-    symlinkSync(rootTypes, resolve(typesDir, 'node'), 'dir')
+    linkDirectory(rootTypes, resolve(typesDir, 'node'))
   }
 
   writeFileSync(resolve(tmp, 'package.json'), `${JSON.stringify({ type: 'module', private: true }, null, 2)}\n`)
@@ -156,8 +162,11 @@ try {
   failed = true
   const output = error as { stdout?: Buffer; stderr?: Buffer }
   console.error('verify-node-next-types: NodeNext consumer typecheck failed.\n')
-  console.error(`${output.stdout?.toString() ?? ''}${output.stderr?.toString() ?? ''}`)
+  console.error(error instanceof Error ? error.message : String(error))
+  const diagnostics = `${output.stdout?.toString() ?? ''}${output.stderr?.toString() ?? ''}`
+  if (diagnostics) console.error(diagnostics)
 } finally {
+  for (const link of links.reverse()) unlinkSync(link)
   rmSync(tmp, { recursive: true, force: true })
 }
 

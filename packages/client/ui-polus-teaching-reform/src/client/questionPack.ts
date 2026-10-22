@@ -49,21 +49,27 @@ export type QuestionPackMeta = {
   }[]
 }
 
+function scalarText(value: unknown): string {
+  if (typeof value === 'object' && value !== null) throw new Error('Question-pack text cannot be an object or array')
+  if (typeof value === 'function') throw new Error('Question-pack text cannot be a function')
+  return String(value)
+}
+
 function normalizeSourceRefs(value: unknown): readonly QuestionSourceRef[] | undefined {
   if (!Array.isArray(value)) return undefined
   const refs = value.flatMap((item) => {
     if (typeof item !== 'object' || item === null) return []
     const row = item as Record<string, unknown>
-    const title = String(row.title ?? '').trim()
+    const title = scalarText(row.title ?? '').trim()
     if (title === '') return []
-    const sourceType = String(row.sourceType ?? 'model_inference').trim() || 'model_inference'
+    const sourceType = scalarText(row.sourceType ?? 'model_inference').trim() || 'model_inference'
     const confidence = row.confidence === 'high' || row.confidence === 'medium' || row.confidence === 'low' ? row.confidence : undefined
     return [{
       sourceType,
       title,
-      ...(row.locator === undefined ? {} : { locator: String(row.locator) }),
-      ...(row.excerpt === undefined ? {} : { excerpt: String(row.excerpt) }),
-      ...(row.rationale === undefined ? {} : { rationale: String(row.rationale) }),
+      ...(row.locator === undefined ? {} : { locator: scalarText(row.locator) }),
+      ...(row.excerpt === undefined ? {} : { excerpt: scalarText(row.excerpt) }),
+      ...(row.rationale === undefined ? {} : { rationale: scalarText(row.rationale) }),
       ...(confidence === undefined ? {} : { confidence }),
       ...(row.requiresConfirmation === undefined ? {} : { requiresConfirmation: Boolean(row.requiresConfirmation) }),
     } satisfies QuestionSourceRef]
@@ -149,11 +155,11 @@ function normalizeStructuredQuestions(value: unknown): ParsedQuestionPack | null
     const options = Array.isArray(row.options) ? row.options.map((option) => {
       if (typeof option === 'object' && option !== null) {
         const entry = option as Record<string, unknown>
-        const label = String(entry.label ?? '').trim()
-        const description = String(entry.description ?? '').trim()
+        const label = scalarText(entry.label ?? '').trim()
+        const description = scalarText(entry.description ?? '').trim()
         return label === '' ? description : description === '' ? label : `${label}（${description}）`
       }
-      return String(option)
+      return scalarText(option)
     }).filter(Boolean) : undefined
     const normalizePromptField = (field: unknown): string | undefined => {
       if (field === undefined || field === null) return undefined
@@ -161,15 +167,15 @@ function normalizeStructuredQuestions(value: unknown): ParsedQuestionPack | null
         const lines = field.map((entry) => {
           if (typeof entry === 'object' && entry !== null) {
             const value = entry as Record<string, unknown>
-            const trigger = String(value.trigger ?? '').trim()
-            const next = String(value.next ?? '').trim()
+            const trigger = scalarText(value.trigger ?? '').trim()
+            const next = scalarText(value.next ?? '').trim()
             return trigger === '' ? next : next === '' ? trigger : `${trigger} → ${next}`
           }
-          return String(entry).trim()
+          return scalarText(entry).trim()
         }).filter(Boolean)
         return lines.length === 0 ? undefined : lines.join('\n')
       }
-      const text = String(field).trim()
+      const text = scalarText(field).trim()
       return text === '' ? undefined : text
     }
     const sourceRefs = normalizeSourceRefs(row.sourceRefs)
@@ -180,13 +186,13 @@ function normalizeStructuredQuestions(value: unknown): ParsedQuestionPack | null
     const followUp = normalizePromptField(row.followUp)
     return {
       id: `Q${String(index + 1).padStart(2, '0')}`,
-      title: String(row.title ?? `问题 ${index + 1}`),
+      title: scalarText(row.title ?? `问题 ${index + 1}`),
       type,
       ...(answerMode === undefined ? {} : { answerMode }),
       followupPolicy: questionFollowupPolicy({
         type, ...(options ? { options } : {}), ...(answerMode === undefined ? {} : { answerMode }),
       }),
-      question: String(row.question ?? ''),
+      question: scalarText(row.question ?? ''),
       ...(sourceRefs === undefined ? {} : { sourceRefs }),
       ...(options !== undefined && options.length > 0 ? { options } : {}),
       ...(helper === undefined ? {} : { helper }),
@@ -247,7 +253,6 @@ export function parseAgentQuestionPack(text: string): ParsedQuestionPack | null 
     ...embeddedJsons,
   ].filter((candidate): candidate is string => candidate !== undefined && candidate.trim() !== ''))]
   for (const candidate of candidates) {
-    if (candidate === undefined) continue
     try {
       const structured = normalizeStructuredQuestions(JSON.parse(candidate))
       if (structured !== null && structured.questions.length > 0) return structured
@@ -259,7 +264,7 @@ export function parseAgentQuestionPack(text: string): ParsedQuestionPack | null 
   return { questions: matches.map((match, index) => {
     const number = match[1]
     const headingText = match[2]
-    if (number === undefined || headingText === undefined || match.index === undefined) throw new Error('Invalid matched question heading')
+    if (number === undefined || headingText === undefined) throw new Error('Invalid matched question heading')
     const start = match.index + match[0].length
     const end = matches[index + 1]?.index ?? normalized.length
     const body = normalized.slice(start, end)

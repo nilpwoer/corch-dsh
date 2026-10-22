@@ -209,6 +209,7 @@
       "@deepseek-ai/dsh-client-ui-workflow-run": ["./packages/client/ui-workflow-run/src"],
       "@deepseek-ai/dsh-client-ui-firethorn-pet": ["./packages/client/ui-firethorn-pet/src"],
       "@polus-ai/dsh-client-ui-teaching-reform": ["./packages/client/ui-polus-teaching-reform/src"],
+      "@deepseek-ai/dsh-client-ui-brand-corch2": ["./packages/client/ui-brand-corch2/src"],
       "@polus-ai/dsh-client-ui-teaching-reform/client": ["./packages/client/ui-polus-teaching-reform/src/client"],
       "@polus-ai/dsh-client-ui-teaching-reform/invariant": ["./packages/client/ui-polus-teaching-reform/src/invariant.ts"],
       "@deepseek-ai/dsh-client-ui-input-trigger": ["./packages/client/ui-input-trigger/src"],

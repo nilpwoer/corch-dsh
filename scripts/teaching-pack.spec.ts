@@ -1,5 +1,6 @@
 import { test, expect } from 'vitest'
 import { createServer } from 'node:http'
+import type { IncomingMessage, ServerResponse } from 'node:http'
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -19,10 +20,14 @@ test('real CLI entry uses the Host session carrier and exports shared validated 
   const modelText = JSON.stringify({ questions: Array.from({ length: 4 }, (_, index) => ({ title: `Fixture ${index + 1}`, question: 'Synthetic fixture question', answerMode: ['text', 'choice', 'mixed', 'other'][index], ...(index === 0 ? {} : { options: ['Standard', 'Other: specify'] }),
     sourceRefs: [{ sourceType: 'model_inference', title: 'Fixture source', rationale: 'Test fixture only', confidence: 'low', requiresConfirmation: true }] })) })
   let prompted = false
-  const server = createServer(async (req, res) => {
-    const parts: Buffer[] = []
-    for await (const part of req) parts.push(Buffer.from(part))
-    const body = JSON.parse(Buffer.concat(parts).toString()) as { rpcId: string; method: string }
+  const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    req.setEncoding('utf8')
+    let payload = ''
+    for await (const part of req) {
+      if (typeof part !== 'string') throw new Error('Fixture request body must be UTF-8 text')
+      payload += part
+    }
+    const body = JSON.parse(payload) as { rpcId: string; method: string }
     methods.push(body.method)
     let value: unknown
     switch (body.method) {
@@ -39,6 +44,11 @@ test('real CLI entry uses the Host session carrier and exports shared validated 
     }
     res.setHeader('content-type', 'application/json')
     res.end(JSON.stringify({ type: 'server-response', rpcId: body.rpcId, result: { ok: true, value } }))
+  }
+  const server = createServer((req, res) => {
+    void handleRequest(req, res).catch((error: unknown) => {
+      res.destroy(error instanceof Error ? error : new Error('Fixture request failed'))
+    })
   })
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
   try {
@@ -105,5 +115,12 @@ test('real CLI entry uses the Host session carrier and exports shared validated 
         ],
       }
     `)
-  } finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())) }
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => {
+        if (error) reject(error)
+        else resolve()
+      })
+    })
+  }
 }, 40000)

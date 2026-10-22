@@ -12,6 +12,8 @@ The install-lefthook and translation-pairing fixtures junction the repository's 
 
 `scripts/test-fixture-cleanup.ts` owns junction-safe fixture teardown: `unlinkFixtureLinks` walks a tree and unlinks every reparse point before `removeFixtureSafely` removes the now link-free tree (with Windows async-handle retries). Every affected `afterEach` and the pre-`worktree remove` hook call it. The general rule lives in `docs/defensive-patterns.md`: remove link-shaped paths with unlink, reserve recursive `rmSync` for known real directories.
 
+The NodeNext consumer check uses directory junctions on Windows and directory symlinks elsewhere. It records every created link and unlinks them before recursive temporary-directory cleanup. Setup failures include their actual error message; compiler failures retain TypeScript diagnostics. Successful compilation and both failure paths run through real subprocess fixtures, which also verify that linked source targets survive cleanup.
+
 ## Alternatives considered
 
 **Trust recursive deletion alone.** Rejected: whether a given deleter follows junctions is tool- and version-dependent, and one path through `git worktree remove` already destroyed tracked files; no cleanup may bet the repository on that behavior.

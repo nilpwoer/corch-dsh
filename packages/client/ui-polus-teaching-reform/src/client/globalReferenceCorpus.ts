@@ -1,7 +1,6 @@
 import type { GlobalReferenceDocument, ReferenceTier } from './interviewTypes.ts'
 import bundled from '../references/bundled-corpus.json'
 
-export type { ReferenceTier } from './interviewTypes.ts'
 
 type CorpusEntry = {
   id: string
@@ -61,7 +60,7 @@ export function seedCorpusDocuments(existing: readonly GlobalReferenceDocument[]
       sourceFile: entry.file,
       origin: 'bundled-corpus',
       summary: entry.summary,
-    } as GlobalReferenceDocument)
+    })
   }
   const seeded = GLOBAL_REFERENCE_CORPUS.map((entry) => {
     const document = byId.get(entry.id)
@@ -82,8 +81,8 @@ export function resolveCorpusDocument(document: GlobalReferenceDocument): Global
   return { ...document, markdown: source.markdown, sourceFile: source.originalPath, sourceHash: source.sha256 }
 }
 
-export async function hydrateCorpusDocument(document: GlobalReferenceDocument): Promise<GlobalReferenceDocument> {
-  return resolveCorpusDocument(document)
+export function hydrateCorpusDocument(document: GlobalReferenceDocument): Promise<GlobalReferenceDocument> {
+  return Promise.resolve().then(() => resolveCorpusDocument(document))
 }
 
 export async function hydrateCorpusDocuments(documents: readonly GlobalReferenceDocument[]): Promise<GlobalReferenceDocument[]> {
