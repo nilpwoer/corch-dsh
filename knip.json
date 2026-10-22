@@ -129,6 +129,14 @@
         "tests/**/*.tsx"
       ]
     },
+    "packages/client/ui-polus-teaching-reform": {
+      "entry": ["tests/**/*.spec.ts", "tests/**/*.spec.tsx"],
+      "project": ["src/**/*.ts", "src/**/*.tsx", "tests/**/*.ts", "tests/**/*.tsx"]
+    },
+    "apps/desktop": {
+      "entry": ["jd-research.acceptance.mjs"],
+      "project": ["*.mjs", "*.cjs"]
+    },
     "packages/client/ui-goal": {
       "entry": [
         "tests/**/*.spec.tsx"

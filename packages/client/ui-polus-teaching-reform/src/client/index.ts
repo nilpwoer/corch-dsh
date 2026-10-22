@@ -11,13 +11,15 @@ import { JdSearchSidebar, JdSearchWorkbench } from './JdSearchWorkbench.tsx'
 import { InterviewDetails, InterviewSidebar, rebindInterviewSession, selectInterview } from './InterviewWorkbench.tsx'
 import { loadGlobalReferenceDocumentsForGeneration } from './InterviewSettings.tsx'
 import type { GlobalReferenceDocument } from './InterviewSettings.tsx'
-import type { InterviewProfile, JdSearchAbility, JdSearchAnalysis, JdSearchJob, JdSearchRequest, JdSearchTask, TeachingReformProps } from './types.ts'
+import type { InterviewProfile, JdSearchJob, JdSearchRequest, TeachingReformProps } from './types.ts'
 import type { ExpertMaterial } from './types.ts'
 import { ExpertMaterialSidebarTab } from './ExpertMaterialSidebarTab.tsx'
 import { GlobalReferenceSidebarTab } from './GlobalReferenceSidebarTab.tsx'
 import { buildInterviewPrompt } from './interviewPrompt.ts'
-import { buildJdAnalysisPrompt, buildJdRoleInferencePrompt, buildJdSearchPrompt } from './jdSearchPrompt.ts'
-import { verifiedJdSearchJobs } from './jdSearchResult.ts'
+import { buildJdGraphPrompt, buildJdRoleInferencePrompt, buildJdSearchPrompt } from './jdSearchPrompt.ts'
+import { pendingJdSources, verifiedJdSearchJobs } from './jdSearchResult.ts'
+import { record } from '../jd/document.ts'
+import type { JdProject, JdProjectSummary } from '../jd/types.ts'
 
 export const inject = ['sessions', 'workspaces', 'layout', 'connection', 'slots', 'betterSidebar']
 
@@ -52,7 +54,8 @@ type InterviewSession = { subscribe: (listener: () => void) => () => void; getSn
 type JdAgentFunctions = {
   inferJdRoles: (id: SessionId, major: string, direction: string) => Promise<readonly string[]>
   runJdSearch: (id: SessionId, request: JdSearchRequest) => Promise<readonly JdSearchJob[]>
-  analyzeJdSearch: (id: SessionId, jobs: readonly JdSearchJob[]) => Promise<JdSearchAnalysis>
+  generateJdGraph: (id: SessionId, project: JdProject) => Promise<unknown>
+  pendingJdSources: (id: SessionId) => JdProject['pending_sources']
 }
 
 function sessionContainsText(session: InterviewSession, text: string): boolean {
@@ -159,7 +162,7 @@ function waitForSessionText(session: InterviewSession, read: () => string | null
       } catch (error) {
         window.clearTimeout(timeout)
         unsubscribe()
-        reject(error)
+        reject(error instanceof Error ? error : new Error(String(error)))
       }
     }
     unsubscribe = session.subscribe(check)
@@ -167,14 +170,15 @@ function waitForSessionText(session: InterviewSession, read: () => string | null
   })
 }
 
-function parseAgentJson<T>(text: string): T {
+function parseAgentJson(text: string): Record<string, unknown> {
   const start = text.indexOf('{')
   const end = text.lastIndexOf('}')
   if (start < 0 || end <= start) throw new Error('Agent 返回内容不是 JSON')
-  try { return JSON.parse(text.slice(start, end + 1)) as T } catch { throw new Error('Agent 返回的 JSON 无法解析') }
+  try { return record(JSON.parse(text.slice(start, end + 1))) } catch { throw new Error('Agent 返回的 JSON 无法解析') }
 }
 
 function createInterviewAgentFunctions(ctx: ClientContext) {
+  const pending = new Map<SessionId, JdProject['pending_sources']>()
   const generateInterview = async (id: SessionId, profile: InterviewProfile): Promise<string> => {
     const session = ctx.sessions.binding(id)?.session
     if (session === undefined) throw new Error('当前访谈会话不可用')
@@ -208,31 +212,38 @@ function createInterviewAgentFunctions(ctx: ClientContext) {
   }
   const jdFunctions: JdAgentFunctions = {
     inferJdRoles: async (id, major, direction) => {
-      const result = parseAgentJson<{ roles?: string[] }>(await promptAgent(id, buildJdRoleInferencePrompt(major, direction)))
+      const result = parseAgentJson(await promptAgent(id, buildJdRoleInferencePrompt(major, direction)))
       if (!Array.isArray(result.roles)) throw new Error('Agent 返回结果缺少岗位名称')
-      return result.roles.filter(role => typeof role === 'string' && role.trim() !== '').slice(0, 8)
+      return result.roles.filter((role): role is string => typeof role === 'string' && role.trim() !== '').slice(0, 8)
     },
     runJdSearch: async (id, request) => {
       const session = ctx.sessions.binding(id)?.session
       if (session === undefined) throw new Error('当前 JD 搜索会话不可用')
       const baseline = session.getSnapshot().nodes.reduce((max, node) => Math.max(max, node.seq), 0)
-      const result = parseAgentJson<unknown>(await promptAgent(id, buildJdSearchPrompt(request)))
+      const result = parseAgentJson(await promptAgent(id, buildJdSearchPrompt(request)))
       const fetched = session.getSnapshot().nodes
         .filter((node): node is ToolResultNode => node.seq > baseline && node.kind === 'tool-result')
+      pending.set(id, pendingJdSources(result, fetched))
       return verifiedJdSearchJobs(result, fetched)
     },
-    analyzeJdSearch: async (id, jobs) => {
-      const text = await promptAgent(id, buildJdAnalysisPrompt(jobs))
-      const result = parseAgentJson<{ tasks?: JdSearchTask[]; abilities?: JdSearchAbility[] }>(text)
-      if (!Array.isArray(result.tasks) || !Array.isArray(result.abilities)) throw new Error('Agent 返回结果缺少任务或能力标签')
-      return { tasks: result.tasks, abilities: result.abilities }
-    },
+    pendingJdSources: id => pending.get(id) ?? [],
+    generateJdGraph: async (id, project) => parseAgentJson(await promptAgent(id, buildJdGraphPrompt(project))),
+
   }
   return { generateInterview, observeInterviewCommands, ...jdFunctions }
 }
 
 export function apply(ctx: ClientContext): void {
-  const { generateInterview, observeInterviewCommands, inferJdRoles, runJdSearch, analyzeJdSearch } = createInterviewAgentFunctions(ctx)
+  const {
+    generateInterview, observeInterviewCommands, inferJdRoles, runJdSearch,
+    generateJdGraph, pendingJdSources: readPending,
+  } = createInterviewAgentFunctions(ctx)
+  const connection = ctx.get('connection') as unknown as ConnectionHandle
+  const jdCall = async <T>(endpoint: string, payload: unknown): Promise<T> => {
+    const result = await connection.rpc.call('/jd', endpoint, payload)
+    if (!result.ok) throw new Error(result.error.message)
+    return result.value as T
+  }
   const betterSidebar = ctx.get('betterSidebar') as BetterSidebarService | undefined
   ctx.effect(() => {
     if (betterSidebar === undefined) return () => undefined
@@ -267,7 +278,7 @@ export function apply(ctx: ClientContext): void {
       : workspaceState.items.find(item => item.sessionIds.includes(current))
     let workspaceId = currentWorkspace?.workspaceId ?? workspaceState.recentWorkspaceId ?? workspaceState.items[0]?.workspaceId
     if (workspaceId === undefined) {
-      const connection = ctx.get('connection') as ConnectionHandle
+      const connection = ctx.get('connection') as unknown as ConnectionHandle
       const cwd = connection.hostDescription.getSnapshot()?.cwd
       if (cwd === undefined) throw new Error('cannot create an interview: Host working directory is not ready')
       const workspace = await ctx.workspaces.create({ path: cwd })
@@ -290,7 +301,7 @@ export function apply(ctx: ClientContext): void {
     const currentWorkspace = current === undefined ? undefined : workspaceState.items.find(item => item.sessionIds.includes(current))
     let workspaceId = currentWorkspace?.workspaceId ?? workspaceState.recentWorkspaceId ?? workspaceState.items[0]?.workspaceId
     if (workspaceId === undefined) {
-      const connection = ctx.get('connection') as ConnectionHandle
+      const connection = ctx.get('connection') as unknown as ConnectionHandle
       const cwd = connection.hostDescription.getSnapshot()?.cwd
       if (cwd === undefined) throw new Error('cannot create a JD search: Host working directory is not ready')
       workspaceId = (await ctx.workspaces.create({ path: cwd })).workspaceId
@@ -362,7 +373,13 @@ export function apply(ctx: ClientContext): void {
           observeInterviewCommands,
           runJdSearch,
           inferJdRoles,
-          analyzeJdSearch,
+          generateJdGraph,
+          pendingJdSources: readPending,
+          listJdProjects: () => jdCall<JdProjectSummary[]>('list', {}),
+          loadJdProject: (id: string) => jdCall<JdProject | null>('read', { id }),
+          saveJdProject: (project: JdProject) => jdCall<JdProject>('save', { project }),
+          exportJdProject: (id: string, version: number) => jdCall<{ markdown: string; html: string }>('export', { id, version }),
+          openJdProject: (id: string) => { ctx.sessions.open(id as SessionId); queueMicrotask(() => { ctx.layout.openDetails() }) },
           openExpertMaterialPreview: (sessionId: SessionId, material: ExpertMaterial) => {
             betterSidebar?.openTab?.({
               id: `polus-teaching-reform:expert-material:${material.id}`,

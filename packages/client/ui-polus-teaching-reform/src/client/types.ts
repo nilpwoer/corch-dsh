@@ -1,6 +1,7 @@
 import type { SessionId } from '@deepseek-ai/dsh-client-runtime/client'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { GlobalReferenceDocument } from './interviewTypes.ts'
+import type { JdProject, JdProjectSummary } from '../jd/types.ts'
 
 export type { InterviewProfile, ExpertMaterial } from './interviewTypes.ts'
 import type { InterviewProfile, ExpertMaterial } from './interviewTypes.ts'
@@ -14,7 +15,13 @@ export type TeachingReformProps = PropsRuntime<'conversation.details.context'> &
   openGlobalReferencePreview?: (document: GlobalReferenceDocument) => void
   runJdSearch: (id: SessionId, request: JdSearchRequest) => Promise<readonly JdSearchJob[]>
   inferJdRoles: (id: SessionId, major: string, direction: string) => Promise<readonly string[]>
-  analyzeJdSearch: (id: SessionId, jobs: readonly JdSearchJob[]) => Promise<JdSearchAnalysis>
+  generateJdGraph: (id: SessionId, project: JdProject) => Promise<unknown>
+  listJdProjects: () => Promise<JdProjectSummary[]>
+  loadJdProject: (id: string) => Promise<JdProject | null>
+  saveJdProject: (project: JdProject) => Promise<JdProject>
+  exportJdProject: (id: string, version: number) => Promise<{ markdown: string; html: string }>
+  openJdProject: (sessionId: string) => void
+  pendingJdSources?: (id: SessionId) => JdProject['pending_sources']
 }
 
 /** User-selected role and public search filters. */
@@ -38,26 +45,6 @@ export type JdSearchJob = {
   score: number
   summary: string
   sourceUrl?: string
-}
-
-/** A typical work task tied to confirmed job identifiers. */
-export type JdSearchTask = {
-  title: string
-  count: string
-  description: string
-  evidenceIds: readonly string[]
-}
-
-/** A professional ability derived from confirmed tasks. */
-export type JdSearchAbility = {
-  title: string
-  level: '高频' | '补充'
-  taskCount: number
-  sourceCount: number
-}
-
-/** Task clusters and abilities inferred from retained public jobs. */
-export type JdSearchAnalysis = {
-  tasks: readonly JdSearchTask[]
-  abilities: readonly JdSearchAbility[]
+  body?: string
+  capturedAt?: string
 }

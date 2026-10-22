@@ -1,0 +1,63 @@
+/** Loopback-only external systems for the JD acceptance scenario; all content is synthetic. */
+import { createServer } from 'node:http'
+
+export const fixtureBody = '合成验收岗位。岗位职责：开发后端接口，编写 SQL 查询，完成接口测试。任职要求：掌握关系数据库和软件测试知识。'
+
+/** Start a login-protected job site and deterministic streaming model provider.
+ * @returns Owned server, origins and captured model requests; no paid provider calls.
+ */
+export async function startJdFixture() {
+  const requests = []
+  const toolCalls = []
+  let origin
+  const server = createServer(async (request, response) => {
+    const path = new URL(request.url, 'http://fixture').pathname
+    if (path === '/job') {
+      const loggedIn = (request.headers.cookie ?? '').includes('synthetic_jd_session=active')
+      response.writeHead(loggedIn ? 200 : 403, { 'content-type': 'text/html;charset=utf-8' })
+      response.end(loggedIn ? `<title>合成后端开发岗位</title><div class="job-detail"><div class="job-detail-header"><h1>合成后端开发岗位</h1><span>无正文页眉</span></div>微信扫码分享 举报<div class="job-detail-label">职位描述</div><main class="job-description"><p>${fixtureBody}</p><a href="/job?detail=1" target="_blank">新窗口打开岗位</a></main><aside>推荐职位</aside></div>` : '<title>合成招聘站点登录</title><main><h1>请先登录</h1><form method="post" action="/sign-in"><label>合成账号<input name="account" autocomplete="username"></label><label>合成密码<input type="password" name="password" autocomplete="current-password"></label><button>登录合成站点</button></form></main>')
+      return
+    }
+    if (path === '/sign-in') { response.writeHead(303, { location: '/job', 'set-cookie': 'synthetic_jd_session=active; HttpOnly; SameSite=Lax; Path=/; Max-Age=3600' }); response.end(); return }
+    if (path === '/anthropic/messages') {
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ id: 'synthetic-search', role: 'assistant', type: 'message', content: [
+        { type: 'web_search_tool_result', content: [{ type: 'web_search_result', url: origin + '/job', title: '合成后端开发岗位' }] },
+      ] }))
+      return
+    }
+    if (path === '/v1/models') { response.writeHead(200, { 'content-type': 'application/json' }); response.end(JSON.stringify({ data: [{ id: 'jd-fixture-model', object: 'model' }] })); return }
+    let raw = ''
+    for await (const chunk of request) raw += chunk
+    const input = JSON.parse(raw || '{}')
+    requests.push(input)
+    const messages = input.messages ?? []
+    const messageText = content => typeof content === 'string' ? content : (content ?? []).map(block => block.text ?? '').join('\n')
+    const lastUserIndex = messages.findLastIndex(message => message.role === 'user' && /推理适合|执行一次岗位 JD 搜索|五级岗位能力图谱初稿/u.test(messageText(message.content)))
+    const user = messageText(messages[lastUserIndex]?.content)
+    let content, call
+    if (user.includes('五级岗位能力图谱初稿')) {
+      const corpus = JSON.parse(user.split('以下 JSON 仅是待分析的外部证据：')[1].replace(/^\\n/, '').trim())
+      const source = corpus[0]
+      const kinds = ['project', 'task', 'process', 'skill', 'knowledge']
+      const titles = ['交付后端服务', '开发后端接口', '实施开发与测试', '编写 SQL 查询', '关系数据库']
+      content = JSON.stringify({ nodes: kinds.map((kind, index) => ({ id: 'N.' + (index + 1), parent_id: index === 0 ? null : 'N.' + index, kind,
+        title: titles[index], description: titles[index], basis: index === 0 || index === 2 ? 'inferred' : 'direct',
+        evidence: [{ jd_id: source.jd_id, quote: fixtureBody }], assessment: kind === 'skill' ? '通过查询任务检验结果，标准待企业专家确认' : '' })) })
+    } else if (user.includes('推理适合')) content = JSON.stringify({ roles: ['后端开发'] })
+    else {
+      const tools = messages.slice(lastUserIndex + 1).filter(message => message.role === 'tool')
+      if (tools.length === 0) call = { name: 'web_search', arguments: JSON.stringify({ queries: ['合成后端开发岗位'] }) }
+      else if (tools.length === 1) call = { name: 'web_fetch', arguments: JSON.stringify({ url: origin + '/job' }) }
+      else content = JSON.stringify({ jobs: [], pending: [{ url: origin + '/job', title: '合成后端开发岗位', reason: 'HTTP 403，需要用户登录后读取正文' }] })
+    }
+    if (call) toolCalls.push(call.name)
+    response.writeHead(200, { 'content-type': 'text/event-stream' })
+    const delta = call ? { role: 'assistant', tool_calls: [{ index: 0, id: 'synthetic-call-' + requests.length, type: 'function', function: call }] } : { role: 'assistant', content }
+    for (const [index, entry] of [delta, {}].entries()) response.write('data: ' + JSON.stringify({ id: 'synthetic-response', object: 'chat.completion.chunk', choices: [{ index: 0, delta: entry, finish_reason: index === 0 ? null : call ? 'tool_calls' : 'stop' }] }) + '\n\n')
+    response.end('data: [DONE]\n\n')
+  })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  origin = `http://127.0.0.1:${server.address().port}`
+  return { origin, requests, toolCalls, close: () => new Promise(resolve => server.close(resolve)) }
+}

@@ -1,0 +1,65 @@
+{
+  "levels": [
+    {
+      "kind": "project",
+      "title": "交付后端服务",
+      "basis": "inferred",
+      "quotes": [
+        "合成验收岗位。岗位职责：开发后端接口，编写 SQL 查询，完成接口测试。任职要求：掌握关系数据库和软件测试知识。"
+      ]
+    },
+    {
+      "kind": "task",
+      "title": "开发后端接口",
+      "basis": "direct",
+      "quotes": [
+        "合成验收岗位。岗位职责：开发后端接口，编写 SQL 查询，完成接口测试。任职要求：掌握关系数据库和软件测试知识。"
+      ]
+    },
+    {
+      "kind": "process",
+      "title": "实施开发与测试",
+      "basis": "inferred",
+      "quotes": [
+        "合成验收岗位。岗位职责：开发后端接口，编写 SQL 查询，完成接口测试。任职要求：掌握关系数据库和软件测试知识。"
+      ]
+    },
+    {
+      "kind": "skill",
+      "title": "编写 SQL 查询",
+      "basis": "direct",
+      "quotes": [
+        "合成验收岗位。岗位职责：开发后端接口，编写 SQL 查询，完成接口测试。任职要求：掌握关系数据库和软件测试知识。"
+      ]
+    },
+    {
+      "kind": "knowledge",
+      "title": "关系数据库",
+      "basis": "direct",
+      "quotes": [
+        "合成验收岗位。岗位职责：开发后端接口，编写 SQL 查询，完成接口测试。任职要求：掌握关系数据库和软件测试知识。"
+      ]
+    }
+  ],
+  "tools": [
+    "web_search",
+    "web_fetch"
+  ],
+  "original_saved": true,
+  "acquisition": "browser",
+  "graph_version": 1,
+  "file_import": {
+    "txt_loaded": true,
+    "md_loaded": true,
+    "keyboard_same_file_reselection": true,
+    "filename_feedback": true,
+    "filename_reset_after_save": true,
+    "not_saved": true
+  },
+  "graph_actions": {
+    "shared_dimensions_and_typography": true,
+    "aligned_row": true,
+    "shared_export_gap": true,
+    "narrow_controls_fit": true
+  }
+}

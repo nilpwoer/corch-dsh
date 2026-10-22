@@ -20,6 +20,10 @@ Closing the client stops its own local backend. Other DSH installations and serv
 
 The application is unsigned and has no automatic updater. Windows may display an unknown-publisher/SmartScreen warning. Electron and Node upstream licenses are included. Obtain updates as complete packages from the operator; verify the published SHA256 before extraction.
 
+## JD research collection
+
+JD research uses a separate persistent browser session for human platform login and text capture. Project documents and immutable originals live in `data/dsh/jd-projects`; browser login storage remains in `data/electron`. Preserve both when moving this client. Source evidence, graph inference labels, same-version MD/PDF exports and browser-only fallbacks are documented in the [teaching workbench](../../packages/client/ui-polus-teaching-reform/README.md).
+
 ## Build reference
 
 Use Windows x64, a supported Node.js release, pnpm11.7.0 and Windows PowerShell/tar. Run the normal repository build, then:

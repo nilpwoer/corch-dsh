@@ -20,6 +20,10 @@
 
 应用未签名，没有自动更新功能。Windows 可能显示未知发布者或 SmartScreen 提示。包内保留 Electron 和 Node 上游许可。请从维护者取得完整更新包，并在解压前核对公布的 SHA256。
 
+## JD 研究采集
+
+JD 研究使用独立、持久化的浏览器会话供用户亲自登录平台并采集文本。项目文档和不可变原文保存在 `data/dsh/jd-projects`，浏览器登录存储保存在 `data/electron`；迁移客户端时应一起保留。来源证据、图谱推断标记、同版本 MD/PDF 导出和纯浏览器替代流程见[教学工作台](../../packages/client/ui-polus-teaching-reform/README.zh.md)。
+
 ## 构建参考
 
 使用 Windows x64、受支持的 Node.js、pnpm11.7.0 和 Windows PowerShell/tar。先运行仓库正常构建，再执行：

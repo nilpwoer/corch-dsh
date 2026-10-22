@@ -12,6 +12,9 @@
     { "path": "../../core/tools" },
     { "path": "../../core/session" },
     { "path": "../../core/system-prompt" },
-    { "path": "../../runtime-diagnostics/invariants" }
+    { "path": "../../runtime-diagnostics/invariants" },
+    { "path": "../../util/home-paths" },
+    { "path": "../../util/atomic-write" },
+    { "path": "../../client/connection/tsconfig.client.json" }
   ]
 }

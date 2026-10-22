@@ -13,7 +13,7 @@
     "README.zh.md"
   ],
   "scripts": {
-    "test": "node --test policy.test.mjs module-resolution.test.mjs publisher.test.mjs publisher-vault.test.mjs",
+    "test": "node --test policy.test.mjs module-resolution.test.mjs publisher.test.mjs publisher-vault.test.mjs jd-browser.test.mjs",
     "package:win": "node ../../scripts/package-windows-desktop.mjs"
   },
   "dependencies": {

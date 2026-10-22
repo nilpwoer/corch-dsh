@@ -18,7 +18,17 @@ Every expert question has a permanent text field. Generation, Markdown conversio
 
 ## JD search
 
-The JD workbench infers job titles, searches public pages, reads source bodies, filters results, and derives work tasks and professional abilities from retained jobs. It uses the exact selected DSH session and the configured model plus native DeepSeek search/HTTP fetch providers. All shipped presets enable fetch. Returned source URLs must match a successful fetch from the current request; redirects use their final URL. Unmatched model links and failed fetches are omitted. Original-source links, exclusion/restoration and recoverable empty/error feedback remain available. Search-project saving and authenticated browser collection are unavailable; result state is in memory, while the ordinary model transcript remains in its isolated session. See the [source-evidence decision](../../../.agents/notes/implemented/feature/2026-10-20-jd-search-integration.md).
+The JD workbench uses its owning DSH session, configured model and native DeepSeek search/HTTP fetch providers. All shipped presets enable fetch. Returned jobs require a successful fetch from the current request; redirects use their final URL. Unmatched model links cannot establish jobs. Discovered URLs that require login or fail fetching remain pending candidates for browser collection. See the [source-evidence decision](../../../.agents/notes/implemented/feature/2026-10-20-jd-search-integration.md).
+
+## JD research projects
+
+Search projects, originals, selection decisions and graph versions are stored under `DSH_HOME/jd-projects` by the Host plugin, with atomic writes and optimistic revisions. The loopback-only `/jd` Connection channel owns list, read, save and export. `projectDirectory` overrides the directory; `maxProjectBytes` defaults to 20 MiB per serialized project. Unsupported formats and corrupted source hashes fail explicitly. Saved originals and graph versions cannot be overwritten or removed; a changed capture is a new source, and a new generation is a new graph version. Exclusion affects future generation, while an older graph retains its original corpus.
+
+Failed anonymous fetches retain discovered source URLs for collection. On Windows, **打开登录采集窗口** opens a separate persistent Electron session. Complete login or verification yourself, open a specific job detail, then choose **登录后继续采集** in the workbench. Collection reads rendered text, not browser cookies, passwords or local storage. External pages receive no native interface. The capture window also supports navigating to the next job. Browser-only users can paste or import `.txt`/`.md` originals with a source URL; these remain labelled user-supplied and are not independently authenticated. Exact-text duplicates are not counted twice. File import supports keyboard selection of `.txt`/`.md` files up to 1 MB and shows the last successfully read filename.
+
+Each source records its original URL, capture time, acquisition method and SHA-256. BOSS list-page details require a unique same-origin job-detail link matching the displayed role title; missing or ambiguous links require opening a standalone detail page. BOSS detail URLs omit query and fragment parameters. HTTP originals are the tool's complete rendered text, not original HTML bytes; truncated results and recognizable login pages are rejected. Search region and date filters are research criteria, not verified facts about every imported source. The five-level graph rejects dangling parents, incomplete branches, unsupported direct statements and quotes absent from the retained original. Sample quote coverage counts distinct cited JDs; it is not market prevalence, statistical significance or a model-generated weight. Inferred workflow, knowledge and assessment content remains marked for expert review.
+
+Both exports come from the same saved graph version. The AI Markdown includes stable node relationships, evidence quotes and the complete original corpus. The human PDF uses Chinese text, pagination and a source appendix with deduplicated verbatim quotes and complete-original hashes; it points readers to the MD and saved project for the full captured text. Desktop PDF generation runs in an isolated renderer with networking and scripts disabled. A browser-only client uses its print/save-as-PDF dialog. Opening saved projects restores their owning Host conversation; exporting and restoring do not regenerate the model output. The [JD decision](../../../.agents/notes/implemented/feature/2026-10-20-jd-search-integration.md) owns evidence and inference semantics.
 
 ## Model Experience
 
@@ -40,15 +50,16 @@ Generation appends to session history, preserving reusable unchanged prefixes ac
 
 #### What the model sees
 
-Role inference receives the major and optional direction. Search receives the chosen titles, platforms, region, publication window and count limit, with instructions to use real source bodies and return JSON. Analysis receives only retained public job summaries and identifiers, and returns tasks and ability labels. These are user messages in the owning session; Worker publication credentials and private expert records are absent.
+Role inference receives the major and optional direction. Search receives the chosen titles, platforms, region, publication window and count limit, with instructions to use real source bodies and return JSON. Graph generation receives retained JD originals, source identifiers and hashes. It returns project → task → process → skill → knowledge nodes, literal source quotes, direct/inferred labels and explicitly inferred assessment suggestions. These are user messages in the owning session; Worker publication credentials and private expert records are absent.
 
 #### Token effect
 
-Inference, search and analysis are separate model operations. Native web search incurs auxiliary provider calls; fetched bodies and retained job summaries add context. The five-result test mode is an upper limit, not a guarantee. Source matching, exclusion and displaying results make no extra model call.
+Inference, search and analysis are separate model operations. Native web search incurs auxiliary provider calls; fetched bodies and retained JD originals add context. Graph generation is a separate model operation; PDF/Markdown export reads the saved graph and makes no model call. The five-result test mode is an upper limit, not a guarantee. Source matching, exclusion and displaying results make no extra model call.
 
 #### KV Cache effect
 
 Operations append to the same owning session and can reuse its unchanged prefix. A new JD session has separate history.
+
 
 ## Known Limitations and Deferred Work
 

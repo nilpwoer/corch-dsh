@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url'
 import { backendEnvironment, clipboardWriteAllowed, sameOrigin, workerPopupAllowed } from './policy.mjs'
 import { createPublisher } from './publisher.mjs'
 import { createPublisherVault } from './publisher-vault.mjs'
+import { createJdBrowser } from './jd-browser.mjs'
 
 app.setName('Corch DSH')
 const source = dirname(fileURLToPath(import.meta.url))
@@ -27,15 +28,17 @@ let ready = false
 let backendDone
 let log
 let localOrigin
+const jdBrowser = createJdBrowser({ BrowserWindow, maxCaptureChars: 250000, loadTimeoutMs: 60000 })
 
 if (!app.requestSingleInstanceLock()) app.quit()
 else {
   app.on('second-instance', () => { if (mainWindow) { mainWindow.restore(); mainWindow.focus() } })
-  app.on('window-all-closed', () => app.quit())
+  app.on('window-all-closed', () => { if (!shuttingDown) app.quit() })
   app.on('before-quit', event => {
     if (shuttingDown) return
     event.preventDefault()
     shuttingDown = true
+    jdBrowser.dispose()
     void stopBackend().finally(() => app.quit())
   })
   app.whenReady().then(start).catch(async error => {
@@ -131,6 +134,7 @@ async function start() {
   })
   session.defaultSession.on('will-download', (_event, item) => item.setSaveDialogOptions({ title: '保存文件' }))
   mainWindow = new BrowserWindow({ title: 'Corch DSH', width: 1440, height: 1000, minWidth: 1000, minHeight: 700, show: false, autoHideMenuBar: true, webPreferences: { ...prefs, preload: join(source, 'publisher-preload.cjs') } })
+  mainWindow.once('closed', () => { if (!shuttingDown) app.quit() })
   const publisher = createPublisher({
     vault: createPublisherVault(join(data, 'worker-publisher.json'), safeStorage),
     openParticipant: async url => {
@@ -142,6 +146,11 @@ async function start() {
   })
   const trustedPublisher = event => event.sender === mainWindow?.webContents
     && event.senderFrame === mainWindow.webContents.mainFrame && sameOrigin(event.senderFrame.url, localOrigin)
+  for (const method of ['open', 'read', 'close', 'pdf']) ipcMain.handle('corch:jd:' + method, async (event, input) => {
+    if (!trustedPublisher(event)) return { ok: false, message: '当前页面无 JD 采集授权。' }
+    try { return { ok: true, value: await jdBrowser[method](input) } }
+    catch (error) { return { ok: false, message: error.message } }
+  })
   for (const method of ['configure', 'status', 'publish']) ipcMain.handle('corch:publisher:' + method, async (event, input) => {
     if (!trustedPublisher(event)) return { ok: false, message: '当前页面无发布授权。' }
     try { return { ok: true, value: await publisher[method](input) } }

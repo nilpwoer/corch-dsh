@@ -3236,6 +3236,24 @@ export interface Config {
 
 来源：[`packages/workflow/workflow-worker-thread/src/index.ts:32`](../packages/workflow/workflow-worker-thread/src/index.ts)
 
+<a id="polus-aidsh-client-ui-teaching-reform"></a>
+
+## `@polus-ai/dsh-client-ui-teaching-reform`
+
+Requires: `connection`
+
+```ts config-catalog
+/** Host persistence settings; source and graph limits also apply to decoded RPC documents. */
+export interface Config {
+  /** Optional private project directory; defaults to `jd-projects` in DSH_HOME. */
+  projectDirectory?: string
+  /** Maximum UTF-8 bytes in one project. */
+  maxProjectBytes: number
+}
+```
+
+来源： [`packages/client/ui-polus-teaching-reform/src/index.ts:11`](../packages/client/ui-polus-teaching-reform/src/index.ts)
+
 ## 无配置的可加载插件
 
 这些插件通过 `cordis.yml` 中不含 `config:` 块的条目加载；它们未声明任何配置接口。
@@ -3311,7 +3329,6 @@ export interface Config {
 - `@deepseek-ai/dsh-tool-subagent-control` — 需要 `tools` · `subagents`（[`packages/subagent/tool-subagent-control/src/index.ts`](../packages/subagent/tool-subagent-control/src/index.ts)）
 - `@deepseek-ai/dsh-user-questions`（[`packages/interaction/user-questions/src/index.ts`](../packages/interaction/user-questions/src/index.ts)）
 - `@deepseek-ai/dsh-workspace` — 需要 `storageDomain` · `sessionPersistence`（[`packages/workspace/workspace/src/index.ts`](../packages/workspace/workspace/src/index.ts)）
-- `@polus-ai/dsh-client-ui-teaching-reform` ([`packages/client/ui-polus-teaching-reform/src/index.ts`](../packages/client/ui-polus-teaching-reform/src/index.ts))
 
 ## Seam 包（不可直接加载）
 
