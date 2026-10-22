@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
 import {test} from 'node:test'
-import {mkdtemp,mkdir,writeFile,rm,readFile} from 'node:fs/promises'
+import {mkdtemp,mkdir,writeFile,rm,readFile,readdir} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import {join,resolve,sep} from 'node:path'
 import {desktopDependencyFile,materializeDesktopWorkspaces,sanitizeDesktopDebugLabels,verifyDesktopClosure} from './desktop-closure.mjs'
+import {buildFrozenDesktopRuntime} from './desktop-frozen-build.mjs'
 
 test('portable dependencies exclude compiler state and maps while retaining runtime and declarations',()=>{
   assert.equal(desktopDependencyFile(join('runtime','lib','tsconfig.tsbuildinfo')),false)
@@ -50,5 +51,34 @@ test('workspace materialization copies publication files without source-private 
     assert.equal(await readFile(join(runtime,'node_modules/utility/lib/index.js'),'utf8'),'export const value=1\n')
     await assert.rejects(readFile(join(runtime,'node_modules/utility/.env')), {code:'ENOENT'})
     assert.deepEqual(await materializeDesktopWorkspaces(source,runtime),[])
+  }finally{assert.ok(resolve(root).startsWith(resolve(tmpdir())+sep+'corch-closure-'));await rm(root,{recursive:true})}
+})
+
+test('frozen install staging stays outside the portable payload',async()=>{
+  const root=await mkdtemp(join(tmpdir(),'corch-closure-'))
+  try{
+    const source=join(root,'repo'),resources=join(source,'dist/windows/client/resources'),runtime=join(resources,'runtime')
+    await mkdir(join(source,'apps/desktop'),{recursive:true})
+    await mkdir(join(source,'patches'))
+    await mkdir(resources,{recursive:true})
+    await writeFile(join(source,'package.json'),JSON.stringify({name:'fixture-repository',private:true}))
+    await writeFile(join(source,'pnpm-lock.yaml'),'lockfileVersion: "9.0"\npackages: {}\n')
+    await writeFile(join(source,'pnpm-workspace.yaml'),'packages:\n  - apps/*\n')
+    await writeFile(join(source,'apps/desktop/package.json'),JSON.stringify({
+      name:'@polus-ai/corch-dsh-desktop',version:'1.0.0',dependencies:{},files:[],
+    }))
+    const calls=[]
+    const receipt=await buildFrozenDesktopRuntime(source,runtime,async(bin,args,cwd)=>{
+      calls.push({bin,args,cwd})
+      await mkdir(join(cwd,'node_modules'),{recursive:true})
+    },'fixture-pnpm.mjs')
+    assert.equal(receipt.frozen_install,true)
+    assert.equal(receipt.packages,1)
+    assert.equal(calls.length,2)
+    assert.ok(calls[0].args.includes('--frozen-lockfile'))
+    assert.ok(calls[0].cwd.startsWith(join(source,'.tmp')+sep+'desktop-workspace-'))
+    assert.equal(calls[1].cwd,calls[0].cwd)
+    assert.deepEqual(await readdir(resources),['runtime'])
+    assert.equal(JSON.parse(await readFile(join(runtime,'DESKTOP-CLOSURE.json'),'utf8')).packages,1)
   }finally{assert.ok(resolve(root).startsWith(resolve(tmpdir())+sep+'corch-closure-'));await rm(root,{recursive:true})}
 })

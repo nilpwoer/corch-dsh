@@ -6,7 +6,7 @@ import {createHash} from 'node:crypto'
 import {desktopDependencyFile,materializeDesktopWorkspaces,verifyDesktopClosure} from './desktop-closure.mjs'
 
 /**
- * Install locked dependencies without modifying the source workspace, then flatten workspace packages.
+ * Install locked dependencies in the repository's private `.tmp` staging area, then flatten workspace packages outside that mirror.
  * @param root - Built source repository.
  * @param runtime - New runtime directory.
  * @param run - Shell-free command runner accepting executable, arguments and cwd.
@@ -14,7 +14,9 @@ import {desktopDependencyFile,materializeDesktopWorkspaces,verifyDesktopClosure}
  * @returns Frozen-install metadata saved with the runtime.
  */
 export async function buildFrozenDesktopRuntime(root,runtime,run,pnpm){
-  const mirror=await mkdtemp(join(dirname(runtime),'.desktop-workspace-'))
+  const staging=join(root,'.tmp')
+  await mkdir(staging,{recursive:true,mode:0o700})
+  const mirror=await mkdtemp(join(staging,'desktop-workspace-'))
   for(const name of ['package.json','pnpm-lock.yaml','pnpm-workspace.yaml'])await copyFile(join(root,name),join(mirror,name))
   await cp(join(root,'patches'),join(mirror,'patches'),{recursive:true})
   for(const file of globSync(['vendor/*/package.json','packages/*/*/package.json','apps/*/package.json','native/landlock-run/package.json','native/landlock-run/packages/*/package.json','examples/package.json','python/sdk-runtime/package.json','website/package.json'],{cwd:root})){
