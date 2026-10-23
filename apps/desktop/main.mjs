@@ -1,5 +1,5 @@
-/** Windows portable desktop. A restricted preload exposes native publication only to the local workbench. */
-import { app, BrowserWindow, dialog, Menu, session, ipcMain, safeStorage } from 'electron'
+/** Windows portable desktop. The restricted preload exposes publication and JD actions to the local workbench. */
+import { app, BrowserWindow, dialog, Menu, session, ipcMain, safeStorage, shell } from 'electron'
 import { spawn, execFile } from 'node:child_process'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { createWriteStream, existsSync } from 'node:fs'
@@ -9,6 +9,7 @@ import { backendEnvironment, clipboardWriteAllowed, sameOrigin, workerPopupAllow
 import { createPublisher } from './publisher.mjs'
 import { createPublisherVault } from './publisher-vault.mjs'
 import { createJdBrowser } from './jd-browser.mjs'
+import { createJdReport } from './jd-report.mjs'
 
 app.setName('Corch DSH')
 const source = dirname(fileURLToPath(import.meta.url))
@@ -29,6 +30,7 @@ let backendDone
 let log
 let localOrigin
 const jdBrowser = createJdBrowser({ BrowserWindow, maxCaptureChars: 250000, loadTimeoutMs: 60000 })
+const exportJdHtml = createJdReport({ exportsDirectory: join(data, 'exports'), shell })
 
 if (!app.requestSingleInstanceLock()) app.quit()
 else {
@@ -146,9 +148,9 @@ async function start() {
   })
   const trustedPublisher = event => event.sender === mainWindow?.webContents
     && event.senderFrame === mainWindow.webContents.mainFrame && sameOrigin(event.senderFrame.url, localOrigin)
-  for (const method of ['open', 'read', 'close', 'pdf']) ipcMain.handle('corch:jd:' + method, async (event, input) => {
+  for (const method of ['open', 'status', 'read', 'close', 'pdf', 'html']) ipcMain.handle('corch:jd:' + method, async (event, input) => {
     if (!trustedPublisher(event)) return { ok: false, message: '当前页面无 JD 采集授权。' }
-    try { return { ok: true, value: await jdBrowser[method](input) } }
+    try { return { ok: true, value: await (method === 'html' ? exportJdHtml(input) : jdBrowser[method](input)) } }
     catch (error) { return { ok: false, message: error.message } }
   })
   for (const method of ['configure', 'status', 'publish']) ipcMain.handle('corch:publisher:' + method, async (event, input) => {

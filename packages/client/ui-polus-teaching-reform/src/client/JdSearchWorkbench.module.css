@@ -199,3 +199,11 @@
 .infoButton span:first-child { display: inline-grid; place-items: center; width: 18px; height: 18px; border: 1px solid currentColor; border-radius: 50%; font: 600 12px/1 ui-sans-serif, system-ui, sans-serif; }
 .inferenceMessage { margin-top: 8px; color: var(--dsw-alias-fg-tertiary); font-size: 11px; line-height: 1.5; }
 .sourceBody { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow: auto; font: inherit; line-height: 1.7; padding: 12px; background: var(--dsw-alias-bg-base); }
+
+.historySearch { display: grid; gap: 8px; margin: 18px 0 12px; color: var(--dsw-alias-fg-secondary); font-size: 12px; }
+.captureActions { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0 22px; }
+.importHeading { margin-top: 24px !important; }
+.confirmed { color: var(--dsw-alias-fg-success); font-size: 12px; }
+.historyActive strong { font-size: 12px; }
+.historyActive small { color: var(--dsw-alias-fg-tertiary); font-size: 10px; }
+.newButton:disabled, .history:disabled, .historyActive:disabled { opacity: .45; cursor: not-allowed; }

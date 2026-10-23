@@ -38,6 +38,13 @@ test('HTTP 200 login pages and truncated fetches cannot establish a saved JD ori
   expect(verifiedJdSearchJobs({ jobs: [row] }, [truncated])).toEqual([])
 })
 
+test('HTTP 200 security challenges with incidental duty text remain unverified', () => {
+  for (const message of ['当前访问存在异常', '访问过于频繁', '请拖动滑块完成验证']) {
+    const challenge = { ...fetchResult(), content: [{ type: 'text', text: `${message}\n职位描述：验证完成后可查看` }] } as ToolResultNode
+    expect(verifiedJdSearchJobs({ jobs: [row] }, [challenge])).toEqual([])
+  }
+})
+
 test('a pending login candidate must come from an actual discovery or fetch attempt', () => {
   const pending = { url: actual, title: row.title, reason: '需要登录' }
   expect(pendingJdSources({ pending: [pending] }, [fetchResult(403)])).toEqual([pending])

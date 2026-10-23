@@ -254,3 +254,80 @@ test('repeated content and two active revisions of the same URL cannot inflate s
     sourceUrl('https://jobs.example.test/detail?access_token=private'),
   ).toThrow('登录凭据')
 })
+
+test('draft filters and the complete per-search workspace survive reopening without changing legacy documents', async () => {
+  const { repository, directory } = await store()
+  const old = projectFixture()
+  expect(parseProject(old)).toEqual(old)
+  const workspace = {
+    step: 2, graph_version: null, search_status: 'failed', error: '站点限制访问',
+    role_text: '后端开发、',
+    capture: { url: 'https://jobs.example.test/detail/2', title: '待补充岗位', company: '', body: '未完成原文', file_name: '原文.txt' },
+  }
+  const saved = await repository.save({ ...old, major: '', roles: [], workspace })
+  expect(await new JdProjectStore(directory, 1000000).read(saved.id)).toEqual(saved)
+  expect(saved.workspace).toEqual(workspace)
+  for (const invalid of [
+    { ...workspace, step: '2' }, { ...workspace, step: 5 },
+    { ...workspace, graph_version: 7 }, { ...workspace, search_status: 'finished' },
+    { ...workspace, capture: { ...workspace.capture, body: 123 } },
+    { ...workspace, role_text: [] },
+  ]) expect(() => parseProject({ ...old, workspace: invalid })).toThrow()
+})
+
+test('concurrent searches cannot share a session or overwrite each other’s archive', async () => {
+  const { repository } = await store()
+  const initial = projectFixture()
+  const outcomes = await Promise.allSettled([
+    repository.save(initial),
+    repository.save({ ...initial, id: 'second-search' }),
+  ])
+  expect(outcomes.filter(outcome => outcome.status === 'fulfilled')).toHaveLength(1)
+  const rejection = outcomes.find(outcome => outcome.status === 'rejected')
+  expect(rejection?.status === 'rejected' ? String(rejection.reason) : '').toContain('独立会话')
+  const separate = await repository.save({ ...initial, id: 'third-search', session_id: 'different-session' })
+  expect(separate.session_id).toBe('different-session')
+  expect(await repository.list()).toHaveLength(2)
+})
+
+test('only host confirmation appends approval and confirmed evidence remains immutable across later edits', async () => {
+  const { repository, directory } = await store()
+  const initial = projectFixture()
+  const source = initial.sources[0]!
+  const graph = {
+    version: 1, generated_at: initial.updated_at,
+    source_hashes: { [source.id]: source.content_hash }, nodes: graphFixture(),
+  }
+  await expect(repository.save({ ...initial, graphs: [graph], confirmations: [{ version: 1, confirmed_at: initial.updated_at }] })).rejects.toThrow('确认记录只能')
+  const saved = await repository.save({ ...initial, graphs: [graph] })
+  await expect(repository.confirm(saved.id, 1, 0)).rejects.toThrow('其他窗口')
+  await expect(repository.confirm(saved.id, 2, saved.revision)).rejects.toThrow('先保存')
+  const before = Date.now()
+  const confirmed = await repository.confirm(saved.id, 1, saved.revision)
+  expect(confirmed.revision).toBe(saved.revision + 1)
+  const approval = confirmed.confirmations?.[0]
+  expect(approval?.version).toBe(1)
+  expect(Date.parse(approval?.confirmed_at ?? '')).toBeGreaterThanOrEqual(before)
+  expect(await repository.confirm(saved.id, 1, saved.revision)).toEqual(confirmed)
+  expect(await new JdProjectStore(directory, 1000000).confirmed()).toEqual([{
+    project_id: saved.id, session_id: saved.session_id, title: saved.title,
+    version: 1, confirmed_at: approval?.confirmed_at, updated_at: confirmed.updated_at,
+  }])
+  await expect(repository.save({ ...confirmed, confirmations: [] })).rejects.toThrow('确认记录只能')
+  await expect(repository.save({ ...confirmed, graphs: [{ ...graph, nodes: graph.nodes.map(node => ({ ...node, assessment: '篡改确认结果' })) }] })).rejects.toThrow('不能覆盖')
+  const excluded = await repository.save({ ...confirmed, sources: confirmed.sources.map(source => ({ ...source, excluded: true })) })
+  expect(excluded.confirmations).toEqual(confirmed.confirmations)
+  expect(excluded.graphs).toEqual([graph])
+  const html = graphHTML(confirmed, graph)
+  for (const expected of ['已确认', '报告目录', '五级能力图谱树', '能力节点与证据主表', '来源与逐字证据摘录', 'SHA-256', source.content_hash, '推断，待专家核实', '评价建议 · 推断', '不作课程缺口'])
+    expect(html).toContain(expected)
+  for (const node of graph.nodes) {
+    expect(html).toContain(`id="node-${node.id}"`)
+    for (const evidence of node.evidence) expect(html).toContain(evidence.quote)
+  }
+  expect(html).toContain(`id="source-${source.id}"`)
+  const injected = graphHTML({ ...confirmed, title: '</title><script>alert(1)</script>', roles: ['<iframe src="https://evil.test">'] }, graph)
+  expect(injected).not.toContain('<script>')
+  expect(injected).not.toContain('<iframe')
+  expect(injected).toContain('&lt;script&gt;')
+})

@@ -12,6 +12,11 @@ export async function startJdFixture() {
   let origin
   const server = createServer(async (request, response) => {
     const path = new URL(request.url, 'http://fixture').pathname
+    if (path === '/challenge') {
+      response.writeHead(403, { 'content-type': 'text/html;charset=utf-8' })
+      response.end('<title>安全验证</title><main><h1>平台访问限制</h1><p>系统检测到您当前的访问环境存在异常，请完成安全验证。</p><a href="/job">返回合成岗位</a></main>')
+      return
+    }
     if (path === '/job') {
       const loggedIn = (request.headers.cookie ?? '').includes('synthetic_jd_session=active')
       response.writeHead(loggedIn ? 200 : 403, { 'content-type': 'text/html;charset=utf-8' })

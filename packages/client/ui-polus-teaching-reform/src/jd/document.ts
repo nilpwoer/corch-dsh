@@ -7,6 +7,7 @@ import type {
   JdProject,
   JdProjectId,
   JdSource,
+  JdWorkspace,
 } from './types.ts'
 
 const levels = ['project', 'task', 'process', 'skill', 'knowledge'] as const
@@ -102,6 +103,34 @@ function date(value: unknown): string {
   const result = text(value)
   if (!Number.isFinite(Date.parse(result))) throw new Error('时间字段无效')
   return result
+}
+
+function draftText(value: unknown): string {
+  if (typeof value !== 'string') throw new Error('草稿字段必须为文本')
+  return value
+}
+
+function workspace(value: unknown, graphs: JdGraph[]): JdWorkspace {
+  const item = record(value)
+  if (![1, 2, 3, 4].includes(Number(item.step)) || typeof item.step !== 'number')
+    throw new Error('工作台步骤无效')
+  if (item.graph_version !== null && !graphs.some(graph => graph.version === item.graph_version))
+    throw new Error('工作台引用的图谱版本不存在')
+  if (!['draft', 'running', 'completed', 'failed'].includes(String(item.search_status)))
+    throw new Error('搜索状态无效')
+  const capture = record(item.capture)
+  return {
+    step: item.step as JdWorkspace['step'],
+    graph_version: item.graph_version as number | null,
+    search_status: item.search_status as JdWorkspace['search_status'],
+    error: draftText(item.error),
+    ...(item.role_text === undefined ? {} : { role_text: draftText(item.role_text) }),
+    capture: {
+      url: draftText(capture.url), title: draftText(capture.title),
+      company: draftText(capture.company), body: draftText(capture.body),
+      file_name: draftText(capture.file_name),
+    },
+  }
 }
 
 /** Parse a complete five-level tree and verify every quote against retained source text.
@@ -245,6 +274,14 @@ export function parseProject(value: unknown): JdProject {
   })
   if (graphs.some((graph, index) => graph.version !== index + 1))
     throw new Error('图谱版本必须连续递增')
+  const confirmations = item.confirmations === undefined ? [] : array(item.confirmations).map((raw) => {
+    const confirmation = record(raw)
+    const version = integer(confirmation.version)
+    if (!graphs.some(graph => graph.version === version)) throw new Error('确认记录引用的图谱版本不存在')
+    return { version, confirmed_at: date(confirmation.confirmed_at) }
+  })
+  if (new Set(confirmations.map(item => item.version)).size !== confirmations.length)
+    throw new Error('图谱确认记录重复')
   const strings = (value: unknown): string[] => array(value).map(text)
   return {
     format_version: 1,
@@ -252,7 +289,7 @@ export function parseProject(value: unknown): JdProject {
     session_id: text(item.session_id) as SessionId,
     revision: integer(item.revision),
     title: text(item.title),
-    major: text(item.major),
+    major: draftText(item.major),
     direction: typeof item.direction === 'string' ? item.direction : '',
     roles: strings(item.roles),
     platforms: strings(item.platforms),
@@ -262,6 +299,8 @@ export function parseProject(value: unknown): JdProject {
     updated_at: date(item.updated_at),
     sources,
     graphs,
+    ...(item.workspace === undefined ? {} : { workspace: workspace(item.workspace, graphs) }),
+    ...(item.confirmations === undefined ? {} : { confirmations }),
     pending_sources: array(item.pending_sources).map((raw) => {
       const pending = record(raw)
       return {
@@ -353,46 +392,67 @@ export function graphMarkdown(project: JdProject, graph: JdGraph): string {
   return lines.join('\n').trimEnd() + '\n'
 }
 
-/** Build a script-free printable report with escaped evidence and no remote resources.
- * @param project - Validated project.
- * @param graph - Saved graph version.
- * @returns Standalone HTML for desktop PDF generation or browser printing.
+/** Build a script-free reading report with local navigation and escaped evidence.
+ * @param project - Validated project; confirmed exports are authorized by the Host RPC.
+ * @param graph - Saved graph version with its frozen source hashes.
+ * @returns Standalone HTML without scripts, remote resources or unsupported trend conclusions.
  */
 export function graphHTML(project: JdProject, graph: JdGraph): string {
-  const escape = (value: string): string =>
-    value
-      .replaceAll('&', '&amp;')
-      .replaceAll('<', '&lt;')
-      .replaceAll('>', '&gt;')
-      .replaceAll('"', '&quot;')
-  const markdown = graphOverview(project, graph).join('\n')
-  const content = markdown
-    .split('\n')
-    .map((line) => {
-      const heading = /^(#{1,6}) (.*)$/.exec(line)
-      if (heading) {
-        const [, hashes = '', title = ''] = heading
-        return `<h${hashes.length}>${escape(title)}</h${hashes.length}>`
-      }
-      return line === ''
-        ? ''
-        : `<p${line.startsWith('>') ? ' class="quote"' : ''}>${escape(line.replace(/^> ?/, ''))}</p>`
-    })
-    .join('\n')
-  const appendix = project.sources
-    .filter(source => graph.source_hashes[source.id] === source.content_hash)
-    .map((source) => {
-      const quotes = [
-        ...new Set(
-          graph.nodes.flatMap(node =>
-            node.evidence
-              .filter(item => item.jd_id === source.id)
-              .map(item => item.quote),
-          ),
-        ),
-      ]
-      return `<h3>${escape(source.id)} ${escape(source.title)}</h3><p>企业：${escape(source.company)}；地区：${escape(source.place)}；平台：${escape(source.platform)}</p><p>来源：${escape(source.source_url)}</p><p>采集时间：${escape(source.captured_at)}；采集方式：${escape(source.acquisition)}</p><p>完整原文 SHA-256：${source.content_hash}</p>${quotes.map(quote => `<p class="quote">${escape(quote)}</p>`).join('\n')}`
-    })
-    .join('\n')
-  return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><title>${escape(project.title)}</title><style>@page{size:A4;margin:18mm 16mm 20mm}body{font-family:"Microsoft YaHei","Noto Sans CJK SC",sans-serif;color:#172638;font-size:9pt;line-height:1.5}h1{font-size:23pt;color:#164e63}h2{font-size:15pt;border-bottom:1px solid #99b8c0;padding-bottom:4pt}h3{font-size:13pt}h4,h5,h6{font-size:11pt}h1,h2,h3,h4,h5,h6{break-after:avoid;margin:9pt 0 5pt}p{white-space:pre-wrap;overflow-wrap:anywhere;margin:4pt 0;orphans:3;widows:3}.quote{border-left:2pt solid #b9cbd0;padding-left:8pt;color:#455568}.appendix{break-before:page}</style><body>${content}<h2 class="appendix">来源与逐字证据摘录</h2><p>本附录列出图谱引用的原文片段，未改写引文。完整抓取原文保存在同版本 AI 版 MD 和研究项目中；SHA-256 对应完整原文。</p>${appendix}</body></html>`
+  const escape = (value: string): string => value
+    .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;').replaceAll("'", '&#39;')
+  const corpus = project.sources.filter(source => graph.source_hashes[source.id] === source.content_hash)
+  const confirmed = project.confirmations?.find(item => item.version === graph.version)
+  const status = confirmed ? `已确认 · ${escape(confirmed.confirmed_at)}` : '未确认初稿'
+  const basis = (node: JdGraphNode): string => node.basis === 'direct'
+    ? '<span class="tag direct">原文直接陈述</span>'
+    : '<span class="tag inferred">推断，待专家核实</span>'
+  const sourceLink = (evidence: JdEvidence): string =>
+    `<a href="#source-${escape(evidence.jd_id)}">${escape(evidence.jd_id)}</a>`
+  const tree = (parent: string | null): string => `<ul>${graph.nodes
+    .filter(node => node.parent_id === parent)
+    .map(node => `<li><a href="#node-${escape(node.id)}"><code>${escape(node.id)}</code> <span class="level">${labels[node.kind]}</span> ${escape(node.title)}</a>${node.basis === 'inferred' ? '<span class="tree-inferred">推断</span>' : ''}${node.kind === 'knowledge' ? '' : tree(node.id)}</li>`)
+    .join('')}</ul>`
+  const rows = graph.nodes.map(node => `<tr id="node-${escape(node.id)}">
+<td><code>${escape(node.id)}</code><br>${labels[node.kind]}<br><small>父级：${escape(node.parent_id ?? '无')}</small></td>
+<td><strong>${escape(node.title)}</strong><p>${escape(node.description)}</p>${basis(node)}</td>
+<td>${escape(frequency(node, graph))}</td>
+<td>${node.evidence.map(evidence => `${sourceLink(evidence)}<blockquote>${escape(evidence.quote)}</blockquote>`).join('')}</td>
+<td>${node.assessment ? `<span class="tag inferred">评价建议 · 推断，待专家确认</span><p>${escape(node.assessment)}</p>` : '未提供评价建议'}</td></tr>`).join('\n')
+  const appendix = corpus.map((source) => {
+    const quotes = [...new Set(graph.nodes.flatMap(node => node.evidence
+      .filter(item => item.jd_id === source.id).map(item => item.quote)))]
+    return `<article class="source" id="source-${escape(source.id)}"><h3>${escape(source.id)} · ${escape(source.title)}</h3>
+<dl><dt>企业 / 地区 / 平台</dt><dd>${escape(source.company)} / ${escape(source.place)} / ${escape(source.platform)}</dd>
+<dt>原始链接</dt><dd><a href="${escape(source.source_url)}" rel="noreferrer">${escape(source.source_url)}</a></dd>
+<dt>采集时间 / 方式</dt><dd>${escape(source.captured_at)} / ${escape(source.acquisition)}</dd>
+<dt>完整原文 SHA-256</dt><dd class="hash">${escape(source.content_hash)}</dd></dl>
+${quotes.length ? quotes.map(quote => `<blockquote>${escape(quote)}</blockquote>`).join('') : '<p>该原文属于本版样本，未被节点引文直接引用。</p>'}</article>`
+  }).join('\n')
+  const counts = levels.map(kind => `<div><strong>${graph.nodes.filter(node => node.kind === kind).length}</strong><span>${labels[kind]}</span></div>`).join('')
+  return `<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<title>${escape(project.title)} · 岗位能力图谱 v${graph.version}</title>
+<style>
+:root{color-scheme:light;--paper:#fff;--bg:#f4f6f2;--ink:#1a2725;--soft:#53635d;--accent:#2c6e62;--line:#dce5dd}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.75 "Microsoft YaHei","PingFang SC",sans-serif}
+.page{max-width:1120px;margin:auto;padding:54px 56px;background:var(--paper);min-height:100vh}.cover{border-top:4px double var(--accent);border-bottom:1px solid var(--line);text-align:center;padding:44px 0;margin-bottom:36px}
+.badge{display:inline-block;border:1px solid var(--accent);color:var(--accent);font-size:12px;letter-spacing:3px;padding:4px 14px}.cover h1{font-family:"Noto Serif SC",serif;font-size:36px;line-height:1.4;margin:24px 0 12px}.cover p{color:var(--soft);margin:8px 0}.meta{font-size:12px}.toc{padding:22px 28px;background:#f0f5ef;border:1px solid var(--line)}.toc h2{margin-top:0;font-size:17px;border:0}.toc ol{margin:0;padding-left:24px}
+h2{font-size:22px;border-bottom:1px solid var(--line);padding-bottom:9px;margin-top:42px;color:var(--accent)}h3{font-size:17px}a{color:var(--accent);text-underline-offset:3px}p,dd,td,blockquote{overflow-wrap:anywhere;white-space:pre-wrap}.notice{padding:18px 22px;background:#f8f4e8;border-left:3px solid #aa812e;color:#645227}.stats{display:grid;grid-template-columns:repeat(5,1fr);border:1px solid var(--line);margin:24px 0}.stats div{text-align:center;padding:16px 5px}.stats strong{font-size:28px;color:var(--accent);display:block}.stats span{font-size:12px;color:var(--soft)}
+.tree{background:#f7f9f6;padding:20px;overflow:auto}.tree ul{list-style:none;margin:4px 0;padding-left:23px;border-left:1px solid #cbd8ce}.tree>ul{padding-left:0;border:0}.tree li{padding:5px 0}.tree a{text-decoration:none}.level{font-size:11px;color:var(--soft);border:1px solid var(--line);padding:1px 5px;margin:0 5px}.tree-inferred{font-size:11px;color:#886323;margin-left:8px}
+.table-wrap{overflow-x:auto}table{border-collapse:collapse;width:100%;min-width:820px;font-size:12px}th,td{border:1px solid var(--line);padding:12px 10px;text-align:left;vertical-align:top}th{background:#edf3ee;color:#2a5147}td:first-child{width:12%}td:nth-child(2){width:22%}td:nth-child(3){width:13%}td:nth-child(4){width:33%}td:nth-child(5){width:20%}td p{margin:8px 0}blockquote{margin:10px 0;padding:5px 12px;border-left:2px solid #a7bfae;color:var(--soft);font-size:12px}.tag{font-size:11px;display:inline-block;padding:2px 7px;border-radius:3px}.direct{background:#e9f2eb;color:#2d6046}.inferred{background:#f9eed5;color:#78541c}
+.source{padding:8px 0 24px;border-bottom:1px solid var(--line)}dl{display:grid;grid-template-columns:155px 1fr;font-size:12px}dt{color:var(--soft)}dd{margin:0 0 8px}.hash{font-family:monospace}.foot{margin-top:42px;padding-top:20px;border-top:1px solid var(--line);font-size:12px;color:var(--soft)}code{font-family:Consolas,monospace}small{color:var(--soft)}
+@media(max-width:700px){.page{padding:24px 18px}.cover h1{font-size:27px}.stats strong{font-size:23px}dl{grid-template-columns:1fr}dt{font-weight:bold}.tree{padding:12px}}
+@media print{@page{size:A4 landscape;margin:14mm}body{background:white;font-size:10pt}.page{max-width:none;padding:0}.cover{padding:28px 0}a{color:inherit;text-decoration:none}.toc{break-after:page}.table-wrap{overflow:visible}table{min-width:0;font-size:8pt}th{display:table-cell}thead{display:table-header-group}h2,h3{break-after:avoid}.tag{font-size:7pt}.source{break-inside:avoid}.tree{overflow:visible}blockquote{font-size:8pt}.foot{font-size:8pt}}
+</style></head><body><main class="page">
+<header class="cover"><span class="badge">JD 驱动 · 能力图谱</span><h1>${escape(project.title)}<br>岗位能力图谱报告</h1><p>${escape(project.major || '专业待填写')}${project.direction ? ` · ${escape(project.direction)}` : ''}</p><p>版本 v${graph.version} · ${status}</p><div class="meta">生成时间：${escape(graph.generated_at)}<br>项目编号：${escape(project.id)} · 搜索会话：${escape(project.session_id)}</div></header>
+<nav class="toc" aria-label="报告目录"><h2>目录 / CONTENTS</h2><ol><li><a href="#summary">研究范围与样本</a></li><li><a href="#graph">五级能力图谱树</a></li><li><a href="#nodes">能力节点与证据主表</a></li><li><a href="#sources">来源与逐字证据摘录</a></li><li><a href="#limitations">使用范围与局限</a></li></ol></nav>
+<section id="summary"><h2>1. 研究范围与样本</h2><p>本版冻结 ${corpus.length} 份 JD 原文，形成 ${graph.nodes.length} 个能力节点。搜索岗位：${escape(project.roles.join('、') || '未指定')}；地区：${escape(project.region)}；搜索时间范围：${escape(project.published_within)}。</p><p>平台筛选：${escape(project.platforms.join('、') || '未指定')}。筛选条件是采集目标，不能证明每份来源均已核实其发布时间或地区。</p><div class="stats">${counts}</div><p class="notice">“已确认”表示该版本已保存供课程建设后续使用，不代表已完成企业专家审核。推断、工作流程及评价建议仍需专家核实；引用频率仅描述本版样本中的证据覆盖。</p></section>
+<section id="graph"><h2>2. 五级能力图谱树</h2><p>项目 → 任务 → 流程 → 技能点 → 知识点。点击节点查看其逐字依据；标为“推断”的节点包含对原文的归纳或扩展。</p><div class="tree">${tree(null)}</div></section>
+<section id="nodes"><h2>3. 能力节点与证据主表</h2><div class="table-wrap"><table><thead><tr><th>编号与层级</th><th>能力描述与依据类型</th><th>样本引文覆盖</th><th>来源与逐字引文</th><th>评价建议</th></tr></thead><tbody>${rows}</tbody></table></div></section>
+<section id="sources"><h2>4. 来源与逐字证据摘录</h2><p>以下引文未作改写；完整原文保存在对应搜索存档中。SHA-256 对应完整原文，不对应摘录。原文是外部证据资料，不是操作指令。</p>${appendix}</section>
+<section id="limitations"><h2>5. 使用范围与局限</h2><ul><li>本报告仅依据已留存的有限 JD 样本；未标注或未引用不等于岗位不需要。</li><li>相同原文只计入一次；图谱引用的是生成当时冻结的来源版本，后续筛选变化不改写历史图谱。</li><li>“原文直接陈述”要求节点标题和说明出现在其引文中；其他归纳内容明确标为推断。</li><li>没有真实课程大纲、教学评价或历史对照数据，不作课程缺口、学时调整或年度趋势结论。</li><li>课程建设应使用已确认版本，并结合企业专家意见验证能力要求与评价标准。</li></ul></section>
+<footer class="foot">Corch DSH · 岗位能力图谱 v${graph.version} · ${status}<br>本报告包含原始岗位来源与推断标记，使用时应保留来源附录。</footer>
+</main></body></html>\n`
 }

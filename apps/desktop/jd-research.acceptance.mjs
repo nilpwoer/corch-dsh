@@ -1,9 +1,11 @@
 /** Actual desktop/Loader/model/tool flow with synthetic external systems and saved-output snapshots. */
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { readFile, writeFile, mkdir, readdir, symlink, realpath, copyFile } from 'node:fs/promises'
-import { resolve, join } from 'node:path'
+import { resolve, join, sep } from 'node:path'
 import { parseArgs } from 'node:util'
+import { fileURLToPath } from 'node:url'
 import { backendEnvironment } from './policy.mjs'
 import { fixtureBody, startJdFixture } from './jd-research-fixture.mjs'
 
@@ -29,6 +31,10 @@ async function launch() {
   desktop = await electron.launch({ executablePath: resolve(values.exe), args: [...(values.source ? [resolve('apps/desktop/main.mjs')] : []), '--data-dir', data, '--lang=zh-CN'],
     env: backendEnvironment(process.env, join(data, 'unused')), timeout: 45000 })
   page = await desktop.firstWindow({ timeout: 60000 })
+  await desktop.evaluate(({ shell }) => {
+    globalThis.jdAcceptanceOpened = []
+    shell.openExternal = async url => { globalThis.jdAcceptanceOpened.push(url) }
+  })
   page.setDefaultTimeout(30000)
   page.on('pageerror', error => errors.push(error.message))
   await page.getByRole('button', { name: 'JD 搜索', exact: true }).waitFor()
@@ -53,6 +59,52 @@ async function openResearch() {
   const open = page.getByRole('button', { name: '打开侧边栏', exact: true })
   if (await open.count()) await open.click()
 }
+async function savedProject(id, predicate, description) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const project = await rpc('/jd', 'read', { id })
+    if (predicate(project)) return project
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  assert.fail('Persisted project did not reach: ' + description)
+}
+async function selectProject(id) {
+  await page.locator(`[data-jd-project-id="${id}"]`).click()
+  await selectedProject(id)
+}
+async function selectedProject(id) {
+  await page.waitForFunction(projectId => document.querySelector(`[data-jd-project-id="${projectId}"]`)?.getAttribute('aria-current') === 'page'
+    && document.querySelector('main nav[aria-label="研究步骤"]'), id)
+}
+async function archivedProjects(count) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const projects = await rpc('/jd', 'list')
+    if (projects.length >= count) return projects
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  assert.fail(`New search did not create ${count} archived projects`)
+}
+async function exportHtml(version, project) {
+  const previous = await desktop.evaluate(() => globalThis.jdAcceptanceOpened.length)
+  await page.getByRole('button', { name: '导出 HTML', exact: true }).click()
+  let url
+  for (let attempt = 0; attempt < 100; attempt++) {
+    url = await desktop.evaluate((_electron, count) => globalThis.jdAcceptanceOpened[count], previous)
+    if (url) break
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  assert.ok(url, 'HTML export must request the system browser')
+  const path = fileURLToPath(url)
+  assert.ok(path.startsWith(join(data, 'exports') + sep), 'Report must be saved under this client data directory')
+  assert.ok(path.endsWith('.html'))
+  const html = await readFile(path, 'utf8')
+  const source = project.sources[0]
+  assert.ok(html.includes(source.content_hash) && html.includes(source.source_url), 'HTML must include original hash and URL')
+  assert.ok(html.includes(source.id) && html.includes(fixtureBody), 'HTML must retain exact source quotes and identity')
+  assert.ok(html.includes('推断') && html.includes('待专家核实'), 'HTML must identify inference')
+  assert.match(html, /Content-Security-Policy/u)
+  await copyFile(path, join(out, `jd-graph-v${version}.html`))
+  return { path, url, html, sha256: createHash('sha256').update(html).digest('hex') }
+}
 async function buttonMetrics(controls) {
   return Promise.all(controls.map(async ([name, control]) => control.evaluate((element, label) => {
     const style = getComputedStyle(element), rect = element.getBoundingClientRect()
@@ -72,7 +124,7 @@ async function narrowControls(controls, filename) {
     await nativeMain.evaluate(window => { window.setSize(1300, 900); window.focus() })
     await page.waitForFunction(() => innerWidth <= 1300)
     await controls[0][1].scrollIntoViewIfNeeded()
-    const dimensions = await page.getByRole('main').filter({ has: page.getByLabel('打开已保存项目', { exact: true }) }).evaluate(async main => {
+    const dimensions = await page.getByRole('main').filter({ has: page.getByRole('navigation', { name: '研究步骤', exact: true }) }).evaluate(async main => {
       let container = main.parentElement
       while (container.parentElement && !/auto|scroll/u.test(getComputedStyle(container).overflowY)) container = container.parentElement
       let previous, stableFrames = 0, frames = 0
@@ -147,85 +199,122 @@ try {
   await settings.getByRole('button', { name: '关闭', exact: true }).click()
   await openResearch()
   await page.getByRole('button', { name: '＋ 新建搜索', exact: true }).click()
+  const firstRoster = await archivedProjects(1)
+  assert.equal(firstRoster.length, 1, 'A new search must be archived before any inference or search')
+  const first = firstRoster[0]
+  await selectedProject(first.id)
   await page.getByRole('heading', { name: '从学科专业推理实际岗位' }).waitFor()
+  await rpc('/api', 'session.selectModel', { sessionId: first.session_id, provider: 'jd-fixture', model: 'jd-fixture-model' })
+  await page.getByRole('textbox', { name: '学科 / 专业', exact: true }).fill('计算机应用技术')
+  await page.getByRole('textbox', { name: '专业方向（可选）', exact: true }).fill('后端服务与数据库')
+  await page.getByRole('textbox', { name: '岗位名称（可手动修改，使用顿号分隔）', exact: true }).fill('后端开发、数据库开发')
+  await savedProject(first.id, project => project.major === '计算机应用技术' && project.direction === '后端服务与数据库', 'first target draft')
+  await page.getByRole('button', { name: '＋ 新建搜索', exact: true }).click()
+  const second = (await archivedProjects(2)).find(project => project.id !== first.id)
+  assert.ok(second)
+  await selectedProject(second.id)
+  await page.getByRole('heading', { name: '从学科专业推理实际岗位' }).waitFor()
+  assert.notEqual(second.session_id, first.session_id)
   const sessions = await rpc('/api', 'session.list')
-  const sessionId = sessions.items.at(-1).sessionId
-  await rpc('/api', 'session.selectModel', { sessionId, provider: 'jd-fixture', model: 'jd-fixture-model' })
-  await page.getByRole('textbox').nth(0).fill('计算机应用技术')
+  assert.ok(sessions.items.some(item => item.sessionId === first.session_id))
+  assert.ok(sessions.items.some(item => item.sessionId === second.session_id))
+  await page.getByRole('textbox', { name: '学科 / 专业', exact: true }).fill('智慧养老护理')
+  await page.getByRole('textbox', { name: '专业方向（可选）', exact: true }).fill('社区照护')
+  await page.getByRole('textbox', { name: '岗位名称（可手动修改，使用顿号分隔）', exact: true }).fill('养老护理员')
+  await selectProject(first.id)
+  await page.getByRole('heading', { name: '从学科专业推理实际岗位' }).waitFor()
+  await page.getByRole('textbox', { name: '专业方向（可选）', exact: true }).waitFor()
+  assert.equal(await page.getByRole('textbox', { name: '学科 / 专业', exact: true }).inputValue(), '计算机应用技术')
+  assert.equal(await page.getByRole('textbox', { name: '专业方向（可选）', exact: true }).inputValue(), '后端服务与数据库')
+  assert.equal(await page.getByRole('textbox', { name: '岗位名称（可手动修改，使用顿号分隔）', exact: true }).inputValue(), '后端开发、数据库开发')
   await page.getByRole('button', { name: '推理岗位名称', exact: true }).click()
   await page.getByText('已生成 1 个岗位建议，可继续编辑。').waitFor()
   await page.getByRole('button', { name: '确认岗位并继续', exact: true }).click()
+  await page.getByRole('combobox', { name: '区域范围', exact: true }).selectOption('成渝经济圈')
+  await page.getByRole('combobox', { name: '发布时间', exact: true }).selectOption('最近 90 天')
+  await page.getByRole('combobox', { name: '目标条数', exact: true }).selectOption('5 条（测试）')
+  await page.getByRole('button', { name: /鱼泡直聘/u }).click()
+  await selectProject(second.id)
+  assert.equal(await page.getByRole('textbox', { name: '学科 / 专业', exact: true }).inputValue(), '智慧养老护理')
+  await selectProject(first.id)
+  await page.getByRole('heading', { name: '选择平台与搜索范围' }).waitFor()
+  assert.equal(await page.getByRole('combobox', { name: '区域范围', exact: true }).inputValue(), '成渝经济圈')
+  assert.equal(await page.getByRole('button', { name: /鱼泡直聘/u }).getAttribute('aria-pressed'), 'true')
   await page.getByRole('button', { name: '开始检索', exact: true }).click()
-  await page.getByRole('button', { name: '选为登录采集来源', exact: true }).waitFor()
+  const pendingOpen = page.getByRole('button', { name: '打开此岗位并登录', exact: true })
+  await pendingOpen.waitFor()
   assert.deepEqual(fixture.toolCalls, ['web_search', 'web_fetch'])
-  checks.push('real model adapter, native-search provider and HTTP fetch expose the login restriction')
-  await page.getByRole('button', { name: '选为登录采集来源', exact: true }).click()
-  const [capture] = await Promise.all([desktop.waitForEvent('window'), page.getByRole('button', { name: '打开登录采集窗口', exact: true }).click()])
+  assert.equal((await rpc('/jd', 'list')).length, 2)
+  checks.push('new searches immediately archive distinct Host sessions; target drafts, selected platforms and range survive A/B switching')
+  const continueCapture = page.getByRole('button', { name: '登录后继续采集', exact: true })
+  assert.equal(await continueCapture.isVisible(), false, 'Continue must not be offered without a capture window')
+  assert.equal(await page.getByRole('button', { name: '选为登录采集来源', exact: true }).count(), 0)
+  assert.equal(await page.getByRole('button', { name: '直接登录采集或导入原文', exact: true }).count(), 0)
+  const [capture] = await Promise.all([desktop.waitForEvent('window'), pendingOpen.click()])
   await capture.getByRole('button', { name: '登录合成站点', exact: true }).waitFor()
   assert.equal(await capture.evaluate(() => typeof window.corchJd), 'undefined')
-  await page.getByRole('button', { name: '登录后继续采集', exact: true }).click()
+  await continueCapture.click()
   await page.getByRole('alert').filter({ hasText: '尚未取得 JD 正文' }).waitFor()
-  assert.equal((await rpc('/jd', 'list')).length, 1)
-  assert.equal((await rpc('/jd', 'read', { id: (await rpc('/jd', 'list'))[0].id })).sources.length, 0)
-  const pendingProject = (await rpc('/jd', 'list'))[0]
-  await page.reload()
-  await page.getByRole('button', { name: 'JD 搜索', exact: true }).waitFor()
-  await openResearch()
-  await page.getByLabel('打开已保存项目', { exact: true }).selectOption(pendingProject.id)
-  await page.getByRole('button', { name: '直接登录采集或导入原文', exact: true }).click()
-  assert.equal(capture.isClosed(), false)
+  assert.equal((await rpc('/jd', 'read', { id: first.id })).sources.length, 0)
   const fileInput = page.getByLabel('读取原文文件', { exact: true })
   const fileControl = page.getByText('选择原文文件', { exact: true })
   const importedBody = page.getByRole('region', { name: '采集或导入 JD', exact: true }).getByRole('textbox', { name: /^导入\s*JD\s*原文$/u })
-  await page.getByText(/支持\s*\.txt\s*\/\s*\.md.*1\s*MB/u).waitFor()
   const txt = { name: '合成岗位.txt', mimeType: 'text/plain', buffer: Buffer.from('岗位职责：开发合成文本接口。\n任职要求：掌握 SQL。') }
   const mdFile = { name: '合成岗位.md', mimeType: 'text/markdown', buffer: Buffer.from('# 合成岗位\n\n岗位职责：开发合成 Markdown 接口。\n任职要求：掌握软件测试。') }
   for (const file of [txt, mdFile]) {
     await fileInput.setInputFiles(file)
     await page.getByRole('status').filter({ hasText: '已读取：' + file.name }).waitFor()
     assert.equal(await importedBody.inputValue(), file.buffer.toString())
-    assert.equal(await fileInput.inputValue(), '', 'The native picker must permit choosing the same file again')
+    assert.equal(await fileInput.inputValue(), '', 'Native picker must allow the same file again')
   }
   await importedBody.fill('暂时编辑的内容')
-  await fileInput.focus()
-  assert.equal(await fileInput.evaluate(element => element === document.activeElement), true)
   const [keyboardChooser] = await Promise.all([page.waitForEvent('filechooser'), fileInput.press('Enter')])
   await keyboardChooser.setFiles(mdFile)
   await page.waitForFunction(([element, expected]) => element.value === expected, [await importedBody.elementHandle(), mdFile.buffer.toString()])
-  await page.getByRole('status').filter({ hasText: '已读取：' + mdFile.name }).waitFor()
+  await page.getByRole('textbox', { name: '企业（可填未披露）', exact: true }).fill('合成企业草稿')
+  await selectProject(second.id)
+  await selectProject(first.id)
+  await page.getByRole('heading', { name: 'JD 原文与来源' }).waitFor()
   assert.equal(await importedBody.inputValue(), mdFile.buffer.toString())
-  assert.equal((await rpc('/jd', 'read', { id: pendingProject.id })).sources.length, 0)
-  const disabledOpen = page.getByRole('button', { name: '打开登录采集窗口', exact: true })
-  assert.equal(await disabledOpen.isDisabled(), true)
-  const disabledStyle = await disabledOpen.evaluate(element => ({ opacity: Number(getComputedStyle(element).opacity), cursor: getComputedStyle(element).cursor }))
-  assert.ok(disabledStyle.opacity < 1 && disabledStyle.cursor === 'not-allowed', 'Disabled JD action must be visibly unavailable')
-  const fileMetrics = await buttonMetrics([['选择原文文件', fileControl], ['打开登录采集窗口', disabledOpen], ['登录后继续采集', page.getByRole('button', { name: '登录后继续采集', exact: true })]])
+  assert.equal(await page.getByRole('textbox', { name: '企业（可填未披露）', exact: true }).inputValue(), '合成企业草稿')
+  assert.equal(await page.getByRole('textbox', { name: '来源 URL', exact: true }).inputValue(), fixture.origin + '/job')
+  const draft = await savedProject(first.id, project => project.workspace?.capture.body === mdFile.buffer.toString(), 'capture draft')
+  assert.equal(draft.workspace.step, 3)
+  assert.equal(draft.workspace.capture.file_name, mdFile.name)
+  assert.equal(draft.sources.length, 0)
+  await page.reload()
+  await page.getByRole('button', { name: 'JD 搜索', exact: true }).waitFor()
+  await openResearch()
+  await selectProject(first.id)
+  await page.getByRole('heading', { name: 'JD 原文与来源' }).waitFor()
+  assert.equal(await importedBody.inputValue(), mdFile.buffer.toString())
+  await continueCapture.waitFor()
+  assert.equal(capture.isClosed(), false)
+  const reopen = page.getByRole('button', { name: '重新打开岗位采集窗口', exact: true })
+  const fileMetrics = await buttonMetrics([['选择原文文件', fileControl], ['重新打开岗位采集窗口', reopen], ['登录后继续采集', continueCapture]])
   for (const control of fileMetrics) {
     assert.ok(Math.abs(control.height - 38) <= 1, `Unexpected file/capture action height: ${control.name}`)
-    for (const property of ['font', 'padding', 'radius']) assert.deepEqual(control[property], fileMetrics[0][property], `File/capture action ${property} differs: ${control.name}`)
+    for (const property of ['font', 'padding', 'radius']) assert.deepEqual(control[property], fileMetrics[0][property])
   }
-  await fileControl.scrollIntoViewIfNeeded()
-  presentation.file_import = { txt_loaded: true, md_loaded: true, same_file_reselected_with_keyboard: true, filename_visible: true, manual_original_not_saved: true,
-    wide: fileMetrics, disabled_action: disabledStyle, narrow: await narrowControls([['选择原文文件', fileControl], ['打开登录采集窗口', disabledOpen], ['登录后继续采集', page.getByRole('button', { name: '登录后继续采集', exact: true })]], 'file-import-narrow.png') }
-  await fileControl.scrollIntoViewIfNeeded()
+  presentation.file_import = { txt_loaded: true, md_loaded: true, same_file_reselected_with_keyboard: true, filename_visible: true,
+    draft_restored_on_switch_and_reload: true, manual_original_not_saved: true, wide: fileMetrics,
+    narrow: await narrowControls([['选择原文文件', fileControl], ['重新打开岗位采集窗口', reopen], ['登录后继续采集', continueCapture]], 'file-import-narrow.png') }
   await page.screenshot({ path: join(out, 'file-import.png'), fullPage: true })
-  await importedBody.fill('')
-  checks.push('styled native file picker loads txt/md, displays filename, supports keyboard same-file reselection and keeps imports unsaved')
+  await capture.goto(fixture.origin + '/challenge')
+  await continueCapture.click()
+  await page.getByRole('alert').filter({ hasText: '平台触发了安全验证或访问限制' }).waitFor()
+  assert.equal((await rpc('/jd', 'read', { id: first.id })).sources.length, 0)
+  await capture.goto(fixture.origin + '/job')
   await capture.getByLabel('合成账号', { exact: true }).fill('synthetic-user')
   await capture.getByLabel('合成密码', { exact: true }).fill('synthetic-password')
   await capture.getByRole('button', { name: '登录合成站点', exact: true }).click()
   await capture.getByRole('heading', { name: '合成后端开发岗位', exact: true }).waitFor()
-  const nativeCapture = await desktop.browserWindow(capture)
-  assert.equal(await nativeCapture.evaluate(window => window.getTitle()), 'JD 采集 · 请在此登录，完成后回到工作台继续采集')
   const [detail] = await Promise.all([desktop.waitForEvent('window'), capture.getByRole('link', { name: '新窗口打开岗位', exact: true }).click()])
   await detail.getByRole('heading', { name: '合成后端开发岗位', exact: true }).waitFor()
-  await page.getByRole('button', { name: '登录后继续采集', exact: true }).click()
+  await capture.close()
+  await continueCapture.click()
   await page.getByText('JD 原文和来源已保存。', { exact: true }).waitFor()
-  await page.getByText(/支持\s*\.txt\s*\/\s*\.md.*1\s*MB/u).waitFor()
-  assert.equal(await page.getByRole('status').filter({ hasText: '已读取：' + mdFile.name }).count(), 0)
-  presentation.file_import.filename_reset_after_save = true
-  const summary = (await rpc('/jd', 'list'))[0]
-  const saved = await rpc('/jd', 'read', { id: summary.id })
+  const saved = await rpc('/jd', 'read', { id: first.id })
   assert.equal(saved.sources.length, 1)
   assert.ok(saved.sources[0].body.includes(fixtureBody))
   assert.ok(!saved.sources[0].body.includes('无正文页眉'))
@@ -233,78 +322,112 @@ try {
   assert.equal(saved.sources[0].title, '合成后端开发岗位')
   assert.equal(saved.sources[0].acquisition, 'browser')
   assert.ok(saved.sources[0].source_url.endsWith('/job?detail=1'))
+  assert.equal(saved.sources[0].content_hash, createHash('sha256').update(saved.sources[0].body).digest('hex'))
   assert.ok(!JSON.stringify(saved).includes('synthetic_jd_session'))
-  checks.push('login page rejected; capture survives workbench reload; human login resumes collection; cookies never enter research data')
+  await detail.close()
+  await page.reload()
+  await page.getByRole('button', { name: 'JD 搜索', exact: true }).waitFor()
+  await openResearch(); await selectProject(first.id)
+  await page.getByRole('heading', { name: 'JD 原文与来源' }).waitFor()
+  assert.equal(await continueCapture.isVisible(), false, 'Closed capture cannot remain actionable after reload')
+  checks.push('one click opens isolated login; login/challenge pages are rejected; capture and file drafts restore; popup survives parent close; original hashes persist without cookies')
   await page.getByRole('button', { name: '使用 1 份原文生成五级图谱', exact: true }).click()
   await page.getByRole('heading', { name: '五级岗位能力图谱', exact: true }).waitFor({ timeout: 60000 })
-  const graphProject = await rpc('/jd', 'read', { id: summary.id })
+  const graphProject = await rpc('/jd', 'read', { id: first.id })
   assert.equal(graphProject.graphs.length, 1)
-  const actionNames = ['补充或筛选原文', '生成新版本', '下载 AI 版 MD', '导出阅读版 PDF']
-  const actions = actionNames.map(name => [name, page.getByRole('button', { name, exact: true })])
-  await actions[0][1].scrollIntoViewIfNeeded()
+  assert.equal(await page.getByRole('navigation', { name: '研究步骤', exact: true }).getByRole('button').count(), 4)
+  for (const name of ['下载 AI 版 MD', '导出阅读版 PDF', '导出 HTML']) assert.equal(await page.getByRole('button', { name, exact: true }).count(), 0)
+  await assert.rejects(rpc('/jd', 'export', { id: first.id, version: 1 }), /确认/u)
+  const confirm = page.getByRole('button', { name: '确认能力图谱', exact: true })
+  await confirm.click()
+  await page.getByRole('button', { name: '导出 HTML', exact: true }).waitFor()
+  const confirmed = await savedProject(first.id, project => project.confirmations?.some(item => item.version === 1), 'graph confirmation')
+  const roster = await rpc('/jd', 'confirmed')
+  assert.ok(roster.some(item => item.project_id === first.id && item.version === 1), 'Confirmed graph must be available to curriculum construction')
+  const actions = ['补充或筛选原文', '生成新版本', '导出 HTML'].map(name => [name, page.getByRole('button', { name, exact: true })])
   const actionMetrics = await buttonMetrics(actions)
   for (const control of actionMetrics) {
-    assert.ok(Math.abs(control.height - 38) <= 1, `Unexpected JD action height: ${control.name}`)
-    assert.ok(Math.abs(control.y - actionMetrics[0].y) <= 1, 'Wide JD actions must share a row and text alignment')
-    for (const property of ['font', 'padding', 'radius']) assert.deepEqual(control[property], actionMetrics[0][property], `JD action ${property} differs: ${control.name}`)
+    assert.ok(Math.abs(control.height - 38) <= 1)
+    for (const property of ['font', 'padding', 'radius']) assert.deepEqual(control[property], actionMetrics[0][property])
   }
-  const ordinaryGap = actionMetrics[1].x - actionMetrics[0].x - actionMetrics[0].width
-  const exportGap = actionMetrics[3].x - actionMetrics[2].x - actionMetrics[2].width
-  assert.ok(ordinaryGap > 0 && Math.abs(ordinaryGap - exportGap) <= 1, 'Adjacent MD/PDF actions must use the shared action gap')
-  assert.ok(actionMetrics[2].x >= actionMetrics[1].x + actionMetrics[1].width + ordinaryGap - 1, 'Export actions must follow the navigation/generation group')
-  presentation.graph_actions = { wide: actionMetrics, ordinary_gap: ordinaryGap, export_gap: exportGap, narrow: await narrowControls(actions, 'graph-narrow.png') }
-  await actions[0][1].scrollIntoViewIfNeeded()
-  await page.screenshot({ path: join(out, 'graph-actions.png'), fullPage: true })
-  const actual = { levels: graphProject.graphs[0].nodes.map(node => ({ kind: node.kind, title: node.title, basis: node.basis, quotes: node.evidence.map(entry => entry.quote) })), tools: fixture.toolCalls,
-    original_saved: graphProject.sources[0].body.includes(fixtureBody), acquisition: graphProject.sources[0].acquisition, graph_version: graphProject.graphs[0].version,
-    file_import: { txt_loaded: true, md_loaded: true, keyboard_same_file_reselection: true, filename_feedback: true, filename_reset_after_save: true, not_saved: true },
-    graph_actions: { shared_dimensions_and_typography: true, aligned_row: true, shared_export_gap: true, narrow_controls_fit: true } }
+  presentation.graph_actions = { wide: actionMetrics, narrow: await narrowControls(actions, 'graph-narrow.png') }
+  const firstHtml = await exportHtml(1, confirmed)
+  const [reportPage] = await Promise.all([desktop.waitForEvent('window'), desktop.evaluate(async ({ BrowserWindow }, url) => {
+    globalThis.jdAcceptanceReport = new BrowserWindow({ show: true, width: 1440, height: 1000, webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, javascript: false } })
+    await globalThis.jdAcceptanceReport.loadURL(url)
+  }, firstHtml.url)])
+  await reportPage.getByText('交付后端服务', { exact: false }).first().waitFor()
+  await reportPage.screenshot({ path: join(out, 'html-report.png'), fullPage: true })
+  await desktop.evaluate(() => globalThis.jdAcceptanceReport.destroy())
+  await page.getByRole('button', { name: '生成新版本', exact: true }).click()
+  await page.getByRole('combobox', { name: '图谱版本', exact: true }).selectOption('2')
+  const secondGraph = await savedProject(first.id, project => project.graphs.length === 2, 'second graph version')
+  assert.deepEqual(secondGraph.graphs[0], graphProject.graphs[0], 'New graph versions cannot rewrite previous evidence')
+  assert.equal(await page.getByRole('button', { name: '导出 HTML', exact: true }).count(), 0)
+  await assert.rejects(rpc('/jd', 'export', { id: first.id, version: 2 }), /确认/u)
+  await confirm.click()
+  await page.getByRole('button', { name: '导出 HTML', exact: true }).waitFor()
+  const allConfirmed = await savedProject(first.id, project => project.confirmations?.length === 2, 'second graph confirmation')
+  const secondHtml = await exportHtml(2, allConfirmed)
+  assert.notEqual(firstHtml.path, secondHtml.path)
+  await page.getByRole('combobox', { name: '图谱版本', exact: true }).selectOption('1')
+  await page.getByRole('button', { name: '2 平台与范围', exact: true }).click()
+  await selectProject(second.id)
+  await selectProject(first.id)
+  await page.getByRole('heading', { name: '选择平台与搜索范围' }).waitFor()
+  const beforeRestart = await savedProject(first.id, project => project.workspace.step === 2 && project.workspace.graph_version === 1, 'step and selected graph version')
+  checks.push('confirmation is host-persisted and discoverable for curriculum use; HTML export requires per-version confirmation and retains sources, exact quotes and inference labels')
+  const callCount = fixture.requests.length
+  await desktop.close(); desktop = undefined
+  await launch(); await openResearch(); await selectProject(first.id)
+  await page.getByRole('heading', { name: '选择平台与搜索范围' }).waitFor()
+  assert.equal(await page.getByRole('combobox', { name: '区域范围', exact: true }).inputValue(), '成渝经济圈')
+  assert.equal(fixture.requests.length, callCount)
+  await page.getByRole('button', { name: '以此范围新建搜索', exact: true }).click()
+  const repeated = (await archivedProjects(3)).find(project => ![first.id, second.id].includes(project.id))
+  assert.ok(repeated, 'Repeating a search must create another archive')
+  await selectedProject(repeated.id)
+  assert.ok(![first.session_id, second.session_id].includes(repeated.session_id))
+  await page.getByRole('heading', { name: '选择平台与搜索范围' }).waitFor()
+  assert.equal(await page.getByRole('combobox', { name: '区域范围', exact: true }).inputValue(), '成渝经济圈')
+  await rpc('/api', 'session.selectModel', { sessionId: repeated.session_id, provider: 'jd-fixture', model: 'jd-fixture-model' })
+  await page.getByRole('button', { name: '开始检索', exact: true }).click()
+  await page.getByRole('button', { name: '打开此岗位并登录', exact: true }).waitFor()
+  assert.deepEqual(fixture.toolCalls, ['web_search', 'web_fetch', 'web_search', 'web_fetch'])
+  assert.deepEqual((await rpc('/jd', 'read', { id: first.id })).graphs, beforeRestart.graphs)
+  await selectProject(first.id)
+  await page.getByRole('button', { name: '4 能力图谱', exact: true }).click()
+  await page.getByRole('heading', { name: '五级岗位能力图谱', exact: true }).waitFor()
+  assert.equal(await page.getByRole('combobox', { name: '图谱版本', exact: true }).inputValue(), '1')
+  assert.deepEqual((await rpc('/jd', 'read', { id: first.id })).graphs, beforeRestart.graphs)
+  await page.getByRole('button', { name: '导出 HTML', exact: true }).waitFor()
+  await selectProject(second.id)
+  await page.getByRole('heading', { name: '从学科专业推理实际岗位' }).waitFor()
+  assert.equal(await page.getByRole('textbox', { name: '学科 / 专业', exact: true }).inputValue(), '智慧养老护理')
+  checks.push('actual restart restores independent project drafts, selected step/version, immutable graph versions and confirmations without model regeneration')
+  const actual = {
+    levels: graphProject.graphs[0].nodes.map(node => ({ kind: node.kind, title: node.title, basis: node.basis, quotes: node.evidence.map(entry => entry.quote) })),
+    tools: fixture.toolCalls, original_saved: saved.sources[0].body.includes(fixtureBody), acquisition: saved.sources[0].acquisition,
+    search_sessions: { archived_before_search: true, independent_sessions: true, repeat_search_creates_archive: true, target_restored: true, filters_restored: true, capture_draft_restored: true, step_and_version_restored_after_restart: true },
+    capture: { one_click_open: true, continue_requires_window: true, login_rejected: true, security_challenge_rejected: true, popup_survives_parent_close: true },
+    confirmation: { host_persisted: true, discoverable_for_curriculum: true, export_denied_before_confirmation: true, each_version_requires_confirmation: true, confirmed_versions: allConfirmed.confirmations.map(item => item.version) },
+    html_export: { saved_in_client_data: true, system_browser_requested: true, exact_source_quotes: true, hashes_and_urls: true, inference_marked: true, source_text_immutable: true },
+    file_import: { txt_loaded: true, md_loaded: true, keyboard_same_file_reselection: true, filename_feedback: true, unsaved_draft_restored: true },
+    graph_actions: { shared_dimensions_and_typography: true, four_distinct_steps: true, no_md_pdf_buttons: true, narrow_controls_fit: true },
+  }
   const expectedPath = new URL('./snapshots/jd-research.expected.json', import.meta.url)
   if (values.update) await writeFile(expectedPath, JSON.stringify(actual, null, 2) + '\n')
   else assert.deepEqual(actual, JSON.parse(await readFile(expectedPath, 'utf8')))
-  await desktop.evaluate(({ session }, directory) => {
-    globalThis.jdAcceptanceDownloads = []
-    session.defaultSession.on('will-download', (_event, item) => {
-      item.setSavePath(directory + '/' + item.getFilename())
-      item.once('done', (_event, state) => globalThis.jdAcceptanceDownloads.push({ filename: item.getFilename(), state }))
-    })
-  }, out)
-  for (const [button, file] of [['下载 AI 版 MD', 'jd-graph.md'], ['导出阅读版 PDF', 'jd-graph.pdf']]) {
-    await page.getByRole('button', { name: button, exact: true }).click()
-    let downloaded
-    for (let attempt = 0; attempt < 100; attempt++) {
-      downloaded = await desktop.evaluate((_electron, extension) => globalThis.jdAcceptanceDownloads.find(item => item.filename.endsWith(extension)), file.endsWith('.md') ? '.md' : '.pdf')
-      if (downloaded) break
-      await new Promise(resolve => setTimeout(resolve, 100))
-    }
-    assert.equal(downloaded?.state, 'completed', `Native download failed: ${button}`)
-    await copyFile(join(out, downloaded.filename), join(out, file))
-  }
-  const md = await readFile(join(out, 'jd-graph.md'), 'utf8')
-  assert.ok(md.includes('推断，待专家核实') && md.includes(graphProject.sources[0].content_hash) && md.includes(fixtureBody))
-  assert.ok((await readFile(join(out, 'jd-graph.pdf'))).subarray(0, 4).equals(Buffer.from('%PDF')))
-  await page.screenshot({ path: join(out, 'graph.png'), fullPage: true })
-  checks.push('five-level graph, exact original quotes, inference labels, immutable source hashes and same-version MD/PDF exports')
-  const callCount = fixture.requests.length
-  await desktop.close(); desktop = undefined
-  await launch(); await openResearch()
-  await page.getByLabel('打开已保存项目', { exact: true }).selectOption(summary.id)
-  await page.getByRole('heading', { name: '五级岗位能力图谱', exact: true }).waitFor()
-  assert.deepEqual((await rpc('/jd', 'read', { id: summary.id })).graphs, graphProject.graphs)
-  assert.equal(fixture.requests.length, callCount)
-  await page.getByRole('button', { name: '补充或筛选原文', exact: true }).click()
-  await page.getByLabel('来源 URL', { exact: true }).fill(fixture.origin + '/job')
-  const [restoredCapture] = await Promise.all([desktop.waitForEvent('window'), page.getByRole('button', { name: '打开登录采集窗口', exact: true }).click()])
-  await restoredCapture.getByRole('heading', { name: '合成后端开发岗位', exact: true }).waitFor()
-  checks.push('actual application restart restores project, original corpus, graph versions and the isolated login session without regeneration')
+  await writeFile(join(out, 'html-exports.json'), JSON.stringify([{ version: 1, path: firstHtml.path, sha256: firstHtml.sha256 }, { version: 2, path: secondHtml.path, sha256: secondHtml.sha256 }], null, 2) + '\n')
   assert.deepEqual(errors, [])
   const persistedFiles = await readdir(join(data, 'dsh/jd-projects'))
-  assert.ok(persistedFiles.includes(summary.id + '.json'))
+  assert.ok([first.id, second.id, repeated.id].every(id => persistedFiles.includes(id + '.json')))
   passed = true
 } catch (error) {
   if (page && !page.isClosed()) {
     await page.screenshot({ path: join(out, 'failure.png'), fullPage: true }).catch(() => {})
     await writeFile(join(out, 'failure.aria.txt'), await page.locator('body').ariaSnapshot()).catch(() => {})
+    await writeFile(join(out, 'failure.html'), await page.content()).catch(() => {})
   }
   throw error
 } finally {

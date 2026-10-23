@@ -27,7 +27,7 @@ export function verifiedJdSearchJobs(value: unknown, results: readonly ToolResul
     if (canonical === undefined || typeof meta?.statusCode !== 'number' || meta.statusCode < 200 || meta.statusCode >= 300) continue
     const content = result.content.filter(block => block.type === 'text').map(block => block.text).join('\n')
     const body = content.replace(/^Fetched [^\n]+\n\n/, '').trim()
-    if (meta.truncated || /请先登录|登录后(?:才能|可查看|查看)|扫码查看|请完成安全验证/u.test(body)
+    if (meta.truncated || /请先登录|登录后(?:才能|可查看|查看)|扫码查看|请完成安全验证|访问(?:异常|过于频繁)|操作过于频繁|当前访问存在异常|请完成下方验证|请拖动滑块完成验证/u.test(body)
       || !/岗位职责|工作职责|职位描述|任职要求|职位要求|工作内容|职责描述|job description|responsibilit/iu.test(body)) continue
     const captured = { url: canonical, body, capturedAt: new Date(result.time).toISOString() }
     sources.set(canonical, captured)

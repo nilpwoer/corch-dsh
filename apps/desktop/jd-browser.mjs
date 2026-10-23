@@ -13,7 +13,7 @@ function safeURL(value) {
 
 /** Read rendered duties and identify the displayed job without reading browser credentials.
  * @param document - Current page DOM, evaluated inside the isolated capture window.
- * @returns Visible duties sections in document order, login status and the job's unambiguous source URL, or null when a list selection cannot be identified.
+ * @returns Visible duties sections, login and security-challenge flags, and the job's unambiguous source URL, or null when a list selection cannot be identified.
  */
 export function readJdPage(document) {
   const visible = element => !!(element.getClientRects().length && document.defaultView.getComputedStyle(element).visibility !== 'hidden')
@@ -34,6 +34,10 @@ export function readJdPage(document) {
   const boss = pageURL.hostname === 'zhipin.com' || pageURL.hostname.endsWith('.zhipin.com')
   const directBoss = boss && /^\/job_detail\/[^/]+\.html$/u.test(pageURL.pathname)
   const title = ((directBoss && pageHeading?.innerText) || heading?.innerText || (detailTitle && !/^(?:岗位职责|工作职责|职位描述|任职要求|职位要求|工作内容|职责描述|job description|responsibilit)/iu.test(detailTitle) && detailTitle) || pageHeading?.innerText || document.title).trim()
+  const pageText = (document.body?.innerText || '').replace(/\s+/gu, ' ')
+  const blocked = /请完成安全验证|(?:访问|操作|请求)(?:行为)?(?:过于)?频繁|(?:访问行为|访问环境|网络环境|IP)(?:存在)?异常|(?:访问|请求)已被限制|请解除限制后访问|请拖动(?:滑块|下方)|滑动(?:滑块|验证)|verify you are human|access denied|unusual traffic/iu.test(pageText)
+    || /^(?:安全验证|访问验证|人机验证|security verification|access denied)$/iu.test(document.title.trim())
+    || boss && /^\/web\/common\/security-check(?:\.html)?\/?$/u.test(pageURL.pathname)
   let sourceURL = pageURL.href
   if (boss && /^\/web\/geek\/jobs\/?$/u.test(pageURL.pathname)) {
     const normalize = value => value.replace(/\s+/gu, ' ').trim()
@@ -47,13 +51,13 @@ export function readJdPage(document) {
     }
     sourceURL = matches.size === 1 ? [...matches][0] : null
   } else if (directBoss) sourceURL = pageURL.origin + pageURL.pathname
-  return { title, body, url: sourceURL, login: [...document.querySelectorAll('input[type=password],input[autocomplete=one-time-code]')].some(visible) }
+  return { title, body, url: sourceURL, blocked, login: [...document.querySelectorAll('input[type=password],input[autocomplete=one-time-code]')].some(visible) }
 }
 
 /**
  * Own all capture windows until explicit close or application shutdown.
  * @param options - Electron constructors and resolved capture limits.
- * @returns Restricted open/read/close operations; no cookie or arbitrary script API.
+ * @returns Restricted open/status/read/close and PDF operations; security challenges return no captured body. No cookie or arbitrary script API is exposed.
  */
 export function createJdBrowser({ BrowserWindow, maxCaptureChars, loadTimeoutMs }) {
   const captures = new Map()
@@ -72,7 +76,7 @@ export function createJdBrowser({ BrowserWindow, maxCaptureChars, loadTimeoutMs 
     window.webContents.on('will-attach-webview', event => event.preventDefault())
     window.webContents.setWindowOpenHandler(({ url }) => {
       try { safeURL(url) } catch { return { action: 'deny' } }
-      return { action: 'allow', overrideBrowserWindowOptions: { webPreferences: { ...preferences, session: window.webContents.session } } }
+      return { action: 'allow', outlivesOpener: true, overrideBrowserWindowOptions: { webPreferences: { ...preferences, session: window.webContents.session } } }
     })
     window.webContents.on('did-create-window', popup => protect(popup, state))
     if (!protectedSessions.has(window.webContents.session)) {
@@ -81,7 +85,10 @@ export function createJdBrowser({ BrowserWindow, maxCaptureChars, loadTimeoutMs 
       window.webContents.session.setPermissionCheckHandler(() => false)
       window.webContents.session.on('will-download', event => event.preventDefault())
     }
-    window.once('closed', () => state.windows.delete(window))
+    window.once('closed', () => {
+      state.windows.delete(window)
+      if (state.activeWindow === window) state.activeWindow = [...state.windows].find(candidate => !candidate.isDestroyed())
+    })
   }
   return {
     async open(input) {
@@ -107,14 +114,19 @@ export function createJdBrowser({ BrowserWindow, maxCaptureChars, loadTimeoutMs 
       void window.loadURL(url).catch(() => { /* Read reports the current page or loading failure without inventing a capture. */ })
       return { id, state: 'opened' }
     },
+    status(input) {
+      const state = captures.get(input.id)
+      return { state: state && [...state.windows].some(window => !window.isDestroyed()) ? 'opened' : 'closed' }
+    },
     async read(input) {
       const state = captures.get(input.id)
-      const window = state && (!state.activeWindow.isDestroyed() ? state.activeWindow : [...state.windows].find(candidate => !candidate.isDestroyed()))
+      const window = state && (state.activeWindow && !state.activeWindow.isDestroyed() ? state.activeWindow : [...state.windows].find(candidate => !candidate.isDestroyed()))
       if (!window) throw new Error('采集窗口已关闭，请重新打开来源')
       if (window.webContents.isLoadingMainFrame()) throw new Error('页面仍在加载，请稍后继续采集')
       safeURL(window.webContents.getURL())
       const result = await window.webContents.executeJavaScript(`(${readJdPage.toString()})(document)`)
-      if (result.login || /请先登录|登录后(?:才能|可查看|查看)|扫码查看|请完成安全验证/u.test(result.body)) return { state: 'login_required', message: '尚未取得 JD 正文，请在采集窗口完成登录或验证，并打开具体岗位详情。' }
+      if (result.blocked) return { state: 'blocked', message: '平台触发了安全验证或访问限制，未保存当前页面。请停止重复采集，按平台提示处理；也可在获得授权后手动复制岗位正文并导入。' }
+      if (result.login || /请先登录|登录后(?:才能|可查看|查看)|扫码查看/u.test(result.body)) return { state: 'login_required', message: '尚未取得 JD 正文，请在采集窗口完成登录，并打开具体岗位详情。' }
       if (!/岗位职责|工作职责|职位描述|任职要求|职位要求|工作内容|职责描述|job description|responsibilit/iu.test(result.body)) return { state: 'not_a_jd', message: '当前页面未识别到岗位职责，请打开具体岗位详情后继续采集。' }
       if (result.url === null) return { state: 'source_unresolved', message: '当前列表页无法唯一确认岗位详情链接；请从岗位标题打开独立详情页，再继续采集。' }
       if (result.body.length > maxCaptureChars) throw new Error('岗位页面超过正文大小限制；请使用“导入原文”提交具体岗位正文')

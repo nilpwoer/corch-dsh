@@ -8,7 +8,9 @@ contextBridge.exposeInMainWorld('corchPublication', Object.freeze({
 }))
 contextBridge.exposeInMainWorld('corchJd', Object.freeze({
   open: input => ipcRenderer.invoke('corch:jd:open', input),
+  status: input => ipcRenderer.invoke('corch:jd:status', input),
   read: input => ipcRenderer.invoke('corch:jd:read', input),
   close: input => ipcRenderer.invoke('corch:jd:close', input),
   pdf: input => ipcRenderer.invoke('corch:jd:pdf', input),
+  html: input => ipcRenderer.invoke('corch:jd:html', input),
 }))

@@ -43,23 +43,57 @@
   ],
   "tools": [
     "web_search",
+    "web_fetch",
+    "web_search",
     "web_fetch"
   ],
   "original_saved": true,
   "acquisition": "browser",
-  "graph_version": 1,
+  "search_sessions": {
+    "archived_before_search": true,
+    "independent_sessions": true,
+    "repeat_search_creates_archive": true,
+    "target_restored": true,
+    "filters_restored": true,
+    "capture_draft_restored": true,
+    "step_and_version_restored_after_restart": true
+  },
+  "capture": {
+    "one_click_open": true,
+    "continue_requires_window": true,
+    "login_rejected": true,
+    "security_challenge_rejected": true,
+    "popup_survives_parent_close": true
+  },
+  "confirmation": {
+    "host_persisted": true,
+    "discoverable_for_curriculum": true,
+    "export_denied_before_confirmation": true,
+    "each_version_requires_confirmation": true,
+    "confirmed_versions": [
+      1,
+      2
+    ]
+  },
+  "html_export": {
+    "saved_in_client_data": true,
+    "system_browser_requested": true,
+    "exact_source_quotes": true,
+    "hashes_and_urls": true,
+    "inference_marked": true,
+    "source_text_immutable": true
+  },
   "file_import": {
     "txt_loaded": true,
     "md_loaded": true,
     "keyboard_same_file_reselection": true,
     "filename_feedback": true,
-    "filename_reset_after_save": true,
-    "not_saved": true
+    "unsaved_draft_restored": true
   },
   "graph_actions": {
     "shared_dimensions_and_typography": true,
-    "aligned_row": true,
-    "shared_export_gap": true,
+    "four_distinct_steps": true,
+    "no_md_pdf_buttons": true,
     "narrow_controls_fit": true
   }
 }

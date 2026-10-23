@@ -22,7 +22,7 @@ The application is unsigned and has no automatic updater. Windows may display an
 
 ## JD research collection
 
-JD research uses a separate persistent browser session for human platform login and text capture. Project documents and immutable originals live in `data/dsh/jd-projects`; browser login storage remains in `data/electron`. Preserve both when moving this client. Source evidence, graph inference labels, same-version MD/PDF exports and browser-only fallbacks are documented in the [teaching workbench](../../packages/client/ui-polus-teaching-reform/README.md).
+JD research uses a separate persistent browser session for human platform login and text capture. Each search has an independent archive and restored workbench state; confirmed graph versions remain available for subsequent curriculum construction. HTML reports are saved under `data/exports` and opened in the system browser, falling back to their folder. Anti-bot restrictions fail explicitly without automatic retries or a promise that login enables capture. Project documents and immutable originals live in `data/dsh/jd-projects`; browser login storage remains in `data/electron`. Preserve both when moving this client. Source evidence, graph inference labels, confirmed HTML reports and browser-only fallbacks are documented in the [teaching workbench](../../packages/client/ui-polus-teaching-reform/README.md).
 
 ## Build reference
 

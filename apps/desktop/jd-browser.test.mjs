@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { JSDOM } from 'jsdom'
-import { readJdPage } from './jd-browser.mjs'
+import { EventEmitter } from 'node:events'
+import { createJdBrowser, readJdPage } from './jd-browser.mjs'
 
 function read(html, url = 'https://www.zhipin.com/web/geek/jobs?_security_check=private') {
   const dom = new JSDOM(html, { url })
@@ -80,4 +81,73 @@ test('ordinary pages preserve the original source and visible login fields', () 
   assert.equal(result.url, 'http://127.0.0.1:4321/job?detail=1')
   assert.equal(result.title, '合成后端开发岗位')
   assert.equal(result.login, true)
+})
+
+function browserFixture(result) {
+  const windows = []
+  class Window extends EventEmitter {
+    constructor() {
+      super()
+      this.webContents = Object.assign(new EventEmitter(), {
+        session: Object.assign(new EventEmitter(), { setPermissionRequestHandler() {}, setPermissionCheckHandler() {} }),
+        setWindowOpenHandler(handler) { this.windowOpenHandler = handler }, isLoadingMainFrame: () => false,
+        getURL: () => 'https://www.zhipin.com/job_detail/job-1.html', executeJavaScript: async () => result,
+      })
+      windows.push(this)
+    }
+    setMenu() {}
+    setTitle() {}
+    async loadURL() {}
+    isDestroyed() { return this.destroyed === true }
+    show() {}
+    restore() {}
+    focus() { this.emit('focus') }
+    destroy() { this.destroyed = true; this.emit('closed') }
+  }
+  return { browser: createJdBrowser({ BrowserWindow: Window, maxCaptureChars: 250000, loadTimeoutMs: 1000 }), windows }
+}
+
+test('BOSS security challenges return a blocked result without saving challenge text or retrying', async () => {
+  for (const page of [
+    '<title>BOSS直聘</title><main>系统检测到您当前的访问环境存在异常，请完成安全验证</main>',
+    '<title>安全验证</title><main>请拖动滑块完成验证</main>',
+    '<title>BOSS直聘</title><main>您好，您的IP存在异常访问行为，请解除限制后访问</main>',
+    '<main>系统检测到您访问过于频繁，请稍后重试</main>' + detail,
+  ]) {
+    const { browser, windows } = browserFixture(read(page))
+    await browser.open({ id: 'project-1', url: 'https://www.zhipin.com/job_detail/job-1.html' })
+    const result = await browser.read({ id: 'project-1' })
+    assert.equal(result.state, 'blocked')
+    assert.match(result.message, /停止重复采集/u)
+    assert.equal(Object.hasOwn(result, 'body'), false)
+    assert.equal(windows.length, 1)
+    browser.dispose()
+  }
+  assert.equal(read('<main>请按提示完成操作</main>', 'https://www.zhipin.com/web/common/security-check.html').blocked, true)
+  assert.equal(read('<main>岗位职责：建设安全验证系统。任职要求：熟悉 SQL。</main>').blocked, false)
+})
+
+test('capture status follows normal close and popup lifetime after the workbench reloads', async () => {
+  const { browser, windows } = browserFixture(read(detail, 'https://www.zhipin.com/job_detail/job-1.html'))
+  assert.deepEqual(browser.status({ id: 'project-1' }), { state: 'closed' })
+  await browser.open({ id: 'project-1', url: 'https://www.zhipin.com/job_detail/job-1.html' })
+  assert.deepEqual(browser.status({ id: 'project-1' }), { state: 'opened' })
+  const popupOptions = windows[0].webContents.windowOpenHandler({ url: 'https://www.zhipin.com/job_detail/job-2.html' })
+  assert.equal(popupOptions.action, 'allow')
+  assert.equal(popupOptions.outlivesOpener, true, 'Electron must keep the detail window after its list opener closes')
+  assert.equal(popupOptions.overrideBrowserWindowOptions.webPreferences.session, windows[0].webContents.session)
+  const popup = new windows[0].constructor()
+  windows[0].webContents.emit('did-create-window', popup)
+  windows[0].destroy()
+  assert.deepEqual(browser.status({ id: 'project-1' }), { state: 'opened' })
+  assert.equal((await browser.read({ id: 'project-1' })).state, 'captured')
+  windows[1].destroy()
+  assert.deepEqual(browser.status({ id: 'project-1' }), { state: 'closed' })
+  await assert.rejects(browser.read({ id: 'project-1' }), /窗口已关闭/u)
+  await browser.open({ id: 'project-1', url: 'https://www.zhipin.com/job_detail/job-1.html' })
+  assert.equal(windows.length, 3)
+  assert.deepEqual(browser.status({ id: 'project-1' }), { state: 'opened' })
+  browser.close({ id: 'project-1' })
+  assert.deepEqual(browser.status({ id: 'project-1' }), { state: 'closed' })
+  browser.dispose()
 })

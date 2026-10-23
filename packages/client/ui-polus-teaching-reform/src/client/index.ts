@@ -18,7 +18,7 @@ import { GlobalReferenceSidebarTab } from './GlobalReferenceSidebarTab.tsx'
 import { buildInterviewPrompt } from './interviewPrompt.ts'
 import { buildJdGraphPrompt, buildJdRoleInferencePrompt, buildJdSearchPrompt } from './jdSearchPrompt.ts'
 import { pendingJdSources, verifiedJdSearchJobs } from './jdSearchResult.ts'
-import { record } from '../jd/document.ts'
+import { projectId, record } from '../jd/document.ts'
 import type { JdProject, JdProjectSummary } from '../jd/types.ts'
 
 export const inject = ['sessions', 'workspaces', 'layout', 'connection', 'slots', 'betterSidebar']
@@ -244,6 +244,11 @@ export function apply(ctx: ClientContext): void {
     if (!result.ok) throw new Error(result.error.message)
     return result.value as T
   }
+  const listJdProjects = (): Promise<JdProjectSummary[]> => jdCall('list', {})
+  const loadJdProject = (id: string): Promise<JdProject | null> => jdCall('read', { id })
+  const saveJdProject = (project: JdProject): Promise<JdProject> => jdCall('save', { project })
+  const subscribeJdSession = (listener: () => void): (() => void) => ctx.sessions.list.subscribe(listener)
+  const getCurrentJdSession = (): string => String(ctx.sessions.list.getSnapshot().current ?? '')
   const betterSidebar = ctx.get('betterSidebar') as BetterSidebarService | undefined
   ctx.effect(() => {
     if (betterSidebar === undefined) return () => undefined
@@ -294,7 +299,48 @@ export function apply(ctx: ClientContext): void {
     openInterviewSession(id)
   }
 
-  const createJdSearchSession = async (): Promise<void> => {
+  const draftTasks = new Map<SessionId, Promise<JdProject>>()
+  const ensureJdProject = (id: SessionId, seed?: JdProject): Promise<JdProject> => {
+    const pendingDraft = draftTasks.get(id)
+    if (pendingDraft) return pendingDraft
+    const task = (async (): Promise<JdProject> => {
+      const existing = (await jdCall<JdProjectSummary[]>('list', {})).find(item => item.session_id === id)
+      if (existing) {
+        const saved = await jdCall<JdProject | null>('read', { id: existing.id })
+        if (!saved) throw new Error('搜索存档已不存在，请刷新')
+        return saved
+      }
+      const saved = await jdCall<JdProject>('save', { project: {
+        format_version: 1,
+        id: projectId(crypto.randomUUID()),
+        session_id: id,
+        revision: 0,
+        title: seed ? `${seed.major}岗位研究` : '新建 JD 搜索',
+        major: seed?.major ?? '',
+        direction: seed?.direction ?? '',
+        roles: seed?.roles ?? [],
+        platforms: seed?.platforms ?? ['公开网页', '58 同城', 'BOSS 直聘', '智联招聘', '前程无忧 51job', '四川高校人才网'],
+        region: seed?.region ?? '四川及西南地区',
+        published_within: seed?.published_within ?? '最近 90 天',
+        target_count: seed?.target_count ?? '5 条（测试）',
+        updated_at: new Date().toISOString(),
+        sources: [], pending_sources: [], graphs: [], confirmations: [],
+        workspace: {
+          step: seed ? 2 : 1,
+          graph_version: null,
+          capture: { url: '', title: '', company: '未披露', body: '', file_name: '' },
+          search_status: 'draft', error: '',
+        },
+      } })
+      window.dispatchEvent(new CustomEvent('jd-projects-changed'))
+      return saved
+    })()
+    draftTasks.set(id, task)
+    void task.then(() => { draftTasks.delete(id) }, () => { draftTasks.delete(id) })
+    return task
+  }
+
+  const createJdSearchSession = async (seed?: JdProject): Promise<void> => {
     const workspaceState = ctx.workspaces.list.getSnapshot()
     const sessionState = ctx.sessions.list.getSnapshot()
     const current = sessionState.current
@@ -309,11 +355,22 @@ export function apply(ctx: ClientContext): void {
     const id = await ctx.workspaces.connectWorkspace(workspaceId, { reuseBlank: false })
     const session = ctx.sessions.binding(id)?.session
     if (session === undefined) throw new Error(`created JD search session "${id}" is not available`)
-    const rename = await session.rename('新建 JD 搜索')
+    await ensureJdProject(id, seed)
+    const title = seed ? `${seed.major}岗位研究` : '新建 JD 搜索'
+    const rename = await session.rename(title)
     if (!rename.ok) throw new Error(rename.error.message)
-    selectInterview(String(id))
     ctx.sessions.open(id)
     queueMicrotask(() => { ctx.layout.openDetails() })
+  }
+
+  const initializeJdProject = async (id: SessionId): Promise<JdProject> => {
+    const existing = (await jdCall<JdProjectSummary[]>('list', {})).find(item => item.session_id === id)
+    if (existing) {
+      const saved = await jdCall<JdProject | null>('read', { id: existing.id })
+      if (!saved) throw new Error('搜索存档已不存在，请刷新')
+      return saved
+    }
+    throw new Error('当前会话不是 JD 搜索，请点击“新建搜索”建立独立存档。')
   }
 
   // Switching a project must switch the host conversation as well as the
@@ -358,7 +415,13 @@ export function apply(ctx: ClientContext): void {
     name: 'sidebar.workspaces',
     priority: -7,
     select: owner => (owner.sidebarMode as string) === 'jd-search' ? {} : null,
-    inject: () => ({ createJdSearchSession }),
+    inject: () => ({
+      createJdSearchSession,
+      listJdProjects,
+      openJdProject: (id: string) => { ctx.sessions.open(id as SessionId); queueMicrotask(() => { ctx.layout.openDetails() }) },
+      subscribeJdSession,
+      getCurrentJdSession,
+    }),
   }, JdSearchSidebar))
 
   // The details slot already supplies the live sessionId and runtime props;
@@ -375,10 +438,13 @@ export function apply(ctx: ClientContext): void {
           inferJdRoles,
           generateJdGraph,
           pendingJdSources: readPending,
-          listJdProjects: () => jdCall<JdProjectSummary[]>('list', {}),
-          loadJdProject: (id: string) => jdCall<JdProject | null>('read', { id }),
-          saveJdProject: (project: JdProject) => jdCall<JdProject>('save', { project }),
-          exportJdProject: (id: string, version: number) => jdCall<{ markdown: string; html: string }>('export', { id, version }),
+          listJdProjects,
+          loadJdProject,
+          saveJdProject,
+          exportJdProject: (id: string, version: number) => jdCall<{ html: string }>('export', { id, version }),
+          confirmJdProject: (id: string, version: number, revision: number) => jdCall<JdProject>('confirm', { id, version, revision }),
+          createJdSearchSession,
+          initializeJdProject,
           openJdProject: (id: string) => { ctx.sessions.open(id as SessionId); queueMicrotask(() => { ctx.layout.openDetails() }) },
           openExpertMaterialPreview: (sessionId: SessionId, material: ExpertMaterial) => {
             betterSidebar?.openTab?.({

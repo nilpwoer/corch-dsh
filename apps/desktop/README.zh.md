@@ -22,7 +22,7 @@
 
 ## JD 研究采集
 
-JD 研究使用独立、持久化的浏览器会话供用户亲自登录平台并采集文本。项目文档和不可变原文保存在 `data/dsh/jd-projects`，浏览器登录存储保存在 `data/electron`；迁移客户端时应一起保留。来源证据、图谱推断标记、同版本 MD/PDF 导出和纯浏览器替代流程见[教学工作台](../../packages/client/ui-polus-teaching-reform/README.zh.md)。
+JD 研究使用独立、持久化的浏览器会话供用户亲自登录平台并采集文本。每次搜索独立建档并还原工作台状态；确认的图谱版本供后续课程建设读取。HTML 报告保存到 `data/exports`，以系统浏览器打开，失败则显示所在目录。平台反爬会明确报错，不自动重试，也不保证登录后可采集。项目文档和不可变原文保存在 `data/dsh/jd-projects`，浏览器登录存储保存在 `data/electron`；迁移客户端时应一起保留。来源证据、图谱推断标记、已确认 HTML 报告和纯浏览器替代流程见[教学工作台](../../packages/client/ui-polus-teaching-reform/README.zh.md)。
 
 ## 构建参考
 

@@ -1,4 +1,4 @@
-/** Restricted desktop capture and PDF calls; no credentials enter the research document. */
+/** Restricted desktop capture and saved-report calls; no credentials enter research documents. */
 type NativeResult<T> = { ok: true; value: T } | { ok: false; message: string }
 type Capture = { state: 'captured'; url: string; title: string; body: string; captured_at: string; content_hash: string }
 
@@ -8,9 +8,36 @@ declare global {
       open(input: { id: string; url: string }): Promise<NativeResult<{ id: string; state: string }>>
       read(input: { id: string }): Promise<NativeResult<Capture | { state: string; message: string }>>
       close(input: { id: string }): Promise<NativeResult<void>>
-      pdf(input: { html: string }): Promise<NativeResult<{ base64: string }>>
+      status(input: { id: string }): Promise<NativeResult<{ state: 'opened' | 'closed' }>>
+      html(input: { filename: string; html: string }): Promise<NativeResult<{ path: string; opened: 'browser' | 'folder' }>>
     }
   }
+}
+
+/** Check whether the project's human-login window is still available.
+ * @param id - Owning research project.
+ * @returns Whether a native capture window is open; ordinary browsers return false.
+ */
+export async function jdBrowserStatus(id: string): Promise<boolean> {
+  if (!window.corchJd) return false
+  const result = await window.corchJd.status({ id })
+  if (!result.ok) throw new Error(result.message)
+  return result.value.state === 'opened'
+}
+
+/** Save a confirmed report and open it in the system browser, falling back to its folder.
+ * @param filename - Suggested HTML basename without a directory.
+ * @param html - Escaped standalone report supplied by the Host.
+ * @returns The saved path and opening result, or the download filename in an ordinary browser.
+ */
+export async function exportJdHtml(filename: string, html: string): Promise<{ path: string; opened: 'browser' | 'folder' | 'download' }> {
+  if (!window.corchJd) {
+    downloadJd(filename, html, 'text/html;charset=utf-8')
+    return { path: filename, opened: 'download' }
+  }
+  const result = await window.corchJd.html({ filename, html })
+  if (!result.ok) throw new Error(result.message)
+  return result.value
 }
 
 /** Invoke the local capture broker, which is unavailable to ordinary external web pages.
@@ -52,7 +79,7 @@ export async function jdHash(body: string): Promise<string> {
  * @param body - Complete exported bytes.
  * @param mime - File media type.
  */
-export function downloadJd(filename: string, body: BlobPart, mime: string): void {
+function downloadJd(filename: string, body: BlobPart, mime: string): void {
   const url = URL.createObjectURL(new Blob([body], { type: mime }))
   const anchor = document.createElement('a')
   anchor.href = url
@@ -61,24 +88,4 @@ export function downloadJd(filename: string, body: BlobPart, mime: string): void
   setTimeout(() => {
     URL.revokeObjectURL(url)
   }, 1000)
-}
-
-/** Print through the desktop's isolated renderer, or the browser's Save as PDF dialog.
- * @param filename - Suggested exported filename.
- * @param html - Script-free report rendered by the Host from a saved graph.
- */
-export async function exportJdPdf(filename: string, html: string): Promise<void> {
-  if (window.corchJd) {
-    const result = await window.corchJd.pdf({ html })
-    if (!result.ok) throw new Error(result.message)
-    const bytes = Uint8Array.from(atob(result.value.base64), character => character.charCodeAt(0))
-    downloadJd(filename, bytes, 'application/pdf')
-    return
-  }
-  const popup = window.open('', '_blank')
-  if (!popup) throw new Error('请允许报告窗口弹出，再选择“另存为 PDF”')
-  const parsed = new DOMParser().parseFromString(html, 'text/html')
-  popup.document.documentElement.replaceWith(popup.document.importNode(parsed.documentElement, true))
-  await popup.document.fonts.ready
-  popup.print()
 }

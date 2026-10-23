@@ -19,7 +19,10 @@ export type TeachingReformProps = PropsRuntime<'conversation.details.context'> &
   listJdProjects: () => Promise<JdProjectSummary[]>
   loadJdProject: (id: string) => Promise<JdProject | null>
   saveJdProject: (project: JdProject) => Promise<JdProject>
-  exportJdProject: (id: string, version: number) => Promise<{ markdown: string; html: string }>
+  exportJdProject: (id: string, version: number) => Promise<{ html: string }>
+  confirmJdProject: (id: string, version: number, revision: number) => Promise<JdProject>
+  createJdSearchSession: (seed?: JdProject) => Promise<void>
+  initializeJdProject: (id: SessionId) => Promise<JdProject>
   openJdProject: (sessionId: string) => void
   pendingJdSources?: (id: SessionId) => JdProject['pending_sources']
 }

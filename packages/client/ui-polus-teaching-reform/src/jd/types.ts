@@ -43,6 +43,19 @@ export type JdGraph = {
   nodes: JdGraphNode[]
 }
 
+/** Editable workbench state restored independently for each search session. */
+export type JdWorkspace = {
+  step: 1 | 2 | 3 | 4
+  graph_version: number | null
+  capture: { url: string; title: string; company: string; body: string; file_name: string }
+  search_status: 'draft' | 'running' | 'completed' | 'failed'
+  error: string
+  role_text?: string
+}
+
+/** Host-recorded approval of one immutable graph version for curriculum use. */
+type JdConfirmation = { version: number; confirmed_at: string }
+
 /** Optimistic revisions prevent one open window from overwriting another window's work. */
 export type JdProject = {
   format_version: 1
@@ -61,7 +74,19 @@ export type JdProject = {
   sources: JdSource[]
   pending_sources: { url: string; title: string; reason: string }[]
   graphs: JdGraph[]
+  workspace?: JdWorkspace
+  confirmations?: JdConfirmation[]
 }
 
 /** Project roster omits the potentially large and private source bodies. */
 export type JdProjectSummary = Pick<JdProject, 'id' | 'session_id' | 'title' | 'updated_at' | 'revision'>
+
+/** Confirmed graph roster for subsequent curriculum construction. */
+export type JdConfirmedSummary = {
+  project_id: JdProjectId
+  session_id: SessionId
+  title: string
+  version: number
+  confirmed_at: string
+  updated_at: string
+}

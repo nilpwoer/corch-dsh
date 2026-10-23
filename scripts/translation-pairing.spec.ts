@@ -287,6 +287,7 @@ describe('translation scope discovery', () => {
     'BRAND_GUIDELINES.i18n.yaml',
     'apps/cli/README.md',
     'future/subtree/readme.md',
+    'future/subtree/dist/README.md',
     'packages/example/README.zh.md',
     'native/example/README.i18n.yaml',
     '.agents/notes/proposed/feature.md',
@@ -307,6 +308,9 @@ describe('translation scope discovery', () => {
     'packages/example/node_modules/dependency/README.md',
     'packages/example/lib/README.md',
     'coverage/report/README.md',
+    'dist/windows/Corch-DSH/README.md',
+    'dist/windows/Corch-DSH/README.zh.md',
+    'dist/windows/Corch-DSH/README.i18n.yaml',
     'python/sdk-runtime/src/deepseek_harness_runtime/runtime/dsh-jsonrpc-agent-macos-arm64/README.md',
     'python/sdk-runtime/src/deepseek_harness_runtime/runtime/node/README.md',
   ])('excludes non-source or non-README path %s', (file) => {
