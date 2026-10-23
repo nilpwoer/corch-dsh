@@ -2,16 +2,24 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { JSDOM } from 'jsdom'
 import { EventEmitter } from 'node:events'
-import { createJdBrowser, readJdPage } from './jd-browser.mjs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { createJdBrowser, monitorJdSecurity, readJdPage } from './jd-browser.mjs'
 
-function read(html, url = 'https://www.zhipin.com/web/geek/jobs?_security_check=private') {
-  const dom = new JSDOM(html, { url })
+function renderedDOM(html, url, options = {}) {
+  const dom = new JSDOM(html, { url, ...options })
   // JSDOM has no layout or innerText; expose rendered fixture text and rectangle visibility.
   Object.defineProperty(dom.window.HTMLElement.prototype, 'innerText', { get() { return this.textContent } })
   dom.window.HTMLElement.prototype.getClientRects = function () {
     for (let element = this; element; element = element.parentElement) if (dom.window.getComputedStyle(element).display === 'none') return []
     return [{}]
   }
+  return dom
+}
+
+function read(html, url = 'https://www.zhipin.com/web/geek/jobs?_security_check=private') {
+  const dom = renderedDOM(html, url)
   try { return readJdPage(dom.window.document) }
   finally { dom.window.close() }
 }
@@ -83,28 +91,60 @@ test('ordinary pages preserve the original source and visible login fields', () 
   assert.equal(result.login, true)
 })
 
-function browserFixture(result) {
+test('phone-only and passport login pages pause collection without misclassifying a visible JD', () => {
+  assert.equal(read('<main>短信登录<input type="tel"></main>', 'https://passport.zhaopin.com/login').login, true)
+  assert.equal(read('<main>扫码登录<input type="tel"></main>', 'https://www.zhipin.com/web/user/').login, true)
+  assert.equal(read('<aside>扫码登录</aside>' + detail, firstSource).login, false)
+})
+
+function browserFixture(result, options = {}) {
   const windows = []
+  const navigations = []
+  const requests = {}
+  const browserSession = Object.assign(new EventEmitter(), {
+    setPermissionRequestHandler() {}, setPermissionCheckHandler() {},
+    webRequest: { onBeforeRequest(handler) { requests.before = handler }, onHeadersReceived(handler) { requests.headers = handler } },
+  })
   class Window extends EventEmitter {
-    constructor() {
+    constructor(windowOptions = {}) {
       super()
-      this.webContents = Object.assign(new EventEmitter(), {
-        session: Object.assign(new EventEmitter(), { setPermissionRequestHandler() {}, setPermissionCheckHandler() {} }),
-        setWindowOpenHandler(handler) { this.windowOpenHandler = handler }, isLoadingMainFrame: () => false,
-        getURL: () => 'https://www.zhipin.com/job_detail/job-1.html', executeJavaScript: async () => result,
+      this.options = windowOptions
+      this.contents = Object.assign(new EventEmitter(), {
+        id: windows.length + 1, session: browserSession,
+        setWindowOpenHandler(handler) { this.windowOpenHandler = handler }, isLoadingMainFrame: () => this.loading === true,
+        getURL: () => this.url || 'https://www.zhipin.com/job_detail/job-1.html', executeJavaScript: async script => {
+          if (options.executeJavaScript) return options.executeJavaScript(script, this)
+          const value = await (typeof result === 'function' ? result(this.url) : result)
+          return script.includes('monitorJdSecurity') ? value.blocked : value
+        },
+        stop: () => { this.stopped = true },
       })
+      Object.defineProperty(this, 'webContents', { get() {
+        if (this.destroyed && options.throwAfterDestroy) throw new Error('Object has been destroyed')
+        return this.contents
+      } })
       windows.push(this)
     }
     setMenu() {}
     setTitle() {}
-    async loadURL() {}
+    getSize() { return [1376, 899] }
+    getContentSize() { return [1360, 860] }
+    getMinimumSize() { return this.minimumSize || [0, 0] }
+    setMinimumSize(width, height) { this.minimumSize = [width, height] }
+    async loadURL(url) {
+      const verdict = await new Promise(resolve => requests.before({ webContentsId: this.webContents.id, resourceType: 'mainFrame', url }, resolve))
+      if (verdict.cancel) throw new Error('Navigation cancelled')
+      this.url = url
+      navigations.push({ url, time: Date.now() })
+      options.onLoad?.(this, url)
+    }
     isDestroyed() { return this.destroyed === true }
     show() {}
     restore() {}
     focus() { this.emit('focus') }
     destroy() { this.destroyed = true; this.emit('closed') }
   }
-  return { browser: createJdBrowser({ BrowserWindow: Window, maxCaptureChars: 250000, loadTimeoutMs: 1000 }), windows }
+  return { browser: createJdBrowser({ BrowserWindow: Window, maxCaptureChars: 250000, loadTimeoutMs: 10000, ...options }), windows, navigations, requests }
 }
 
 test('BOSS security challenges return a blocked result without saving challenge text or retrying', async () => {
@@ -135,9 +175,15 @@ test('capture status follows normal close and popup lifetime after the workbench
   const popupOptions = windows[0].webContents.windowOpenHandler({ url: 'https://www.zhipin.com/job_detail/job-2.html' })
   assert.equal(popupOptions.action, 'allow')
   assert.equal(popupOptions.outlivesOpener, true, 'Electron must keep the detail window after its list opener closes')
+  assert.equal(windows[0].options.width, 1360)
+  assert.equal(windows[0].options.useContentSize, true)
+  assert.equal(windows[0].getMinimumSize()[0] - 16, 1280)
+  assert.equal(popupOptions.overrideBrowserWindowOptions.width, 1360)
+  assert.equal(popupOptions.overrideBrowserWindowOptions.useContentSize, true)
   assert.equal(popupOptions.overrideBrowserWindowOptions.webPreferences.session, windows[0].webContents.session)
-  const popup = new windows[0].constructor()
+  const popup = new windows[0].constructor(popupOptions.overrideBrowserWindowOptions)
   windows[0].webContents.emit('did-create-window', popup)
+  assert.equal(popup.getMinimumSize()[0] - 16, 1280)
   windows[0].destroy()
   assert.deepEqual(browser.status({ id: 'project-1' }), { state: 'opened' })
   assert.equal((await browser.read({ id: 'project-1' })).state, 'captured')
@@ -150,4 +196,262 @@ test('capture status follows normal close and popup lifetime after the workbench
   browser.close({ id: 'project-1' })
   assert.deepEqual(browser.status({ id: 'project-1' }), { state: 'closed' })
   browser.dispose()
+})
+
+function durableFixture(t, result, options = {}) {
+  const dataDirectory = mkdtempSync(join(tmpdir(), 'jd-browser-test-'))
+  t.after(() => rmSync(dataDirectory, { recursive: true, force: true }))
+  writeFileSync(join(dataDirectory, 'jd-collection-settings.json'), JSON.stringify({ min_interval_ms: 100, cache_ttl_ms: 86400000, max_navigations_per_hour: 6, max_sources_per_batch: 20, render_settle_ms: 100 }))
+  const fixture = browserFixture(result, { dataDirectory, ...options })
+  t.after(() => fixture.browser.dispose())
+  return { ...fixture, dataDirectory }
+}
+const firstSource = 'https://www.zhipin.com/job_detail/job-1.html'
+const secondSource = 'https://www.zhipin.com/job_detail/job-2.html'
+
+test('browser-rendered collection reuses one platform window and durable cache across projects and restarts', async t => {
+  const fixture = durableFixture(t, url => read(detail, url))
+  const first = await fixture.browser.collect({ id: 'project-1', sources: [{ url: firstSource }, { url: secondSource }] })
+  assert.deepEqual(first.items.map(item => item.state), ['captured', 'captured'])
+  assert.equal(fixture.windows.length, 1)
+  assert.ok(fixture.navigations[1].time - fixture.navigations[0].time >= 90)
+  const cached = await fixture.browser.collect({ id: 'project-2', sources: [{ url: firstSource }] })
+  assert.equal(cached.items[0].cached, true)
+  assert.equal(fixture.navigations.length, 2)
+  fixture.browser.dispose()
+  const restarted = browserFixture(() => { throw new Error('cache must avoid DOM and navigation') }, { dataDirectory: fixture.dataDirectory })
+  t.after(() => restarted.browser.dispose())
+  const afterRestart = await restarted.browser.collect({ id: 'project-3', sources: [{ url: firstSource }] })
+  assert.equal(afterRestart.items[0].cached, true)
+  assert.equal(restarted.windows.length, 0)
+})
+
+test('security page blocks queued URLs, background requests, redirects and popups until explicit verified JD resume', async t => {
+  let challenge = true
+  const fixture = durableFixture(t, url => read(challenge ? '<title>安全验证</title><main>请完成安全验证</main>' : detail, url))
+  const result = await fixture.browser.collect({ id: 'project-1', sources: [{ url: firstSource }, { url: secondSource }] })
+  assert.deepEqual(result.items.map(item => item.state), ['blocked', 'blocked'])
+  assert.equal(fixture.navigations.length, 1)
+  const contents = fixture.windows[0].webContents
+  const request = details => new Promise(resolve => fixture.requests.before({ webContentsId: contents.id, resourceType: 'xhr', url: firstSource, ...details }, resolve))
+  assert.equal((await request({})).cancel, true)
+  assert.equal((await request({ url: 'https://third-party.example/pixel' })).cancel, true)
+  assert.equal((await request({ webContentsId: -1 })).cancel, true)
+  assert.equal(contents.windowOpenHandler({ url: secondSource }).action, 'deny')
+  let prevented = false
+  contents.emit('will-redirect', { preventDefault() { prevented = true } }, secondSource)
+  assert.equal(prevented, true)
+  await fixture.browser.open({ id: 'project-2', url: secondSource })
+  assert.equal(fixture.navigations.length, 1)
+  assert.equal((await fixture.browser.resume({ id: 'project-1' })).item.state, 'failed')
+  assert.equal((await fixture.browser.verify({ id: 'project-1', url: firstSource })).state, 'opened')
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal((await request({})).cancel, false)
+  assert.equal((await fixture.browser.resume({ id: 'project-1', url: firstSource })).item.state, 'blocked')
+  assert.equal((await request({})).cancel, true)
+  challenge = false
+  await fixture.browser.verify({ id: 'project-1', url: firstSource })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal((await fixture.browser.resume({ id: 'project-1', url: firstSource })).item.state, 'captured')
+  assert.equal(fixture.browser.platforms()[0].blocked, false)
+  assert.equal((await request({})).cancel, false)
+})
+
+test('HTTP 429 stops network immediately and persists the block while HTTP 403 alone is inconclusive', async t => {
+  const fixture = durableFixture(t, url => read(detail, url))
+  await fixture.browser.open({ id: 'project-1', url: firstSource })
+  const headers = code => new Promise(resolve => fixture.requests.headers({ webContentsId: fixture.windows[0].webContents.id, statusCode: code }, resolve))
+  assert.equal((await headers(403)).cancel, false)
+  assert.equal(fixture.browser.platforms()[0].blocked, false)
+  assert.equal((await headers(429)).cancel, true)
+  assert.equal(fixture.windows[0].stopped, true)
+  const restarted = browserFixture(read(detail, firstSource), { dataDirectory: fixture.dataDirectory })
+  t.after(() => restarted.browser.dispose())
+  const result = await restarted.browser.collect({ id: 'project-2', sources: [{ url: secondSource }] })
+  assert.equal(result.items[0].state, 'blocked')
+  assert.equal(restarted.windows.length, 0)
+})
+
+test('login-required platform pauses other candidates and reuses the same persistent browser after manual login', async t => {
+  let loggedIn = false
+  const fixture = durableFixture(t, url => read(loggedIn ? detail : '<main>请先登录<input type="password"></main>', url))
+  const batch = await fixture.browser.collect({ id: 'project-1', sources: [{ url: firstSource }, { url: secondSource }] })
+  assert.deepEqual(batch.items.map(item => item.state), ['login_required', 'login_required'])
+  assert.equal(fixture.navigations.length, 1)
+  loggedIn = true
+  assert.equal((await fixture.browser.read({ id: 'project-1', url: firstSource })).state, 'captured')
+  assert.equal(fixture.browser.platforms()[0].login_required, false)
+  assert.equal((await fixture.browser.collect({ id: 'project-2', sources: [{ url: secondSource }] })).items[0].state, 'captured')
+  assert.equal(fixture.windows.length, 1)
+  assert.equal((await fixture.browser.read({ id: 'project-1' })).state, 'failed')
+  assert.equal(fixture.browser.status({ id: 'project-1' }).state, 'closed')
+  fixture.browser.close({ id: 'project-1' })
+  assert.equal(fixture.browser.status({ id: 'project-2' }).state, 'opened')
+})
+
+test('batch limits retain an explicit pending outcome for every excess source', async t => {
+  const fixture = durableFixture(t, url => read(detail, url))
+  const sources = Array.from({ length: 21 }, () => ({ url: firstSource, title: '后端岗位' }))
+  const batch = await fixture.browser.collect({ id: 'project-1', sources })
+  assert.equal(batch.items.length, sources.length)
+  assert.equal(batch.items[20].state, 'failed')
+  assert.match(batch.items[20].message, /保留待采集/u)
+  assert.equal(fixture.navigations.length, 1)
+})
+
+test('a challenge appearing after initial capture stops background traffic without another read action', async t => {
+  let challenge = false
+  const fixture = durableFixture(t, url => read(challenge ? '<main>Cookies support required</main>' : detail, url))
+  await fixture.browser.collect({ id: 'project-1', sources: [{ url: firstSource }] })
+  challenge = true
+  fixture.windows[0].webContents.emit('dom-ready')
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(fixture.browser.platforms()[0].blocked, true)
+  assert.equal(fixture.windows[0].stopped, true)
+})
+
+test('redirect and popup main-frame requests consume the same platform interval and budget', async t => {
+  const fixture = durableFixture(t, url => read(detail, url))
+  await fixture.browser.collect({ id: 'project-1', sources: [{ url: firstSource }] })
+  const started = Date.now()
+  const request = () => new Promise(resolve => fixture.requests.before({ webContentsId: fixture.windows[0].webContents.id, resourceType: 'mainFrame', url: secondSource }, resolve))
+  const first = await request()
+  const afterFirst = Date.now()
+  assert.equal(first.cancel, false)
+  const second = await request()
+  assert.equal(second.cancel, false)
+  assert.ok(Date.now() - afterFirst >= 90)
+  assert.ok(Date.now() >= started)
+})
+
+test('collection waits for a page-owned reload and late-rendered duties without navigating again', async t => {
+  let rendered = false
+  const fixture = durableFixture(t, url => read(rendered ? detail : '<main>正在加载岗位</main>', url), {
+    onLoad(window) {
+      window.loading = true
+      setTimeout(() => { window.loading = false }, 220)
+      setTimeout(() => { rendered = true }, 380)
+    },
+  })
+  const start = Date.now()
+  const batch = await fixture.browser.collect({ id: 'project-1', sources: [{ url: firstSource }] })
+  assert.equal(batch.items[0].state, 'captured')
+  assert.ok(Date.now() - start >= 350)
+  assert.equal(fixture.navigations.length, 1)
+})
+
+test('render timeout is bounded and cancels late background navigation instead of retrying', async t => {
+  const fixture = durableFixture(t, url => read('<main>正在加载岗位</main>', url), { loadTimeoutMs: 180 })
+  const pending = fixture.browser.collect({ id: 'project-1', sources: [{ url: firstSource }] })
+  await new Promise(resolve => setTimeout(resolve, 140))
+  const mainFrame = () => new Promise(resolve => fixture.requests.before({ webContentsId: fixture.windows[0].webContents.id, resourceType: 'mainFrame', url: secondSource }, resolve))
+  assert.equal((await mainFrame()).cancel, false)
+  const callback = mainFrame()
+  const batch = await pending
+  assert.equal(batch.items[0].state, 'failed')
+  assert.match(batch.items[0].message, /渲染超时/u)
+  assert.equal(fixture.navigations.length, 1)
+  const background = await new Promise(resolve => fixture.requests.before({ webContentsId: fixture.windows[0].webContents.id, resourceType: 'xhr', url: firstSource }, resolve))
+  assert.equal(background.cancel, true)
+  assert.equal((await callback).cancel, true)
+})
+
+test('a security response stops a still-loading page before the render deadline', async t => {
+  let fixture
+  fixture = durableFixture(t, url => read(detail, url), {
+    loadTimeoutMs: 3000,
+    onLoad(window) {
+      window.loading = true
+      setTimeout(() => fixture.requests.headers({ webContentsId: window.webContents.id, statusCode: 429 }, () => {}), 120)
+    },
+  })
+  const start = Date.now()
+  const batch = await fixture.browser.collect({ id: 'project-1', sources: [{ url: firstSource }, { url: secondSource }] })
+  assert.deepEqual(batch.items.map(item => item.state), ['blocked', 'blocked'])
+  assert.ok(Date.now() - start < 1500)
+  assert.equal(fixture.navigations.length, 1)
+})
+
+test('BOSS partially public duties require login and cannot enter the complete-original cache', async t => {
+  let full = false
+  const partial = '岗位职责：\n开发和维护基于微服务架构的.NET后端应用程序，包括但不限于服务接口、API、数据存储等方面；\n任职要求：\n大专或以上学历，计算机\n登录查看完整内容'
+  const fixture = durableFixture(t, url => read('<h1>.net开发工程师</h1><main>' + (full ? partial.replace('登录查看完整内容', '熟悉 SQL 和 ASP.NET。') : partial) + '</main>', url))
+  const batch = await fixture.browser.collect({ id: 'project-1', sources: [{ url: firstSource }, { url: secondSource }] })
+  assert.deepEqual(batch.items.map(item => item.state), ['login_required', 'login_required'])
+  assert.equal(Object.hasOwn(batch.items[0], 'body'), false)
+  assert.equal(fixture.browser.platforms()[0].cache_count, 0)
+  assert.equal(fixture.navigations.length, 1)
+  full = true
+  assert.equal((await fixture.browser.read({ id: 'project-1', url: firstSource })).state, 'captured')
+  assert.equal(fixture.browser.platforms()[0].cache_count, 1)
+})
+
+test('a DOM read resolving after timeout cannot save a late original', async t => {
+  const fixture = durableFixture(t, async url => {
+    await new Promise(resolve => setTimeout(resolve, 250))
+    return read(detail, url)
+  }, { loadTimeoutMs: 180 })
+  const batch = await fixture.browser.collect({ id: 'project-1', sources: [{ url: firstSource }] })
+  assert.equal(batch.items[0].state, 'failed')
+  await new Promise(resolve => setTimeout(resolve, 300))
+  assert.equal(fixture.browser.platforms()[0].cache_count, 0)
+})
+
+test('a captured page dynamically displaying a captcha stops network without navigation or another read', async t => {
+  const dom = renderedDOM(detail, firstSource, { runScripts: 'outside-only' })
+  t.after(() => { dom.window.dispatchEvent(new dom.window.Event('pagehide')); dom.window.close() })
+  const fixture = durableFixture(t, undefined, {
+    executeJavaScript: script => dom.window.eval(script),
+    onLoad(window) { window.webContents.emit('dom-ready') },
+  })
+  const batch = await fixture.browser.collect({ id: 'project-1', sources: [{ url: firstSource }] })
+  assert.equal(batch.items[0].state, 'captured')
+  fixture.windows[0].webContents.emit('did-start-navigation', {}, firstSource + '#details', true, true)
+  const captcha = dom.window.document.createElement('div')
+  captcha.textContent = '请完成安全验证，滑动滑块验证'
+  dom.window.document.body.append(captcha)
+  await new Promise(resolve => setTimeout(resolve, 160))
+  assert.equal(fixture.browser.platforms()[0].blocked, true)
+  assert.equal(fixture.windows[0].stopped, true)
+  const response = await new Promise(resolve => fixture.requests.before({ webContentsId: fixture.windows[0].webContents.id, resourceType: 'xhr', url: firstSource }, resolve))
+  assert.equal(response.cancel, true)
+  assert.equal(fixture.navigations.length, 1)
+})
+
+test('DOM security observer coalesces mutations and disposes on replacement and pagehide', async t => {
+  const dom = renderedDOM(detail, firstSource)
+  t.after(() => dom.window.close())
+  let scans = 0
+  const classifier = document => { scans++; return readJdPage(document) }
+  const first = monitorJdSecurity(dom.window.document, classifier, 100, 'testSecurityObserver')
+  assert.equal(scans, 1)
+  for (let index = 0; index < 30; index++) dom.window.document.body.append(dom.window.document.createElement('span'))
+  await new Promise(resolve => setTimeout(resolve, 30))
+  assert.equal(scans, 1)
+  await new Promise(resolve => setTimeout(resolve, 100))
+  assert.equal(scans, 2)
+  const replacement = monitorJdSecurity(dom.window.document, classifier, 100, 'testSecurityObserver')
+  assert.equal(await first, false)
+  dom.window.dispatchEvent(new dom.window.Event('pagehide'))
+  assert.equal(await replacement, false)
+  const afterDispose = scans
+  dom.window.document.body.append(dom.window.document.createElement('div'))
+  await new Promise(resolve => setTimeout(resolve, 130))
+  assert.equal(scans, afterDispose)
+})
+
+test('parent capture teardown does not access destroyed native getters or interrupt the surviving popup', async t => {
+  const fixture = durableFixture(t, read(detail, firstSource), { throwAfterDestroy: true })
+  await fixture.browser.open({ id: 'project-1', url: firstSource })
+  const parent = fixture.windows[0]
+  const popupOptions = parent.webContents.windowOpenHandler({ url: secondSource })
+  const popup = new parent.constructor(popupOptions.overrideBrowserWindowOptions)
+  parent.webContents.emit('did-create-window', popup)
+  assert.doesNotThrow(() => parent.destroy())
+  assert.throws(() => parent.webContents, /Object has been destroyed/u)
+  assert.equal(fixture.browser.status({ id: 'project-1' }).state, 'opened')
+  assert.equal((await fixture.browser.read({ id: 'project-1' })).state, 'captured')
+  assert.doesNotThrow(() => popup.destroy())
+  assert.equal(fixture.browser.status({ id: 'project-1' }).state, 'closed')
+  assert.doesNotThrow(() => fixture.browser.dispose())
 })

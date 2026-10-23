@@ -6,16 +6,22 @@ import type { TeachingReformProps } from '../src/client/types.ts'
 import type { JdProject, JdProjectSummary } from '../src/jd/types.ts'
 import { projectId } from '../src/jd/document.ts'
 import { graphFixture, projectFixture } from './jd-fixture.client.ts'
-import { exportJdHtml, jdBrowserStatus, openJdBrowser, readJdBrowser } from '../src/client/jdNative.ts'
+import { collectJdBrowser, exportJdHtml, hasJdBrowser, jdBrowserPlatforms, jdBrowserStatus,
+  openJdBrowser, readJdBrowser, resumeJdBrowser, verifyJdBrowser } from '../src/client/jdNative.ts'
 
 vi.mock('../src/client/jdNative.ts', () => ({
   jdBrowserStatus: vi.fn(), openJdBrowser: vi.fn(), readJdBrowser: vi.fn(), exportJdHtml: vi.fn(),
+  collectJdBrowser: vi.fn(), hasJdBrowser: vi.fn(), jdBrowserPlatforms: vi.fn(), resumeJdBrowser: vi.fn(), verifyJdBrowser: vi.fn(),
   jdHash: vi.fn().mockResolvedValue('synthetic-hash'),
 }))
 afterEach(cleanup)
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(jdBrowserStatus).mockResolvedValue(false)
+  vi.mocked(hasJdBrowser).mockReturnValue(true)
+  vi.mocked(jdBrowserPlatforms).mockResolvedValue([])
+  vi.mocked(collectJdBrowser).mockResolvedValue({ items: [], platforms: [] })
+  vi.mocked(verifyJdBrowser).mockResolvedValue(undefined)
   vi.mocked(openJdBrowser).mockResolvedValue('capture-window')
   vi.mocked(exportJdHtml).mockResolvedValue({ path: 'C:/Reports/graph.html', opened: 'browser' })
 })
@@ -214,49 +220,164 @@ test('returning to an in-flight search shares its operation and displays the sav
   expect(records.get(a.id)?.workspace?.search_status).toBe('completed')
   expect(records.get(b.id)?.workspace?.step).toBe(1)
 })
-test('search collection deduplicates imported bodies and retains revised URLs as excluded evidence', async () => {
+test('browser collection deduplicates imported bodies and retains revised URLs as excluded evidence', async () => {
   const value = projectFixture()
   value.platforms = ['公开网页']
   value.workspace = { ...draft().workspace!, step: 2 }
   const { input, records } = fixture([value])
   const existing = value.sources[0]!
-  const { jdHash } = await import('../src/client/jdNative.ts')
-  vi.mocked(jdHash).mockResolvedValueOnce(existing.content_hash).mockResolvedValueOnce('new-hash')
-  vi.mocked(input.runJdSearch).mockResolvedValue([
-    { id: 'same', title: existing.title, company: existing.company, place: existing.place, platform: existing.platform,
-      score: 100, summary: '合成重复原文',
-      body: existing.body, sourceUrl: existing.source_url, capturedAt: existing.captured_at },
-    { id: 'revised', title: existing.title, company: existing.company, place: existing.place, platform: existing.platform,
-      score: 100, summary: '合成修订原文',
-      body: `${existing.body}新增职责：质量管理。`, sourceUrl: existing.source_url, capturedAt: existing.captured_at },
-  ])
+  input.pendingJdSources = () => [{ title: existing.title, url: existing.source_url, reason: '候选链接' },
+    { title: existing.title, url: `${existing.source_url}?revision=2`, reason: '候选链接' }]
+  vi.mocked(collectJdBrowser).mockResolvedValue({ items: [
+    { state: 'captured', title: existing.title, body: existing.body, url: existing.source_url,
+      captured_at: existing.captured_at, content_hash: existing.content_hash, cached: true },
+    { state: 'captured', title: existing.title, body: `${existing.body}新增职责：质量管理。`, url: existing.source_url,
+      captured_at: existing.captured_at, content_hash: 'new-hash' },
+  ], platforms: [] })
   render(<JdSearchWorkbench {...input} />)
   fireEvent.click(await screen.findByRole('button', { name: '开始检索' }))
   await screen.findByRole('heading', { name: 'JD 原文与来源' })
+  await waitFor(() => { expect(records.get(value.id)?.sources.length).toBe(2) })
   await flush()
   expect(records.get(value.id)?.sources).toEqual([
     expect.objectContaining({ content_hash: existing.content_hash, excluded: true }),
-    expect.objectContaining({ content_hash: 'new-hash', excluded: false }),
+    expect.objectContaining({ content_hash: 'new-hash', excluded: false, acquisition: 'browser' }),
   ])
 })
-test('a pending source opens its login window immediately and continuation checks live status', async () => {
+test('discovery is saved before browser reads and cached evidence keeps its acquisition metadata', async () => {
+  const value = draft()
+  value.workspace = { ...value.workspace!, step: 2 }
+  value.roles = ['护理员']
+  const { input, records } = fixture([value])
+  const url = 'https://jobs.example.test/job/cached'
+  input.pendingJdSources = () => [{ title: '缓存岗位', url, reason: '候选链接' }]
+  vi.mocked(collectJdBrowser).mockImplementation(async (id, sources) => {
+    expect(id).toBe(value.id)
+    expect(sources).toEqual([{ title: '缓存岗位', url, reason: '候选链接' }])
+    expect(records.get(value.id)?.pending_sources).toEqual(input.pendingJdSources?.(value.session_id))
+    return { items: [{ state: 'captured', title: '缓存岗位', url, body: '岗位职责：照护老人。任职要求：护理专业。',
+      captured_at: '2026-01-01T00:00:00.000Z', content_hash: 'original-cache-hash', cached: true }], platforms: [] }
+  })
+  render(<JdSearchWorkbench {...input} />)
+  fireEvent.click(await screen.findByRole('button', { name: '开始检索' }))
+  await screen.findByText('已复用浏览器采集缓存，保留原始采集时间与内容指纹。')
+  expect(records.get(value.id)).toMatchObject({ pending_sources: [], sources: [expect.objectContaining({
+    acquisition: 'browser', content_hash: 'original-cache-hash', captured_at: '2026-01-01T00:00:00.000Z',
+  })] })
+})
+test('platform stops expose explicit verification and resume without an automatic login action', async () => {
+  const value = draft()
+  const url = 'https://jobs.example.test/job/1'
+  value.workspace = { ...value.workspace!, step: 3 }
+  value.pending_sources = [{ title: '验证岗位', url, reason: '验证页面' }]
+  const { input, records } = fixture([value])
+  vi.mocked(jdBrowserPlatforms).mockResolvedValue([{ platform: 'example.test', blocked: true,
+    reason: '需要安全验证', cache_count: 0, login_required: false }])
+  vi.mocked(resumeJdBrowser).mockResolvedValue({ item: { state: 'blocked', url, message: '验证尚未完成' },
+    platforms: [{ platform: 'example.test', blocked: true, cache_count: 0, login_required: false }] })
+  render(<JdSearchWorkbench {...input} />)
+  const verify = await screen.findByRole('button', { name: '手动处理验证' })
+  expect(screen.getByRole<HTMLButtonElement>('button', { name: '继续采集待处理岗位' }).disabled).toBe(true)
+  fireEvent.click(verify)
+  await waitFor(() => { expect(verifyJdBrowser).toHaveBeenCalledWith(value.id, url) })
+  expect(openJdBrowser).not.toHaveBeenCalled()
+  expect(collectJdBrowser).not.toHaveBeenCalled()
+  await waitFor(() => { expect(screen.getByRole<HTMLButtonElement>('button', { name: '已完成验证，恢复采集' }).disabled).toBe(false) })
+  fireEvent.click(screen.getByRole('button', { name: '已完成验证，恢复采集' }))
+  await screen.findByText('尚未读取到完整 JD，平台仍暂停自动访问。')
+  expect(records.get(value.id)?.sources).toEqual([])
+  expect(records.get(value.id)?.pending_sources[0]?.reason).toContain('平台风控，已停止自动访问')
+})
+test('a stopped platform does not prevent another candidate from being saved', async () => {
+  const value = draft()
+  value.roles = ['护理员']
+  value.workspace = { ...value.workspace!, step: 2 }
+  const { input, records } = fixture([value])
+  const stopped = 'https://blocked.example/job/1'
+  const readable = 'https://readable.example/job/2'
+  input.pendingJdSources = () => [{ title: '受限岗位', url: stopped, reason: '候选' }, { title: '可读岗位', url: readable, reason: '候选' }]
+  vi.mocked(collectJdBrowser).mockResolvedValueOnce({ items: [
+    { state: 'blocked', url: stopped, message: '风控' },
+    { state: 'captured', title: '可读岗位', url: readable, body: '岗位职责：护理老人。任职要求：护理技能。',
+      content_hash: 'readable-hash', captured_at: value.updated_at }],
+  platforms: [{ platform: 'blocked.example', blocked: true, cache_count: 0, login_required: false }] })
+  render(<JdSearchWorkbench {...input} />)
+  fireEvent.click(await screen.findByRole('button', { name: '开始检索' }))
+  await waitFor(() => { expect(records.get(value.id)?.sources.length).toBe(1) })
+  expect(records.get(value.id)?.pending_sources).toHaveLength(1)
+  expect(records.get(value.id)?.pending_sources[0]?.url).toBe(stopped)
+  expect(records.get(value.id)?.pending_sources[0]?.reason).toContain('平台风控')
+  expect(records.get(value.id)?.sources[0]?.source_url).toBe(readable)
+})
+test('one user collection obeys the native batch limit and retains candidates beyond the request limit', async () => {
+  const value = draft()
+  value.roles = ['护理员']
+  value.workspace = { ...value.workspace!, step: 2 }
+  const { input, records } = fixture([value])
+  const candidates = Array.from({ length: 101 }, (_, index) => ({
+    title: `岗位 ${index}`, url: `https://example.test/candidate/${index}`, reason: '已发现候选链接',
+  }))
+  input.pendingJdSources = () => candidates
+  vi.mocked(collectJdBrowser).mockImplementation(async (id, sources) => {
+    expect(id).toBe(value.id)
+    expect(sources).toHaveLength(100)
+    expect(records.get(value.id)?.pending_sources).toEqual(candidates)
+    return { items: sources.map((source, index) => index === 0
+      ? { state: 'captured' as const, url: 'https://example.test/job/actual', title: '实际岗位',
+        body: '岗位职责：照护老人。任职要求：护理专业。', captured_at: value.updated_at, content_hash: 'actual-job-hash' }
+      : { state: 'failed' as const, url: source.url, message: '本批最多采集 1 条；该来源保留待采集，请分批继续。' }), platforms: [] }
+  })
+  render(<JdSearchWorkbench {...input} />)
+  fireEvent.click(await screen.findByRole('button', { name: '开始检索' }))
+  await waitFor(() => {
+    expect(records.get(value.id)?.pending_sources.find(item => item.url === candidates[99]?.url)?.reason).toContain('本批最多采集 1 条')
+  })
+  expect(collectJdBrowser).toHaveBeenCalledTimes(1)
+  expect(records.get(value.id)?.sources).toEqual([expect.objectContaining({ source_url: 'https://example.test/job/actual',
+    content_hash: 'actual-job-hash', acquisition: 'browser' })])
+  expect(records.get(value.id)?.pending_sources).toHaveLength(100)
+  expect(records.get(value.id)?.pending_sources.some(item => item.url === candidates[0]?.url)).toBe(false)
+  expect(records.get(value.id)?.pending_sources.at(-1)).toEqual(candidates[100])
+})
+test('browser completion after a session switch updates only the owning search', async () => {
+  const a = draft('browser-search-a')
+  const b = draft('browser-search-b')
+  a.roles = ['护理员']
+  a.workspace = { ...a.workspace!, step: 2 }
+  const { input, records } = fixture([a, b])
+  const url = 'https://example.test/job/late'
+  input.pendingJdSources = () => [{ title: '异步岗位', url, reason: '候选' }]
+  let finish: ((value: Awaited<ReturnType<typeof collectJdBrowser>>) => void) | undefined
+  vi.mocked(collectJdBrowser).mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+  const view = render(<JdSearchWorkbench {...input} />)
+  fireEvent.click(await screen.findByRole('button', { name: '开始检索' }))
+  await waitFor(() => { expect(finish).toBeDefined() })
+  view.rerender(<JdSearchWorkbench {...input} sessionId={b.session_id} />)
+  await screen.findByLabelText('学科 / 专业')
+  await act(async () => { finish?.({ items: [{ state: 'captured', title: '异步岗位', url, body: '岗位职责：护理。任职要求：护理技能。',
+    content_hash: 'late-hash', captured_at: a.updated_at }], platforms: [] }) })
+  await waitFor(() => { expect(records.get(a.id)?.sources.length).toBe(1) })
+  expect(records.get(b.id)?.sources).toEqual([])
+  expect(screen.getByLabelText('学科 / 专业')).toHaveProperty('value', '')
+})
+test('a pending source opens a browser without assuming login and continuation checks live status', async () => {
   const value = draft()
   value.workspace = { ...value.workspace!, step: 3 }
   value.pending_sources = [{ title: '照护员', url: 'https://jobs.example.test/job/1', reason: '平台要求安全验证' }]
   const { input, records } = fixture([value])
   render(<JdSearchWorkbench {...input} />)
   await screen.findByText('平台要求安全验证')
-  expect(screen.queryByRole('button', { name: '登录后继续采集' })).toBeNull()
+  expect(screen.queryByRole('button', { name: '继续浏览器采集' })).toBeNull()
   expect(screen.queryByRole('button', { name: '选为登录采集来源' })).toBeNull()
-  fireEvent.click(screen.getByRole('button', { name: '打开此岗位并登录' }))
+  fireEvent.click(screen.getAllByRole('button', { name: '浏览器读取此岗位' })[0]!)
   await waitFor(() => { expect(openJdBrowser).toHaveBeenCalledWith(value.id, value.pending_sources[0]!.url) })
-  expect(await screen.findByRole('button', { name: '登录后继续采集' })).toBeTruthy()
+  expect(await screen.findByRole('button', { name: '继续浏览器采集' })).toBeTruthy()
   expect(records.get(value.id)?.workspace?.capture).toMatchObject({ title: '照护员', url: value.pending_sources[0]!.url })
-  await waitFor(() => { expect(screen.getByRole<HTMLButtonElement>('button', { name: '登录后继续采集' }).disabled).toBe(false) })
-  fireEvent.click(screen.getByRole('button', { name: '登录后继续采集' }))
-  expect(await screen.findByText('采集窗口已关闭，请先重新打开岗位并登录')).toBeTruthy()
+  await waitFor(() => { expect(screen.getByRole<HTMLButtonElement>('button', { name: '继续浏览器采集' }).disabled).toBe(false) })
+  fireEvent.click(screen.getByRole('button', { name: '继续浏览器采集' }))
+  expect(await screen.findByText('采集窗口已关闭，请先重新打开岗位浏览器')).toBeTruthy()
   expect(readJdBrowser).not.toHaveBeenCalled()
-  expect(screen.queryByRole('button', { name: '登录后继续采集' })).toBeNull()
+  expect(screen.queryByRole('button', { name: '继续浏览器采集' })).toBeNull()
 })
 test('restored capture windows save the actual displayed job title and URL after user navigation', async () => {
   const value = draft()
@@ -268,11 +389,25 @@ test('restored capture windows save the actual displayed job title and URL after
     url: 'https://jobs.example.test/job/new', body: '岗位职责：护理老人。任职要求：护理专业。',
     content_hash: 'captured-new-hash', captured_at: value.updated_at })
   render(<JdSearchWorkbench {...input} />)
-  fireEvent.click(await screen.findByRole('button', { name: '登录后继续采集' }))
+  fireEvent.click(await screen.findByRole('button', { name: '继续浏览器采集' }))
   await screen.findByText('JD 原文和来源已保存。')
   expect(records.get(value.id)?.sources).toEqual([expect.objectContaining({
     title: '实际打开的新岗位', source_url: 'https://jobs.example.test/job/new', acquisition: 'browser',
   })])
+})
+test('a restored partial original blocks new model analysis until it is excluded', async () => {
+  const value = projectFixture()
+  value.sources[0]!.body += '\n任职要求：大专或以上学历，计算机\n登录查看完整内容'
+  value.workspace = { ...draft().workspace!, step: 3 }
+  const { input, records } = fixture([value])
+  render(<JdSearchWorkbench {...input} />)
+  fireEvent.click(await screen.findByRole('button', { name: '使用 1 份原文生成五级图谱' }))
+  await screen.findByText(/以下 JD 存在完整内容登录限制/)
+  expect(input.generateJdGraph).not.toHaveBeenCalled()
+  expect(records.get(value.id)?.sources[0]?.body).toBe(value.sources[0]!.body)
+  expect(records.get(value.id)?.graphs).toEqual([])
+  fireEvent.click(screen.getByRole('button', { name: '剔除原文' }))
+  await waitFor(() => { expect(screen.getByRole<HTMLButtonElement>('button', { name: '使用 0 份原文生成五级图谱' }).disabled).toBe(true) })
 })
 test('confirmation is durable and HTML export is available only for the selected confirmed version', async () => {
   const value = projectFixture()

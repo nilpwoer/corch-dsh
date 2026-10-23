@@ -9,10 +9,17 @@ export const fixtureBody = '合成验收岗位。岗位职责：开发后端接�
 export async function startJdFixture() {
   const requests = []
   const toolCalls = []
+  const deniedCalls = []
+  const siteRequests = []
+  let searchRuns = 0
   let origin
   const server = createServer(async (request, response) => {
     const path = new URL(request.url, 'http://fixture').pathname
-    if (path === '/challenge') {
+    if (['/job', '/challenge', '/risk-page', '/sign-in'].includes(path)) siteRequests.push({
+      path: request.url, user_agent: request.headers['user-agent'] ?? '',
+      logged_in: (request.headers.cookie ?? '').includes('synthetic_jd_session=active'),
+    })
+    if (path === '/challenge' || path === '/risk-page') {
       response.writeHead(403, { 'content-type': 'text/html;charset=utf-8' })
       response.end('<title>安全验证</title><main><h1>平台访问限制</h1><p>系统检测到您当前的访问环境存在异常，请完成安全验证。</p><a href="/job">返回合成岗位</a></main>')
       return
@@ -52,11 +59,16 @@ export async function startJdFixture() {
     } else if (user.includes('推理适合')) content = JSON.stringify({ roles: ['后端开发'] })
     else {
       const tools = messages.slice(lastUserIndex + 1).filter(message => message.role === 'tool')
-      if (tools.length === 0) call = { name: 'web_search', arguments: JSON.stringify({ queries: ['合成后端开发岗位'] }) }
-      else if (tools.length === 1) call = { name: 'web_fetch', arguments: JSON.stringify({ url: origin + '/job' }) }
-      else content = JSON.stringify({ jobs: [], pending: [{ url: origin + '/job', title: '合成后端开发岗位', reason: 'HTTP 403，需要用户登录后读取正文' }] })
+      if (tools.length === 0) {
+        searchRuns++
+        call = { name: 'web_search', arguments: JSON.stringify({ queries: ['合成后端开发岗位'] }) }
+      } else if (searchRuns === 1 && tools.length === 1) call = { name: 'web_fetch', arguments: JSON.stringify({ url: origin + '/job' }) }
+      else if (searchRuns === 1 && tools.length === 2) {
+        const shell = input.tools?.find(tool => /^(?:bash|pwsh)$/u.test(tool.function?.name))?.function.name ?? 'bash'
+        call = { name: shell, arguments: JSON.stringify({ command: 'echo JD_GUARD_MUST_DENY' }) }
+      } else content = JSON.stringify({ pending: [{ url: origin + '/job', title: '合成后端开发岗位' }] })
     }
-    if (call) toolCalls.push(call.name)
+    if (call) (call.name === 'web_search' ? toolCalls : deniedCalls).push(call.name)
     response.writeHead(200, { 'content-type': 'text/event-stream' })
     const delta = call ? { role: 'assistant', tool_calls: [{ index: 0, id: 'synthetic-call-' + requests.length, type: 'function', function: call }] } : { role: 'assistant', content }
     for (const [index, entry] of [delta, {}].entries()) response.write('data: ' + JSON.stringify({ id: 'synthetic-response', object: 'chat.completion.chunk', choices: [{ index: 0, delta: entry, finish_reason: index === 0 ? null : call ? 'tool_calls' : 'stop' }] }) + '\n\n')
@@ -64,5 +76,8 @@ export async function startJdFixture() {
   })
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
   origin = `http://127.0.0.1:${server.address().port}`
-  return { origin, requests, toolCalls, close: () => new Promise(resolve => server.close(resolve)) }
+  return { origin, requests, toolCalls, deniedCalls, siteRequests, close: () => new Promise((resolve, reject) => {
+    server.close(error => error ? reject(error) : resolve())
+    server.closeAllConnections()
+  }) }
 }

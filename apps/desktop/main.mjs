@@ -29,7 +29,7 @@ let ready = false
 let backendDone
 let log
 let localOrigin
-const jdBrowser = createJdBrowser({ BrowserWindow, maxCaptureChars: 250000, loadTimeoutMs: 60000 })
+const jdBrowser = createJdBrowser({ BrowserWindow, maxCaptureChars: 250000, loadTimeoutMs: 60000, dataDirectory: data })
 const exportJdHtml = createJdReport({ exportsDirectory: join(data, 'exports'), shell })
 
 if (!app.requestSingleInstanceLock()) app.quit()
@@ -148,7 +148,7 @@ async function start() {
   })
   const trustedPublisher = event => event.sender === mainWindow?.webContents
     && event.senderFrame === mainWindow.webContents.mainFrame && sameOrigin(event.senderFrame.url, localOrigin)
-  for (const method of ['open', 'status', 'read', 'close', 'pdf', 'html']) ipcMain.handle('corch:jd:' + method, async (event, input) => {
+  for (const method of ['open', 'status', 'read', 'close', 'collect', 'platforms', 'verify', 'resume', 'pdf', 'html']) ipcMain.handle('corch:jd:' + method, async (event, input) => {
     if (!trustedPublisher(event)) return { ok: false, message: '当前页面无 JD 采集授权。' }
     try { return { ok: true, value: await (method === 'html' ? exportJdHtml(input) : jdBrowser[method](input)) } }
     catch (error) { return { ok: false, message: error.message } }

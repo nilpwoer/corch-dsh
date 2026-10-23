@@ -1,0 +1,29 @@
+# Agent Note: Browser-first JD collection with durable platform stops
+
+Status: implemented
+
+English | [中文](2026-10-23-browser-first-jd-collection.zh.md)
+
+## Problem
+
+Recruitment pages depend on JavaScript, platform cookies and human verification. Anonymous HTTP can return an empty application shell or a challenge with status 200. Prompt instructions alone cannot prevent repeated requests or distinguish a search snippet from an original.
+
+## Decision
+
+The model discovers links with `web_search`; current tool metadata establishes candidate provenance. Every saved JD session is restricted at tool execution, including restored sessions. An explicit discovery operation opens a bounded search budget; other tools, calls after completion and excess calls are denied. Interview sessions retain their separate policy. The external provider controls its search crawler, so local browser limits do not constrain that provider’s servers.
+
+The native collector renders saved candidates in platform windows using a persistent Chromium partition. Public pages need no login, and each platform reuses its own browser storage across projects and restarts. No cookie API is exposed to the model or external pages. The collector serializes each platform’s navigation, enforces a minimum interval and rolling hourly budget, and keeps excess batch candidates pending. Successful originals have a hash-checked, time-bounded cache with their initial acquisition time; reuse never creates a false new capture time.
+
+HTTP 429, challenge routes and recognizable rendered security pages persistently stop that platform. Main-frame navigation, redirects, popups and background requests are rejected while stopped, including after restart. Login-required pages pause automatic collection on that platform without being classified as a challenge. An explicit human verification action temporarily permits the platform window; recovery inspects the displayed page without navigating and clears the stop only after a valid JD is captured. A cache hit remains available without network access while stopped. Settings and private data locations belong to the [desktop guide](../../../../apps/desktop/README.md).
+
+Explicit login walls withholding complete content cannot enter new graph corpora, even when their visible fragments contain valid quotes. Previously saved projects and graph versions remain readable and unchanged; rejecting new use does not rewrite historical evidence.
+
+The [source-evidence decision](2026-10-20-jd-search-integration.md) retains original attribution, literal quotations and inference rules. The [confirmed-workspace decision](2026-10-23-confirmed-jd-workspaces.md) retains independent archives, immutable confirmation and HTML reports.
+
+## Alternatives considered
+
+**Anonymous fetch first, browser on failure.** A status-200 application shell is not a JD. Requesting it before rendering adds traffic without acquiring evidence. **Prompt-only restrictions.** A model may still request another URL, Shell or repeated searches; the Host must deny those calls before execution. **Share one login across platforms.** Independent websites control their own accounts and cookie domains. Reusing each site’s session reduces repeated login without claiming cross-site authentication. **Automatically retry challenges after a timer.** This can prolong restrictions. Recovery requires an explicit human action and a readable original.
+
+## Consequences
+
+Persistent browser storage reduces login repetition but can expire or be rejected. Embedded-browser incompatibility, dead jobs, network failures and mandatory login can still prevent collection. The collector distinguishes these outcomes and retains the candidates. Real-platform acceptance records actual results and navigation evidence without remote debugging or access-control bypasses; synthetic native and assembled desktop tests establish policy, cache, restart, tool-denial and evidence-persistence behavior, not universal platform access.

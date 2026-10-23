@@ -6,6 +6,7 @@ import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { join } from 'node:path'
 import { graphHTML, identifier, record } from './jd/document.ts'
 import { JdProjectStore } from './jd/store.ts'
+import { JdDiscoveryGuard } from './jd/discovery.ts'
 
 /** Host persistence settings; source and graph limits also apply to decoded RPC documents. */
 export interface Config {
@@ -13,28 +14,46 @@ export interface Config {
   projectDirectory?: string
   /** Maximum UTF-8 bytes in one project. */
   maxProjectBytes: number
+  /** Maximum web_search dispatches in a single JD link-discovery operation. */
+  maxDiscoveryCalls: number
 }
 
 export const Config: z<Config> = z.object({
   projectDirectory: z.string(),
   maxProjectBytes: z.natural().min(1).default(20 * 1024 * 1024),
+  maxDiscoveryCalls: z.natural().min(1).default(5),
 })
 
-export const inject = ['connection']
+export const inject = ['connection', 'tools']
 
 /** Register loopback-only research operations with Connection's existing trust checks.
  * @param ctx - Host context with the Connection registry.
  * @param config - Validated private storage settings.
+ * @returns Settlement after saved research ownership and RPC handlers are ready.
  */
-export function apply(ctx: Context, config: Config): void {
+export async function apply(ctx: Context, config: Config): Promise<void> {
   const store = new JdProjectStore(config.projectDirectory ?? join(resolveDshHome(), 'jd-projects'), config.maxProjectBytes)
+  const discovery = new JdDiscoveryGuard(ctx, store.list(), config.maxDiscoveryCalls)
+  await discovery.ready
   const connection = ctx.get('connection') as unknown as HostConnectionHandle
   ctx.effect(() => connection.rpc.handle('/jd', async (endpoint, payload) => {
     try {
       if (endpoint === 'list') return { ok: true, value: await store.list() }
       if (endpoint === 'confirmed') return { ok: true, value: await store.confirmed() }
       const input = record(payload)
-      if (endpoint === 'save') return { ok: true, value: await store.save(input.project) }
+      if (endpoint === 'save') {
+        const project = await store.save(input.project)
+        discovery.remember(project.session_id)
+        return { ok: true, value: project }
+      }
+      if (endpoint === 'discovery-begin' || endpoint === 'discovery-end') {
+        const project = (await store.list()).find(item => item.session_id === input.session_id)
+        if (!project) throw new Error('当前会话不是已存档的 JD 搜索')
+        discovery.remember(project.session_id)
+        if (endpoint === 'discovery-begin') await discovery.begin(project.session_id)
+        else discovery.end(project.session_id)
+        return { ok: true, value: null }
+      }
       if (endpoint === 'confirm') return { ok: true, value: await store.confirm(identifier(input.id), input.version, input.revision) }
       const project = await store.read(identifier(input.id))
       if (endpoint === 'read') return { ok: true, value: project }

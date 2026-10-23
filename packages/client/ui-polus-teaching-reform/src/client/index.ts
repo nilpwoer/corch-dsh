@@ -17,7 +17,7 @@ import { ExpertMaterialSidebarTab } from './ExpertMaterialSidebarTab.tsx'
 import { GlobalReferenceSidebarTab } from './GlobalReferenceSidebarTab.tsx'
 import { buildInterviewPrompt } from './interviewPrompt.ts'
 import { buildJdGraphPrompt, buildJdRoleInferencePrompt, buildJdSearchPrompt } from './jdSearchPrompt.ts'
-import { pendingJdSources, verifiedJdSearchJobs } from './jdSearchResult.ts'
+import { pendingJdSources } from './jdSearchResult.ts'
 import { projectId, record } from '../jd/document.ts'
 import type { JdProject, JdProjectSummary } from '../jd/types.ts'
 
@@ -177,7 +177,7 @@ function parseAgentJson(text: string): Record<string, unknown> {
   try { return record(JSON.parse(text.slice(start, end + 1))) } catch { throw new Error('Agent 返回的 JSON 无法解析') }
 }
 
-function createInterviewAgentFunctions(ctx: ClientContext) {
+function createInterviewAgentFunctions(ctx: ClientContext, discoveryCall: (endpoint: string, id: SessionId) => Promise<void>) {
   const pending = new Map<SessionId, JdProject['pending_sources']>()
   const generateInterview = async (id: SessionId, profile: InterviewProfile): Promise<string> => {
     const session = ctx.sessions.binding(id)?.session
@@ -220,11 +220,17 @@ function createInterviewAgentFunctions(ctx: ClientContext) {
       const session = ctx.sessions.binding(id)?.session
       if (session === undefined) throw new Error('当前 JD 搜索会话不可用')
       const baseline = session.getSnapshot().nodes.reduce((max, node) => Math.max(max, node.seq), 0)
-      const result = parseAgentJson(await promptAgent(id, buildJdSearchPrompt(request)))
-      const fetched = session.getSnapshot().nodes
-        .filter((node): node is ToolResultNode => node.seq > baseline && node.kind === 'tool-result')
-      pending.set(id, pendingJdSources(result, fetched))
-      return verifiedJdSearchJobs(result, fetched)
+      pending.set(id, [])
+      await discoveryCall('discovery-begin', id)
+      try {
+        const result = parseAgentJson(await promptAgent(id, buildJdSearchPrompt(request)))
+        const discovered = session.getSnapshot().nodes
+          .filter((node): node is ToolResultNode => node.seq > baseline && node.kind === 'tool-result')
+        pending.set(id, pendingJdSources(result, discovered))
+        return []
+      } finally {
+        await discoveryCall('discovery-end', id)
+      }
     },
     pendingJdSources: id => pending.get(id) ?? [],
     generateJdGraph: async (id, project) => parseAgentJson(await promptAgent(id, buildJdGraphPrompt(project))),
@@ -234,16 +240,16 @@ function createInterviewAgentFunctions(ctx: ClientContext) {
 }
 
 export function apply(ctx: ClientContext): void {
-  const {
-    generateInterview, observeInterviewCommands, inferJdRoles, runJdSearch,
-    generateJdGraph, pendingJdSources: readPending,
-  } = createInterviewAgentFunctions(ctx)
   const connection = ctx.get('connection') as unknown as ConnectionHandle
   const jdCall = async <T>(endpoint: string, payload: unknown): Promise<T> => {
     const result = await connection.rpc.call('/jd', endpoint, payload)
     if (!result.ok) throw new Error(result.error.message)
     return result.value as T
   }
+  const {
+    generateInterview, observeInterviewCommands, inferJdRoles, runJdSearch,
+    generateJdGraph, pendingJdSources: readPending,
+  } = createInterviewAgentFunctions(ctx, async (endpoint, id) => { await jdCall(endpoint, { session_id: id }) })
   const listJdProjects = (): Promise<JdProjectSummary[]> => jdCall('list', {})
   const loadJdProject = (id: string): Promise<JdProject | null> => jdCall('read', { id })
   const saveJdProject = (project: JdProject): Promise<JdProject> => jdCall('save', { project })

@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, expect, test } from 'vitest'
 import {
   graphHTML,
+  analysisSources,
   graphMarkdown,
   graphNodes,
   parseProject,
@@ -12,6 +13,7 @@ import {
 } from '../src/jd/document.ts'
 import { JdProjectStore } from '../src/jd/store.ts'
 import { graphFixture, projectFixture } from './jd-fixture.client.ts'
+import { buildJdGraphPrompt } from '../src/client/jdSearchPrompt.ts'
 
 const directories: string[] = []
 afterEach(async () => {
@@ -59,6 +61,50 @@ test('the saved corpus and immutable graph version survive a fresh repository in
   )
   expect(html).not.toContain('<script>')
   expect(html).toContain('default-src')
+})
+
+test('a real quote from a partial login-walled original cannot establish a new graph or model corpus', () => {
+  for (const marker of ['登录查看完整内容', '登录后查看完整职位', '登录查看完整信息', '登录\n查看完整\n内容', '完整职位需登录']) {
+    const value = projectFixture()
+    value.sources[0]!.body += `\n任职要求：大专或以上学历，计算机\n${marker}`
+    expect(() => graphNodes({ nodes: graphFixture() }, value.sources)).toThrow('完整内容登录限制')
+    expect(() => buildJdGraphPrompt(value)).toThrow('完整内容登录限制')
+    expect(analysisSources(value.sources.map(source => ({ ...source, excluded: true })))).toEqual([])
+  }
+  const ordinary = projectFixture()
+  ordinary.sources[0]!.body += '\n工作职责还包括开发用户登录功能和登录信息管理。'
+  expect(analysisSources(ordinary.sources)).toEqual(ordinary.sources)
+})
+
+test('historical partial originals and graphs stay readable and immutable while new versions require complete evidence', async () => {
+  const { repository, directory } = await store()
+  const historical = projectFixture()
+  historical.sources[0]!.body += '\n任职要求：大专或以上学历，计算机\n登录查看完整内容'
+  historical.sources[0]!.content_hash = createHash('sha256').update(historical.sources[0]!.body).digest('hex')
+  historical.graphs = [{ version: 1, generated_at: historical.updated_at,
+    source_hashes: { 'JD-1': historical.sources[0]!.content_hash }, nodes: graphFixture() }]
+  const originalBytes = JSON.stringify(historical, null, 2) + '\n'
+  await writeFile(join(directory, `${historical.id}.json`), originalBytes)
+  expect(await repository.read(historical.id)).toEqual(historical)
+  expect(await readFile(join(directory, `${historical.id}.json`), 'utf8')).toBe(originalBytes)
+  const historicalHtml = graphHTML(historical, historical.graphs[0]!)
+  expect(historicalHtml).toContain(historical.sources[0]!.content_hash)
+  expect(historicalHtml).toContain(historical.graphs[0]!.nodes[0]!.evidence[0]!.quote)
+  const saved = await repository.save({ ...historical, direction: '仅修改搜索草稿' })
+  expect(saved.graphs).toEqual(historical.graphs)
+  expect(saved.sources).toEqual(historical.sources)
+  const invalid = { ...saved.graphs[0]!, version: 2 }
+  await expect(repository.save({ ...saved, graphs: [...saved.graphs, invalid] })).rejects.toThrow('完整内容登录限制')
+  expect((await repository.read(saved.id))?.graphs).toEqual(historical.graphs)
+  const complete = { ...projectFixture().sources[0]!, id: 'JD-2', source_url: 'https://jobs.example.test/detail/2' }
+  const replacement = { ...saved, sources: [{ ...saved.sources[0]!, excluded: true }, complete] }
+  const nodes = graphFixture().map(node => ({ ...node, evidence: node.evidence.map(entry => ({ ...entry, jd_id: 'JD-2' })) }))
+  const next = await repository.save({ ...replacement, graphs: [...saved.graphs, {
+    version: 2, generated_at: saved.updated_at, source_hashes: { 'JD-2': complete.content_hash }, nodes,
+  }] })
+  expect(next.graphs[0]).toEqual(historical.graphs[0])
+  expect(next.sources[0]).toEqual({ ...historical.sources[0], excluded: true })
+  expect(next.graphs).toHaveLength(2)
 })
 
 test('invented quotes, excluded sources, skipped levels and unsupported direct statements reject a graph', () => {

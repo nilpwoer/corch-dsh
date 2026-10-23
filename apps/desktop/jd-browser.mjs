@@ -1,15 +1,10 @@
 /** Isolated human-login capture windows. Only rendered text leaves the browser session. */
 import { randomUUID, createHash } from 'node:crypto'
+import { createJdCollection, jdChallengeURL, jdLoginWall, jdPlatform, jdSourceURL } from './jd-collection.mjs'
 
 const CAPTURE_WINDOW_TITLE = 'JD 采集 · 请在此登录，完成后回到工作台继续采集'
 
-function safeURL(value) {
-  const url = new URL(value)
-  const local = ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)
-  if (url.username || url.password || (url.protocol !== 'https:' && !(url.protocol === 'http:' && local))) throw new Error('采集地址须使用 HTTPS；仅本机测试允许 HTTP')
-  url.hash = ''
-  return url.href
-}
+const safeURL = jdSourceURL
 
 /** Read rendered duties and identify the displayed job without reading browser credentials.
  * @param document - Current page DOM, evaluated inside the isolated capture window.
@@ -35,7 +30,7 @@ export function readJdPage(document) {
   const directBoss = boss && /^\/job_detail\/[^/]+\.html$/u.test(pageURL.pathname)
   const title = ((directBoss && pageHeading?.innerText) || heading?.innerText || (detailTitle && !/^(?:岗位职责|工作职责|职位描述|任职要求|职位要求|工作内容|职责描述|job description|responsibilit)/iu.test(detailTitle) && detailTitle) || pageHeading?.innerText || document.title).trim()
   const pageText = (document.body?.innerText || '').replace(/\s+/gu, ' ')
-  const blocked = /请完成安全验证|(?:访问|操作|请求)(?:行为)?(?:过于)?频繁|(?:访问行为|访问环境|网络环境|IP)(?:存在)?异常|(?:访问|请求)已被限制|请解除限制后访问|请拖动(?:滑块|下方)|滑动(?:滑块|验证)|verify you are human|access denied|unusual traffic/iu.test(pageText)
+  const blocked = /请完成安全验证|(?:访问|操作|请求)(?:行为)?(?:过于)?频繁|(?:访问行为|访问环境|网络环境|IP)(?:存在)?异常|(?:访问|请求)已被限制|请解除限制后访问|请拖动(?:滑块|下方)|滑动(?:滑块|验证)|verify you are human|access denied|unusual traffic|cookies support required|系统检测到.{0,30}(?:机器人|异常)|人机身份验证|正在验证.{0,12}浏览器/iu.test(pageText)
     || /^(?:安全验证|访问验证|人机验证|security verification|access denied)$/iu.test(document.title.trim())
     || boss && /^\/web\/common\/security-check(?:\.html)?\/?$/u.test(pageURL.pathname)
   let sourceURL = pageURL.href
@@ -51,96 +46,343 @@ export function readJdPage(document) {
     }
     sourceURL = matches.size === 1 ? [...matches][0] : null
   } else if (directBoss) sourceURL = pageURL.origin + pageURL.pathname
-  return { title, body, url: sourceURL, blocked, login: [...document.querySelectorAll('input[type=password],input[autocomplete=one-time-code]')].some(visible) }
+  const hasDuties = /岗位职责|工作职责|职位描述|任职要求|职位要求|工作内容|职责描述|job description|responsibilit/iu.test(body)
+  const login = [...document.querySelectorAll('input[type=password],input[autocomplete=one-time-code]')].some(visible)
+    || !hasDuties && (/^passport\./iu.test(pageURL.hostname) || /\/(?:login|signin|passport)(?:[./_-]|$)/iu.test(pageURL.pathname) || /扫码登录|短信登录|手机验证码登录/u.test(pageText))
+  return { title, body, url: sourceURL, blocked, login }
+}
+
+/** Watch DOM changes without polling; navigation and replacement dispose the renderer observer.
+ * @param document - Capture page document.
+ * @param readPage - Pure page classifier serialized into the same isolated renderer evaluation.
+ * @param throttleMs - Minimum delay between scans after DOM changes.
+ * @param key - Host-owned observer slot used to replace an earlier watch in this document.
+ * @returns A security-challenge boolean; pagehide or replacement resolves false.
+ */
+export function monitorJdSecurity(document, readPage, throttleMs, key) {
+  const view = document.defaultView
+  view[key]?.()
+  return new Promise(resolve => {
+    let timer
+    let finished = false
+    const finish = blocked => {
+      if (finished) return
+      finished = true
+      view.clearTimeout(timer)
+      observer.disconnect()
+      view.removeEventListener('pagehide', pagehide)
+      if (view[key] === cancel) delete view[key]
+      resolve(blocked)
+    }
+    const cancel = () => finish(false)
+    const pagehide = () => finish(false)
+    const scan = () => {
+      timer = undefined
+      if (readPage(document).blocked) finish(true)
+    }
+    const observer = new view.MutationObserver(() => {
+      if (timer === undefined) timer = view.setTimeout(scan, throttleMs)
+    })
+    view[key] = cancel
+    observer.observe(document, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['class', 'style', 'hidden'] })
+    view.addEventListener('pagehide', pagehide, { once: true })
+    scan()
+  })
 }
 
 /**
  * Own all capture windows until explicit close or application shutdown.
- * @param options - Electron constructors and resolved capture limits.
- * @returns Restricted open/status/read/close and PDF operations; security challenges return no captured body. No cookie or arbitrary script API is exposed.
+ * @param options - Electron constructors, private desktop data directory, and capture limits.
+ * @returns Rendered collection, reusable login windows, explicit verification/resume, platform status and PDF operations. Security challenges persistently stop automatic network access. No cookie or arbitrary script API is exposed.
  */
-export function createJdBrowser({ BrowserWindow, maxCaptureChars, loadTimeoutMs }) {
+export function createJdBrowser({ BrowserWindow, maxCaptureChars, loadTimeoutMs, dataDirectory }) {
   const captures = new Map()
+  const platformWindows = new Map()
   const protectedSessions = new WeakSet()
+  const contentsStates = new Map()
+  let collection
+  let disposed = false
+  const policy = () => collection ||= createJdCollection({ dataDirectory })
   const preferences = { nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true }
+  const blockedItem = url => ({ state: 'blocked', url, message: '平台触发了安全验证或访问限制，已停止重复采集及后台访问。请点击“处理平台验证”，亲自验证后恢复；也可导入已获授权的原文。' })
+  const validateId = id => {
+    if (typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/u.test(id)) throw new Error('采集项目标识无效')
+    if (disposed) throw new Error('JD 采集服务已关闭')
+  }
+  const activeWindow = state => state && (state.activeWindow && !state.activeWindow.isDestroyed() ? state.activeWindow : [...state.windows].find(window => !window.isDestroyed()))
+  const stopPlatform = (url, reason) => {
+    try { policy().block(url, reason) }
+    finally {
+      for (const state of platformWindows.values()) if (state.platform === jdPlatform(url)) {
+        state.verification = false
+        for (const window of state.windows) if (!window.isDestroyed()) window.webContents.stop?.()
+      }
+    }
+  }
+  const startMonitor = (window, state) => {
+    if (disposed || window.isDestroyed() || state.verification || policy().blocked(state.sourceURL)) return
+    const epoch = window.jdMonitorEpoch = (window.jdMonitorEpoch || 0) + 1
+    window.jdMonitorKey ||= '__corchJdSecurity_' + randomUUID()
+    const script = `(${monitorJdSecurity.toString()})(document, ${readJdPage.toString()}, ${policy().settings.render_settle_ms}, ${JSON.stringify(window.jdMonitorKey)})`
+    void window.webContents.executeJavaScript(script).then(blocked => {
+      if (blocked === true && !disposed && !window.isDestroyed() && window.jdMonitorEpoch === epoch && !state.verification) stopPlatform(state.sourceURL, '页面动态显示安全验证或访问限制，自动访问已停止')
+    }, () => { /* Navigation or window destruction discards the renderer watch; dom-ready installs the next one. */ })
+  }
   const protect = (window, state) => {
+    const contentsId = window.webContents.id
     state.windows.add(window)
     state.activeWindow = window
+    contentsStates.set(contentsId, state)
     window.on('focus', () => { state.activeWindow = window })
     window.setMenu(null)
     window.setTitle(CAPTURE_WINDOW_TITLE)
+    const horizontalFrame = Math.max(0, window.getSize()[0] - window.getContentSize()[0])
+    window.setMinimumSize(1280 + horizontalFrame, window.getMinimumSize()[1])
     window.on('page-title-updated', event => event.preventDefault())
-    for (const eventName of ['will-navigate', 'will-redirect']) window.webContents.on(eventName, (event, url) => {
-      try { safeURL(url) } catch { event.preventDefault() }
+    for (const eventName of ['will-navigate', 'will-redirect']) window.webContents.on(eventName, (event, destination) => {
+      try {
+        safeURL(destination)
+        if (!state.verification && (policy().blocked(state.sourceURL) || policy().blocked(destination))) event.preventDefault()
+        else if (!state.verification && jdChallengeURL(destination)) {
+          event.preventDefault()
+          stopPlatform(state.sourceURL, '平台跳转到安全验证页面，自动访问已停止')
+        }
+      } catch { event.preventDefault() }
     })
     window.webContents.on('will-attach-webview', event => event.preventDefault())
+    window.webContents.on('did-start-navigation', (_event, _url, inPlace, isMainFrame) => {
+      if (isMainFrame && !inPlace) window.jdMonitorEpoch = (window.jdMonitorEpoch || 0) + 1
+    })
+    window.webContents.on('dom-ready', () => startMonitor(window, state))
     window.webContents.setWindowOpenHandler(({ url }) => {
-      try { safeURL(url) } catch { return { action: 'deny' } }
-      return { action: 'allow', outlivesOpener: true, overrideBrowserWindowOptions: { webPreferences: { ...preferences, session: window.webContents.session } } }
+      try {
+        safeURL(url)
+        if (!state.verification && (policy().blocked(state.sourceURL) || policy().blocked(url))) return { action: 'deny' }
+        if (!state.verification && jdChallengeURL(url)) { stopPlatform(state.sourceURL, '平台打开安全验证页面，自动访问已停止'); return { action: 'deny' } }
+      } catch { return { action: 'deny' } }
+      return { action: 'allow', outlivesOpener: true, overrideBrowserWindowOptions: { width: 1360, height: 860, useContentSize: true, webPreferences: { ...preferences, session: window.webContents.session } } }
     })
     window.webContents.on('did-create-window', popup => protect(popup, state))
-    if (!protectedSessions.has(window.webContents.session)) {
-      protectedSessions.add(window.webContents.session)
-      window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false))
-      window.webContents.session.setPermissionCheckHandler(() => false)
-      window.webContents.session.on('will-download', event => event.preventDefault())
+    const browserSession = window.webContents.session
+    if (!protectedSessions.has(browserSession)) {
+      protectedSessions.add(browserSession)
+      browserSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false))
+      browserSession.setPermissionCheckHandler(() => false)
+      browserSession.on('will-download', event => event.preventDefault())
+      browserSession.webRequest.onBeforeRequest((details, callback) => {
+        const owner = contentsStates.get(details.webContentsId)
+        if (!owner) return callback({ cancel: policy().statuses().some(item => item.blocked) })
+        try {
+          const blocked = policy().blocked(owner.sourceURL) || policy().blocked(details.url)
+          if (!owner.verification && details.resourceType === 'mainFrame' && jdChallengeURL(details.url)) {
+            stopPlatform(owner.sourceURL, '平台要求安全验证，自动访问已停止')
+            return callback({ cancel: true })
+          }
+          if ((blocked || owner.suspended) && !owner.verification) return callback({ cancel: true })
+          if (details.resourceType === 'mainFrame' && !owner.verification) {
+            if (owner.authorizedNavigation === details.url) {
+              owner.authorizedNavigation = undefined
+              return callback({ cancel: false })
+            }
+            void policy().reserve(details.url).then(permission => callback({ cancel: disposed || owner.suspended || permission !== 'allowed' || policy().blocked(owner.sourceURL) || policy().blocked(details.url) }), () => callback({ cancel: true }))
+            return
+          }
+          callback({ cancel: false })
+        } catch { callback({ cancel: true }) }
+      })
+      browserSession.webRequest.onHeadersReceived((details, callback) => {
+        const owner = contentsStates.get(details.webContentsId)
+        if (owner && !owner.verification && details.statusCode === 429) {
+          stopPlatform(owner.sourceURL, `平台返回 HTTP ${details.statusCode}，自动访问已停止`)
+          return callback({ cancel: true })
+        }
+        callback({ cancel: false })
+      })
     }
     window.once('closed', () => {
+      window.jdMonitorEpoch = (window.jdMonitorEpoch || 0) + 1
+      contentsStates.delete(contentsId)
       state.windows.delete(window)
       if (state.activeWindow === window) state.activeWindow = [...state.windows].find(candidate => !candidate.isDestroyed())
     })
   }
+  const getState = (id, url) => {
+    const key = jdPlatform(url)
+    let state = platformWindows.get(key)
+    if (!state) {
+      state = { sourceURL: url, platform: key, windows: new Set(), verification: false }
+      platformWindows.set(key, state)
+    }
+    captures.set(id, state)
+    state.ownerId = id
+    return state
+  }
+  const windowFor = state => {
+    let window = activeWindow(state)
+    if (!window) {
+      window = new BrowserWindow({ title: CAPTURE_WINDOW_TITLE, width: 1360, height: 860, useContentSize: true,
+        webPreferences: { ...preferences, partition: 'persist:jd-research' } })
+      protect(window, state)
+    }
+    return window
+  }
+  const inspect = async (state, { allowResume = false, isActive = () => true } = {}) => {
+    const window = activeWindow(state)
+    if (!window) throw new Error('采集窗口已关闭，请重新打开来源')
+    if (policy().blocked(state.sourceURL) && !allowResume) return blockedItem(state.sourceURL)
+    if (window.webContents.isLoadingMainFrame()) throw new Error('页面仍在加载，请稍后继续采集')
+    const actualURL = safeURL(window.webContents.getURL())
+    const result = await window.webContents.executeJavaScript(`(${readJdPage.toString()})(document)`)
+    if (!isActive()) throw new Error('岗位页面采集已停止')
+    if (policy().blocked(state.sourceURL) && !allowResume) return blockedItem(state.sourceURL)
+    if (result.blocked || jdChallengeURL(actualURL)) {
+      stopPlatform(state.sourceURL, '页面显示安全验证或访问限制，自动访问已停止')
+      return blockedItem(state.sourceURL)
+    }
+    if (result.login || jdLoginWall(result.body) || /请先登录|登录后(?:才能|可查看|查看)|扫码查看/u.test(result.body)) {
+      policy().login(state.sourceURL, true)
+      return { state: 'login_required', url: state.sourceURL, message: '尚未取得 JD 正文，请在采集窗口完成登录，并打开具体岗位详情。同一平台会保留当前登录，不必逐条登录。' }
+    }
+    if (!/岗位职责|工作职责|职位描述|任职要求|职位要求|工作内容|职责描述|job description|responsibilit/iu.test(result.body)) return { state: 'not_a_jd', url: state.sourceURL, message: '当前页面未识别到岗位职责，请打开具体岗位详情后继续采集。' }
+    if (result.url === null) return { state: 'source_unresolved', url: state.sourceURL, message: '当前列表页无法唯一确认岗位详情链接；请从岗位标题打开独立详情页，再继续采集。' }
+    if (result.body.length > maxCaptureChars) throw new Error('岗位页面超过正文大小限制；请使用“导入原文”提交具体岗位正文')
+    const body = result.body.trim()
+    const sourceURL = safeURL(result.url)
+    if (jdPlatform(sourceURL) !== state.platform) return { state: 'not_a_jd', url: state.sourceURL, message: '当前页面属于其他平台，请从对应来源重新打开采集。' }
+    const item = { state: 'captured', url: sourceURL, title: result.title, body, captured_at: new Date().toISOString(), content_hash: createHash('sha256').update(body).digest('hex'), cached: false }
+    if (allowResume) policy().resume(state.sourceURL)
+    const wasVerification = state.verification
+    state.verification = false
+    if (wasVerification) for (const capture of state.windows) startMonitor(capture, state)
+    policy().login(state.sourceURL, false)
+    if (state.sourceURL !== sourceURL) policy().cache(state.sourceURL, item)
+    policy().cache(sourceURL, item)
+    return item
+  }
+  const navigate = async (state, url) => {
+    const permission = await policy().reserve(url)
+    if (disposed) throw new Error('JD 采集服务已关闭')
+    if (permission === 'blocked') return blockedItem(url)
+    if (permission === 'rate_limited') return { state: 'rate_limited', url, message: '该平台已达到每小时访问上限，已停止本次访问；请稍后再试或导入已获授权的原文。' }
+    const window = windowFor(state)
+    state.sourceURL = url
+    state.verification = false
+    state.suspended = false
+    state.authorizedNavigation = url
+    window.show(); window.restore(); window.focus()
+    let timer
+    let active = true
+    try {
+      const operation = async () => {
+        try { await window.loadURL(url) }
+        catch (error) {
+          if (policy().blocked(url)) return blockedItem(url)
+          // A page's own redirect or reload can replace the initial load promise.
+          if (error.code !== 'ERR_ABORTED' && error.errno !== -3 && !window.webContents.isLoadingMainFrame()) throw error
+        }
+        while (active && !disposed && !window.isDestroyed()) {
+          if (policy().blocked(url)) return blockedItem(url)
+          await new Promise(resolve => setTimeout(resolve, policy().settings.render_settle_ms))
+          if (!active || disposed || window.isDestroyed()) break
+          if (policy().blocked(url)) return blockedItem(url)
+          if (window.webContents.isLoadingMainFrame()) continue
+          try {
+            const item = await inspect(state, { isActive: () => active && !disposed && !window.isDestroyed() })
+            if (item.state !== 'not_a_jd') return item
+          } catch (error) {
+            if (!window.webContents.isLoadingMainFrame()) throw error
+          }
+        }
+        throw new Error('岗位页面采集已停止')
+      }
+      return await Promise.race([operation(), new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          active = false
+          state.suspended = true
+          window.webContents.stop?.()
+          reject(new Error('岗位页面加载或正文渲染超时，已停止后台访问，未自动重试'))
+        }, loadTimeoutMs)
+      })])
+    } catch (error) {
+      if (policy().blocked(url)) return blockedItem(url)
+      return { state: 'failed', url, message: error.message }
+    } finally { active = false; clearTimeout(timer) }
+  }
   return {
     async open(input) {
+      validateId(input.id)
       const url = safeURL(input.url)
-      const id = input.id
-      if (typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/u.test(id)) throw new Error('采集项目标识无效')
-      const existing = captures.get(id)
-      const active = existing && [...existing.windows].find(window => !window.isDestroyed())
-      if (active) {
-        if (existing.sourceURL !== url) {
-          existing.sourceURL = url
-          void active.loadURL(url).catch(() => { /* A failed navigation remains visible for the user's next read. */ })
-        }
-        active.show(); active.restore(); active.focus()
-        return { id, state: 'opened' }
+      if (policy().blocked(url)) return blockedItem(url)
+      const state = getState(input.id, url)
+      const existing = activeWindow(state)
+      if (existing && state.sourceURL === url && !state.suspended) {
+        existing.show(); existing.restore(); existing.focus()
+        return { id: input.id, state: 'opened' }
       }
-      const window = new BrowserWindow({ title: CAPTURE_WINDOW_TITLE, width: 1180, height: 860,
-        webPreferences: { ...preferences, partition: 'persist:jd-research' } })
-      const state = { sourceURL: url, windows: new Set() }
-      captures.set(id, state)
-      protect(window, state)
-      // Navigation may remain at an interactive login page; completion is a later explicit read.
-      void window.loadURL(url).catch(() => { /* Read reports the current page or loading failure without inventing a capture. */ })
-      return { id, state: 'opened' }
+      return policy().run(url, async () => {
+        const item = await navigate(state, url)
+        return ['blocked', 'rate_limited'].includes(item.state) ? item : { id: input.id, state: 'opened' }
+      })
+    },
+    async collect(input) {
+      validateId(input.id)
+      if (!Array.isArray(input.sources) || input.sources.length > 100) throw new Error('候选来源数量无效或超过 100 条请求上限')
+      const sources = input.sources.map(source => ({ url: safeURL(source.url), title: typeof source.title === 'string' ? source.title : '' }))
+      const items = []
+      for (const source of sources.slice(0, policy().settings.max_sources_per_batch)) items.push(await policy().run(source.url, async () => {
+        const cached = policy().cached(source.url)
+        if (cached) return cached
+        if (policy().blocked(source.url)) return blockedItem(source.url)
+        const state = getState(input.id, source.url)
+        if (state.verification || policy().statuses().find(item => item.platform === state.platform)?.login_required) return { state: 'login_required', url: source.url, message: '该平台正在等待你完成登录或验证，已暂停自动打开其他岗位。' }
+        return navigate(state, source.url)
+      }))
+      for (const source of sources.slice(policy().settings.max_sources_per_batch)) items.push({ state: 'failed', ...source, message: `本批最多采集 ${policy().settings.max_sources_per_batch} 条；该来源保留待采集，请分批继续。` })
+      return { items, platforms: policy().statuses() }
+    },
+    platforms() { return policy().statuses() },
+    async verify(input) {
+      validateId(input.id)
+      const url = safeURL(input.url)
+      const state = getState(input.id, url)
+      if (!policy().blocked(url)) return { state: 'failed', url, message: '该平台没有待处理的安全验证，请使用普通采集入口。' }
+      state.sourceURL = url
+      state.verification = true
+      state.suspended = false
+      const window = windowFor(state)
+      window.show(); window.restore(); window.focus()
+      void window.loadURL(url).catch(() => { /* Human verification keeps a failed page visible without scheduling a retry. */ })
+      return { id: input.id, state: 'opened' }
+    },
+    async resume(input) {
+      validateId(input.id)
+      const state = input.url ? platformWindows.get(jdPlatform(safeURL(input.url))) : captures.get(input.id)
+      if (state?.ownerId !== input.id) return { item: { state: 'failed', url: input.url || '', message: '采集窗口已切换到其他搜索，请重新打开当前来源。' }, platforms: policy().statuses() }
+      if (!state?.verification) return { item: { state: 'failed', url: input.url || '', message: '请先打开“处理平台验证”，完成平台提示后再恢复采集。' }, platforms: policy().statuses() }
+      const item = await inspect(state, { allowResume: true })
+      return { item, platforms: policy().statuses() }
     },
     status(input) {
       const state = captures.get(input.id)
-      return { state: state && [...state.windows].some(window => !window.isDestroyed()) ? 'opened' : 'closed' }
+      return { state: state?.ownerId === input.id && activeWindow(state) ? 'opened' : 'closed' }
     },
     async read(input) {
-      const state = captures.get(input.id)
-      const window = state && (state.activeWindow && !state.activeWindow.isDestroyed() ? state.activeWindow : [...state.windows].find(candidate => !candidate.isDestroyed()))
-      if (!window) throw new Error('采集窗口已关闭，请重新打开来源')
-      if (window.webContents.isLoadingMainFrame()) throw new Error('页面仍在加载，请稍后继续采集')
-      safeURL(window.webContents.getURL())
-      const result = await window.webContents.executeJavaScript(`(${readJdPage.toString()})(document)`)
-      if (result.blocked) return { state: 'blocked', message: '平台触发了安全验证或访问限制，未保存当前页面。请停止重复采集，按平台提示处理；也可在获得授权后手动复制岗位正文并导入。' }
-      if (result.login || /请先登录|登录后(?:才能|可查看|查看)|扫码查看/u.test(result.body)) return { state: 'login_required', message: '尚未取得 JD 正文，请在采集窗口完成登录，并打开具体岗位详情。' }
-      if (!/岗位职责|工作职责|职位描述|任职要求|职位要求|工作内容|职责描述|job description|responsibilit/iu.test(result.body)) return { state: 'not_a_jd', message: '当前页面未识别到岗位职责，请打开具体岗位详情后继续采集。' }
-      if (result.url === null) return { state: 'source_unresolved', message: '当前列表页无法唯一确认岗位详情链接；请从岗位标题打开独立详情页，再继续采集。' }
-      if (result.body.length > maxCaptureChars) throw new Error('岗位页面超过正文大小限制；请使用“导入原文”提交具体岗位正文')
-      const body = result.body.trim()
-      return { state: 'captured', url: safeURL(result.url), title: result.title, body, captured_at: new Date().toISOString(), content_hash: createHash('sha256').update(body).digest('hex') }
+      validateId(input.id)
+      const state = input.url ? platformWindows.get(jdPlatform(safeURL(input.url))) : captures.get(input.id)
+      if (state && state.ownerId !== input.id) return { state: 'failed', url: input.url || '', message: '采集窗口已切换到其他搜索，请重新打开当前来源。' }
+      return inspect(state)
     },
     close(input) {
       const state = captures.get(input.id)
-      if (state) for (const window of state.windows) if (!window.isDestroyed()) window.destroy()
+      if (state?.ownerId === input.id) for (const window of state.windows) if (!window.isDestroyed()) window.destroy()
       captures.delete(input.id)
     },
     dispose() {
-      for (const state of captures.values()) for (const window of state.windows) if (!window.isDestroyed()) window.destroy()
+      disposed = true
+      collection?.dispose()
+      for (const state of platformWindows.values()) for (const window of state.windows) if (!window.isDestroyed()) window.destroy()
       captures.clear()
+      platformWindows.clear()
     },
     async pdf(input) {
       if (typeof input.html !== 'string' || Buffer.byteLength(input.html) > 24 * 1024 * 1024) throw new Error('导出报告内容无效或过大')

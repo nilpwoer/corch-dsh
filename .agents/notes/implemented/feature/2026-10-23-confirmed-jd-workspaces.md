@@ -16,7 +16,7 @@ Graph generation creates an immutable draft version. Confirmation is a separate 
 
 The workbench has one graph step. Its primary action confirms the selected version, then exposes HTML export for that confirmed version. The Host rejects unconfirmed export. The standalone report contains a cover, contents, five-level tree, evidence table, source links and original hashes, with explicit inference labels. Reference-report styling does not establish evidence for course gaps, trends or sample prevalence. The desktop saves the report under its private exports directory, opens its file URL in the system browser and falls back to revealing the saved file. Restrictive content policy disables report scripts and network access.
 
-Pending-source actions open the chosen job directly instead of only copying its URL. Continue-capture appears only while the project's window is open. Login and security-challenge pages cannot become JD originals; recognized anti-bot restrictions produce a blocked result without retries. Manual import remains the source-labelled alternative when the user can obtain authorized text through their normal browser. Login does not guarantee platform access.
+Pending-source actions open the chosen job directly. Continue-capture appears only while the project’s platform window is open. The [browser-collection decision](2026-10-23-browser-first-jd-collection.md) owns automatic rendering, session reuse, durable platform stops and human verification. Manual import remains the source-labelled alternative when the user can obtain authorized text through their normal browser. Login does not guarantee platform access.
 
 ## Alternatives considered
 

@@ -51,3 +51,36 @@ export type JdSearchJob = {
   body?: string
   capturedAt?: string
 }
+
+/** Desktop policy state shared by searches using the same private browser session. */
+export type JdPlatformState = {
+  platform: string
+  blocked: boolean
+  reason?: string
+  blocked_at?: string
+  cache_count: number
+  login_required: boolean
+  next_navigation_at?: string
+}
+
+/** Browser-captured text keeps its original acquisition time even when read from cache. */
+export type JdBrowserCapture = {
+  state: 'captured'
+  url: string
+  title: string
+  body: string
+  captured_at: string
+  content_hash: string
+  cached?: boolean
+}
+
+/** Failed reads retain their classification without implying that every platform needs login. */
+export type JdBrowserOutcome = JdBrowserCapture | {
+  state: 'blocked' | 'login_required' | 'not_a_jd' | 'failed' | 'rate_limited'
+  url: string
+  title?: string
+  message?: string
+}
+
+/** A collection response reports each URL independently and the resulting platform policy state. */
+export type JdBrowserCollection = { items: JdBrowserOutcome[]; platforms: JdPlatformState[] }

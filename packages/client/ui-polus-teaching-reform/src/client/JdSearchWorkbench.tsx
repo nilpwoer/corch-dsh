@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type { TeachingReformProps } from './types.ts'
+import type { JdBrowserCapture, JdBrowserOutcome, JdPlatformState, TeachingReformProps } from './types.ts'
 import css from './JdSearchWorkbench.module.css'
 import type { JdGraph, JdProject, JdProjectSummary, JdSource, JdWorkspace } from '../jd/types.ts'
-import { frequency, graphNodes, sourceUrl } from '../jd/document.ts'
-import { exportJdHtml, jdBrowserStatus, jdHash, openJdBrowser, readJdBrowser } from './jdNative.ts'
+import { analysisSources, frequency, graphNodes, sourceUrl } from '../jd/document.ts'
+import { collectJdBrowser, exportJdHtml, hasJdBrowser, jdBrowserPlatforms, jdBrowserStatus, jdHash,
+  openJdBrowser, readJdBrowser, resumeJdBrowser, verifyJdBrowser } from './jdNative.ts'
 
 const STEPS = ['搜索目标', '平台与范围', 'JD 原文', '能力图谱']
 const PLATFORMS = ['公开网页', '58 同城', 'BOSS 直聘', '智联招聘', '前程无忧 51job', '鱼泡直聘', '四川高校人才网']
@@ -21,6 +22,7 @@ type ResearchController = {
   saving: Ref<boolean>
   saveError: Ref<boolean>
   browserOpen: Ref<boolean>
+  platforms: Ref<JdPlatformState[]>
   listeners: Set<() => void>
   restoring?: Promise<void>
 }
@@ -36,7 +38,8 @@ function controllerFor(props: TeachingReformProps): ResearchController {
     controller = {
       current: { current: null }, revision: { current: 0 }, edits: { current: 0 }, persisted: { current: 0 },
       serial: { current: Promise.resolve() }, timer: { current: undefined }, running: { current: false },
-      saving: { current: false }, saveError: { current: false }, browserOpen: { current: false }, listeners: new Set(),
+      saving: { current: false }, saveError: { current: false }, browserOpen: { current: false },
+      platforms: { current: [] }, listeners: new Set(),
     }
     sessions.set(props.sessionId, controller)
   }
@@ -127,6 +130,11 @@ function workspace(project: JdProject): JdWorkspace {
 function Header({ step, title, text }: { step: number; title: string; text: string }): ReactNode {
   return <div className={css.sectionIntro}><span className={css.eyebrow}>STEP 0{step}</span><h2>{title}</h2><p>{text}</p></div>
 }
+function platformForUrl(url: string, platforms: JdPlatformState[]): JdPlatformState | undefined {
+  let hostname: string
+  try { hostname = new URL(url).hostname } catch { return undefined }
+  return platforms.find(item => hostname === item.platform || hostname.endsWith(`.${item.platform}`))
+}
 
 /** Restore a separate workbench instance for each owning Host search session.
  * @param props - Session identity and durable research operations.
@@ -146,6 +154,7 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
   const [notice, setNotice] = useState('')
   const [saveError, setSaveError] = useState(controller.saveError.current)
   const [browserOpen, setBrowserOpen] = useState(controller.browserOpen.current)
+  const [platforms, setPlatforms] = useState(controller.platforms.current)
   const mounted = useRef(true)
   const notify = (): void => { for (const listener of controller.listeners) listener() }
   const publish = (value: JdProject): void => {
@@ -224,6 +233,7 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
       setSaving(controller.saving.current)
       setSaveError(controller.saveError.current)
       setBrowserOpen(controller.browserOpen.current)
+      setPlatforms(controller.platforms.current)
       if (current.current) setError(workspace(current.current).error)
     }
     controller.listeners.add(sync)
@@ -244,6 +254,10 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
       const value = current.current
       if (value) void jdBrowserStatus(value.id).then((opened) => {
         controller.browserOpen.current = opened
+        notify()
+      }).catch(report)
+      void jdBrowserPlatforms().then((items) => {
+        controller.platforms.current = items
         notify()
       }).catch(report)
     }
@@ -287,24 +301,17 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
       await flush()
       value = requireProject()
       try {
-        const jobs = await props.runJdSearch(value.session_id, {
+        await props.runJdSearch(value.session_id, {
           major: value.major, direction: value.direction, roles: value.roles, platforms: value.platforms,
           region: value.region, publishedWithin: value.published_within, targetCount: value.target_count,
         })
-        const sources = requireProject().sources.map(source => ({ ...source }))
-        for (const job of jobs) {
-          if (!job.body || !job.sourceUrl || !job.capturedAt) continue
-          const content_hash = await jdHash(job.body)
-          if (sources.some(source => source.content_hash === content_hash)) continue
-          for (const source of sources) if (source.source_url === sourceUrl(job.sourceUrl)) source.excluded = true
-          sources.push({ id: `JD-${crypto.randomUUID()}`, title: job.title, company: job.company, place: job.place,
-            platform: job.platform, source_url: sourceUrl(job.sourceUrl), body: job.body, captured_at: job.capturedAt,
-            content_hash, acquisition: 'http', excluded: false })
-        }
-        change(item => ({ ...item, sources,
+        change(item => ({ ...item,
           pending_sources: props.pendingJdSources?.(value.session_id) ?? [],
           workspace: { ...workspace(item), step: 3, search_status: 'completed', error: '' } }))
         await flush()
+        if (hasJdBrowser()) await collectCandidates(requireProject().pending_sources)
+        else if (mounted.current && requireProject().pending_sources.length)
+          setNotice('候选链接已存档。浏览器渲染采集需要 Windows 桌面客户端，也可导入已取得的 JD 原文。')
       } catch (reason) { changeWorkspace({ search_status: 'failed' }); throw reason }
     })
   }
@@ -319,16 +326,89 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
     await flush()
     if (mounted.current) setNotice('JD 原文和来源已保存。')
   }
+  const retainOutcome = async (result: JdBrowserOutcome, requestedUrl: string): Promise<void> => {
+    if (result.state === 'captured') {
+      const existing = requireProject().sources.some(item => item.content_hash === result.content_hash)
+      if (!existing) await appendSource({ title: result.title, company: '未披露', place: '未独立核验',
+        platform: new URL(result.url).hostname, source_url: sourceUrl(result.url), body: result.body,
+        captured_at: result.captured_at, content_hash: result.content_hash, acquisition: 'browser' })
+      change(value => ({ ...value, pending_sources: value.pending_sources.filter(item => item.url !== requestedUrl) }))
+      await flush()
+      if (mounted.current) setNotice(result.cached
+        ? '已复用浏览器采集缓存，保留原始采集时间与内容指纹。'
+        : existing ? '该 JD 原文已保存，未重复计入样本。' : 'JD 原文和来源已保存。')
+      return
+    }
+    const label = { blocked: '平台风控，已停止自动访问', login_required: '需要在浏览器登录',
+      not_a_jd: '尚未取得完整岗位正文', failed: '浏览器读取失败', rate_limited: '平台访问额度已用完，暂缓采集' }[result.state]
+    change(value => ({ ...value, pending_sources: value.pending_sources.map(item => item.url === requestedUrl
+      ? { ...item, reason: `${label}${result.message ? `：${result.message}` : ''}` } : item) }))
+    await flush()
+  }
+  const collectCandidates = async (sources: { url: string; title: string }[]): Promise<void> => {
+    const value = requireProject()
+    const candidates: { url: string; title: string }[] = []
+    for (const source of sources) {
+      const platform = platformForUrl(source.url, controller.platforms.current)
+      if (platform?.blocked) {
+        await retainOutcome({ state: 'blocked', url: source.url, ...platform.reason ? { message: platform.reason } : {} }, source.url)
+        continue
+      }
+      candidates.push(source)
+    }
+    // The native request limit is 100 candidates; its configured batch limit decides which pages may be visited.
+    const request = candidates.slice(0, 100)
+    if (request.length) {
+      const result = await collectJdBrowser(value.id, request)
+      controller.platforms.current = result.platforms
+      notify()
+      for (const [index, source] of request.entries()) {
+        const item = result.items[index]
+        if (item) await retainOutcome(item, source.url)
+      }
+    }
+    controller.browserOpen.current = await jdBrowserStatus(value.id)
+    notify()
+  }
+  const collectPending = (): void => {
+    run(async () => {
+      await flush()
+      await collectCandidates(requireProject().pending_sources)
+    })
+  }
+  const verifyPlatform = (source: { url: string; title: string }): void => {
+    run(async () => {
+      captureChange({ url: source.url, title: source.title })
+      await flush()
+      await verifyJdBrowser(requireProject().id, source.url)
+      controller.browserOpen.current = true
+      notify()
+      if (mounted.current) setNotice('请在浏览器窗口亲自处理验证并打开岗位详情，再点击“已完成验证，恢复采集”。平台恢复前不会自动访问。')
+    })
+  }
+  const resumePlatform = (url: string): void => {
+    run(async () => {
+      await flush()
+      const result = await resumeJdBrowser(requireProject().id, url)
+      controller.platforms.current = result.platforms
+      notify()
+      await retainOutcome(result.item, url)
+      if (result.item.state !== 'captured' && mounted.current) setNotice('尚未读取到完整 JD，平台仍暂停自动访问。')
+    })
+  }
   const beginCapture = (pending?: { url: string; title: string }): void => {
     run(async () => {
       if (pending) captureChange({ url: pending.url, title: pending.title })
       await flush()
       const value = requireProject()
-      await openJdBrowser(value.id, sourceUrl(workspace(value).capture.url))
+      try { await openJdBrowser(value.id, sourceUrl(workspace(value).capture.url)) } finally {
+        controller.platforms.current = await jdBrowserPlatforms()
+        notify()
+      }
       controller.browserOpen.current = true
       notify()
       if (mounted.current) {
-        setNotice('请在采集窗口完成登录并打开岗位详情，再返回点击“登录后继续采集”。若平台持续限制读取，可导入合法取得的原文。')
+        setNotice('浏览器会复用该平台已有登录状态；仅在平台要求时登录。打开岗位详情后点击“继续浏览器采集”。')
       }
     })
   }
@@ -339,9 +419,13 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
       if (!await jdBrowserStatus(value.id)) {
         controller.browserOpen.current = false
         notify()
-        throw new Error('采集窗口已关闭，请先重新打开岗位并登录')
+        throw new Error('采集窗口已关闭，请先重新打开岗位浏览器')
       }
-      const result = await readJdBrowser(value.id)
+      let result: JdBrowserCapture
+      try { result = await readJdBrowser(value.id, workspace(value).capture.url || undefined) } finally {
+        controller.platforms.current = await jdBrowserPlatforms()
+        notify()
+      }
       const capture = workspace(requireProject()).capture
       await appendSource({ title: result.title, company: capture.company, place: '未独立核验',
         platform: new URL(result.url).hostname, source_url: sourceUrl(result.url), body: result.body,
@@ -364,6 +448,7 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
       await flush()
       const value = requireProject()
       if (!value.sources.some(source => !source.excluded)) throw new Error('请至少保留一份 JD 原文')
+      analysisSources(value.sources)
       const nodes = graphNodes(await props.generateJdGraph(value.session_id, value), value.sources)
       const next: JdGraph = { version: value.graphs.length + 1, generated_at: new Date().toISOString(), nodes,
         source_hashes: Object.fromEntries(value.sources.filter(source => !source.excluded)
@@ -407,6 +492,8 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
   const retained = project.sources.filter(source => !source.excluded)
   const confirmed = graph && project.confirmations?.find(item => item.version === graph.version)
   const targetLocked = busy || state.search_status !== 'draft'
+  const capturePlatform = platformForUrl(capture.url, platforms)
+  const hasCollectableSource = project.pending_sources.some(item => !platformForUrl(item.url, platforms)?.blocked)
   return <div className={css.workbench}>
     <header className={css.header}><div><span className={css.kicker}>岗位研究工作台</span><h1>JD 搜索与岗位能力图谱</h1>
       <p>每次搜索独立存档；确认图谱后可用于课程建设并导出 HTML 报告。</p></div></header>
@@ -433,17 +520,17 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
             const role_text = event.target.value
             change(value => ({ ...value, roles: role_text.split('、').map(role => role.trim()).filter(Boolean), workspace: { ...workspace(value), role_text } }))
           }} />
-        </div><div className={css.footer}><span className={css.muted}>公开网页使用 DSH 原生搜索与抓取</span>
+        </div><div className={css.footer}><span className={css.muted}>搜索发现链接，桌面浏览器读取岗位正文</span>
           <button className={css.primaryButton} type="button" disabled={busy || !project.roles.length} onClick={() => { go(2) }}>确认岗位并继续</button></div>
       </>}
       {state.step === 2 && <>
-        <Header step={2} title="选择平台与搜索范围" text="平台登录和安全验证由你在采集窗口完成。BOSS 等平台可能限制自动读取；限制持续时可导入你合法取得的完整原文。" />
+        <Header step={2} title="选择平台与搜索范围" text="候选链接先存档，再通过浏览器渲染读取。各平台独立限速、复用缓存与登录状态；遇到风控立即停止该平台访问，其他平台继续。" />
         <div className={css.platformGrid}>{PLATFORMS.map(platform => <button className={project.platforms.includes(platform) ? css.platformActive : css.platform} type="button" key={platform}
           aria-pressed={project.platforms.includes(platform)} disabled={targetLocked} onClick={() => { change(value => ({ ...value,
             platforms: value.platforms.includes(platform)
               ? value.platforms.filter(item => item !== platform)
               : [...value.platforms, platform] }))
-          }}><b>{platform}</b><small>{platform === '公开网页' || platform === '四川高校人才网' ? '公开网页搜索与抓取' : '可能需要手动登录或导入'}</small></button>)}</div>
+          }}><b>{platform}</b><small>浏览器渲染 · 复用已有登录</small></button>)}</div>
         <div className={css.card}>
           <label className={css.label}>区域范围<select className={css.input} value={project.region} disabled={targetLocked}
             onChange={(event) => {
@@ -464,15 +551,35 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
             }}>
             <option>5 条（测试）</option><option>20-50 条</option><option>50-100 条</option></select></label>
         </div>
-        <p className={css.notice}>{state.search_status === 'draft' ? '无法读取的岗位会保留链接和原因，供后续手动登录采集或导入原文。' : '本次搜索的目标与范围已归档。新建搜索后可修改条件，原记录完整保留。'}</p>
+        <p className={css.notice}>{state.search_status === 'draft' ? '无需逐条重新登录。同一平台跨搜索复用登录；不同平台仍需各自授权，验证码由你亲自完成。无法读取的岗位保留链接和分类原因。' : '本次搜索的目标与范围已归档。新建搜索后可修改条件，原记录完整保留。'}</p>
         <div className={css.footer}><button className={css.primaryButton} type="button" disabled={busy || !project.roles.length || !project.platforms.length} onClick={search}>
           {busy ? '正在检索…' : state.search_status === 'draft' ? '开始检索' : '以此范围新建搜索'}</button></div>
       </>}
       {state.step === 3 && <>
         <Header step={3} title="JD 原文与来源" text="登录页、反爬提示和搜索摘要不算岗位原文。保留原始 URL、时间和内容指纹；手动导入的来源由你声明。" />
-        <div className={css.notice}>遇到 BOSS 等平台安全验证时，请手动验证并打开单条岗位详情。若持续受限，请停止重复尝试，使用已合法取得的原文导入；应用不会绕过平台限制。</div>
-        {project.pending_sources.map(item => <article key={item.url} className={css.card}><strong>{item.title}</strong><p>{item.reason}</p>
-          <button type="button" className={css.primaryButton} disabled={busy} onClick={() => { beginCapture(item) }}>打开此岗位并登录</button><p className={css.muted}>{item.url}</p></article>)}
+        <div className={css.notice}>同一平台复用桌面浏览器登录状态与原文缓存，避免重复登录和访问。风控平台已强制暂停；只有手动验证后实际读到完整 JD 才会恢复。登录失效与网络失败分别保留原因。</div>
+        {platforms.length > 0 && <section className={css.platformStatusList} aria-label="平台采集状态">{platforms.map(item =>
+          <article key={item.platform} className={item.blocked ? css.platformStopped : css.platformStatus}>
+            <strong>{item.platform} · {item.blocked ? '风控暂停' : item.login_required ? '需要登录' : '可继续采集'}</strong>
+            <p>{item.blocked ? item.reason : '复用已有浏览器会话'} · {item.cache_count} 条缓存</p>
+            {item.next_navigation_at && <small>下次允许访问：{new Date(item.next_navigation_at).toLocaleString()}</small>}
+          </article>)}</section>}
+        {project.pending_sources.length > 0 && <div className={css.captureActions}>
+          <button type="button" className={css.primaryButton} disabled={busy || !hasJdBrowser() || !hasCollectableSource}
+            onClick={collectPending}>{busy ? '浏览器正在采集，按平台限速中…' : '继续采集待处理岗位'}</button>
+          <span className={css.muted}>风控平台由客户端强制跳过；成功缓存优先复用。</span>
+        </div>}
+        {project.pending_sources.map((item) => {
+          const platform = platformForUrl(item.url, platforms)
+          return <article key={item.url} className={css.card}><strong>{item.title}</strong><p>{item.reason}</p>
+            <div className={css.captureActions}>{platform?.blocked ? <>
+              <button type="button" className={css.primaryButton} disabled={busy} onClick={() => { verifyPlatform(item) }}>手动处理验证</button>
+              <button type="button" className={css.infoButton} disabled={busy || !browserOpen}
+                onClick={() => { resumePlatform(item.url) }}>已完成验证，恢复采集</button>
+            </> : <button type="button" className={css.primaryButton} disabled={busy}
+              onClick={() => { beginCapture(item) }}>{platform?.login_required ? '打开登录' : '浏览器读取此岗位'}</button>}</div>
+            <p className={css.muted}>{item.url}</p></article>
+        })}
         <section className={css.card} aria-label="采集或导入 JD">
           <label className={css.label}>来源 URL<input className={css.input} value={capture.url} disabled={busy}
             onChange={(event) => { captureChange({ url: event.target.value }) }} /></label>
@@ -481,8 +588,10 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
           <label className={css.label}>企业（可填未披露）<input className={css.input} value={capture.company} disabled={busy}
             onChange={(event) => { captureChange({ company: event.target.value }) }} /></label>
           <div className={css.captureActions}>
-            <button type="button" className={css.primaryButton} disabled={busy || !capture.url.trim()} onClick={() => { beginCapture() }}>{browserOpen ? '重新打开岗位采集窗口' : '打开岗位并登录'}</button>
-            {browserOpen && <button type="button" className={css.infoButton} disabled={busy} onClick={continueCapture}>登录后继续采集</button>}
+            <button type="button" className={css.primaryButton} disabled={busy || !capture.url.trim() || capturePlatform?.blocked}
+              onClick={() => { beginCapture() }}>{browserOpen ? '打开岗位浏览器' : '浏览器读取此岗位'}</button>
+            {browserOpen && !capturePlatform?.blocked && <button type="button" className={css.infoButton} disabled={busy}
+              onClick={continueCapture}>继续浏览器采集</button>}
           </div>
           <h3 className={css.importHeading}>手动导入完整原文</h3><p>平台限制读取时，可粘贴或选择已取得的 JD 文件。请填写上方岗位名称和真实来源 URL；原文会保存为用户提供的证据。</p>
           <label className={css.label}>导入 JD 原文<textarea className={css.textarea} value={capture.body} disabled={busy}

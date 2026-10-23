@@ -3240,7 +3240,7 @@ export interface Config {
 
 ## `@polus-ai/dsh-client-ui-teaching-reform`
 
-Requires: `connection`
+Requires: `connection` · `tools`
 
 ```ts config-catalog
 /** Host persistence settings; source and graph limits also apply to decoded RPC documents. */
@@ -3249,10 +3249,12 @@ export interface Config {
   projectDirectory?: string
   /** Maximum UTF-8 bytes in one project. */
   maxProjectBytes: number
+  /** Maximum web_search dispatches in a single JD link-discovery operation. */
+  maxDiscoveryCalls: number
 }
 ```
 
-来源： [`packages/client/ui-polus-teaching-reform/src/index.ts:11`](../packages/client/ui-polus-teaching-reform/src/index.ts)
+来源： [`packages/client/ui-polus-teaching-reform/src/index.ts:12`](../packages/client/ui-polus-teaching-reform/src/index.ts)
 
 ## 无配置的可加载插件
 

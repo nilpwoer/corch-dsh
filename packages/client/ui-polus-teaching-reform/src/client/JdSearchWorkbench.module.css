@@ -207,3 +207,7 @@
 .historyActive strong { font-size: 12px; }
 .historyActive small { color: var(--dsw-alias-fg-tertiary); font-size: 10px; }
 .newButton:disabled, .history:disabled, .historyActive:disabled { opacity: .45; cursor: not-allowed; }
+.platformStatusList { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin: 16px 0; }
+.platformStatus, .platformStopped { padding: 12px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 8px; font-size: 12px; overflow-wrap: anywhere; }
+.platformStatus p, .platformStopped p { margin: 7px 0; color: var(--dsw-alias-fg-secondary); }
+.platformStopped { border-left: 3px solid var(--dsw-alias-fg-warning, #b7791f); }

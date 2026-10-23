@@ -43,9 +43,7 @@
   ],
   "tools": [
     "web_search",
-    "web_fetch",
-    "web_search",
-    "web_fetch"
+    "web_search"
   ],
   "original_saved": true,
   "acquisition": "browser",
@@ -59,11 +57,20 @@
     "step_and_version_restored_after_restart": true
   },
   "capture": {
-    "one_click_open": true,
+    "browser_first": true,
     "continue_requires_window": true,
     "login_rejected": true,
     "security_challenge_rejected": true,
     "popup_survives_parent_close": true
+  },
+  "collection_policy": {
+    "fetch_and_shell_denied_by_executor": true,
+    "browser_requests_only": true,
+    "cross_project_platform_stop": true,
+    "explicit_verified_resume": true,
+    "cache_without_navigation": true,
+    "persisted_cache_after_restart": true,
+    "original_capture_time_preserved": true
   },
   "confirmation": {
     "host_persisted": true,

@@ -133,7 +133,23 @@ function workspace(value: unknown, graphs: JdGraph[]): JdWorkspace {
   }
 }
 
-/** Parse a complete five-level tree and verify every quote against retained source text.
+/** Select current analysis originals, rejecting explicit login walls that conceal complete content.
+ * @param sources - Retained and excluded originals; stored history is not modified.
+ * @returns Selected originals suitable for a new graph, or rejects with the incomplete source identifiers.
+ */
+export function analysisSources(sources: readonly JdSource[]): JdSource[] {
+  const selected = sources.filter(source => !source.excluded)
+  const incomplete = selected.filter((source) => {
+    const body = source.body.replace(/\s+/gu, '')
+    return /(?:登录|登陆)(?:后|即可|才能|才可|可)?(?:查看|阅读|获取|解锁)(?:完整|全部)(?:内容|职位|岗位|信息|职责|任职要求|JD)/iu.test(body)
+      || /(?:完整|全部)(?:内容|职位|岗位|信息|职责|任职要求|JD)(?:详情|描述)?(?:需|需要|请先|请)?(?:登录|登陆)/iu.test(body)
+  })
+  if (incomplete.length)
+    throw new Error(`以下 JD 存在完整内容登录限制，不能生成新图谱，请补采完整原文或先剔除：${incomplete.map(source => source.id).join('、')}`)
+  return selected
+}
+
+/** Parse a new complete five-level tree and verify every quote against eligible retained source text.
  * @param value - Untrusted model output containing nodes.
  * @param sources - Captured sources, including exclusion decisions.
  * @returns Validated nodes; unsupported facts and dangling references reject the whole graph.
@@ -142,6 +158,11 @@ export function graphNodes(
   value: unknown,
   sources: readonly JdSource[],
 ): JdGraphNode[] {
+  return parseGraphNodes(value, analysisSources(sources))
+}
+
+/** Frozen historical graphs retain their evidence; new-graph eligibility is checked by graphNodes and store saves. */
+function parseGraphNodes(value: unknown, sources: readonly JdSource[]): JdGraphNode[] {
   const retained = new Map(
     sources
       .filter(source => !source.excluded)
@@ -269,7 +290,7 @@ export function parseProject(value: unknown): JdProject {
       version: integer(graph.version),
       generated_at: date(graph.generated_at),
       source_hashes: hashes as Record<string, string>,
-      nodes: graphNodes(graph, graphSources),
+      nodes: parseGraphNodes(graph, graphSources),
     }
   })
   if (graphs.some((graph, index) => graph.version !== index + 1))

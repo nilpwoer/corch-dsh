@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
-import { readFile, writeFile, mkdir, readdir, symlink, realpath, copyFile } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, readdir, symlink, realpath, copyFile, appendFile } from 'node:fs/promises'
 import { resolve, join, sep } from 'node:path'
 import { parseArgs } from 'node:util'
 import { fileURLToPath } from 'node:url'
@@ -24,12 +24,19 @@ if (values.source) {
 }
 const fixture = await startJdFixture()
 await writeFile(join(profile, 'cordis.patch.yml'), `- id: web-search-deepseek\n  config:\n    apiKey: synthetic-search-only\n    baseURL: ${fixture.origin}/anthropic\n- id: session-title-llm\n  disabled: true\n`)
-let desktop, page, passed = false
+let desktop, page, passed = false, failure
 const checks = [], errors = []
 const presentation = {}
+async function saveVerification() {
+  await writeFile(join(out, 'verification.json'), JSON.stringify({ passed, checks, errors, failure, presentation,
+    actual_desktop: true, actual_loader: true, synthetic_external_systems: true, paid_model_calls: 0 }, null, 2) + '\n')
+}
 async function launch() {
   desktop = await electron.launch({ executablePath: resolve(values.exe), args: [...(values.source ? [resolve('apps/desktop/main.mjs')] : []), '--data-dir', data, '--lang=zh-CN'],
     env: backendEnvironment(process.env, join(data, 'unused')), timeout: 45000 })
+  desktop.process().stderr?.on('data', (chunk) => {
+    void appendFile(join(out, 'electron-stderr.log'), chunk).catch(error => console.error('Could not save Electron diagnostics:', error.message))
+  })
   page = await desktop.firstWindow({ timeout: 60000 })
   await desktop.evaluate(({ shell }) => {
     globalThis.jdAcceptanceOpened = []
@@ -53,6 +60,22 @@ async function rpc(channel, method, payload = {}) {
     if (!result.ok) throw new Error(result.error.message)
     return result.value
   }, { channel, method, payload })
+}
+async function native(method, payload) {
+  return page.evaluate(async ({ method, payload }) => {
+    const result = await window.corchJd[method](payload)
+    if (!result.ok) throw new Error(result.message)
+    return result.value
+  }, { method, payload })
+}
+async function stoppedPlatform(platform) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const states = await native('platforms')
+    const stopped = states.find(state => state.platform === platform && state.blocked)
+    if (stopped) return stopped
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  assert.fail('Rendered security challenge did not persist a platform stop: ' + platform)
 }
 async function openResearch() {
   await page.getByRole('button', { name: 'JD 搜索', exact: true }).click()
@@ -240,17 +263,29 @@ try {
   await page.getByRole('heading', { name: '选择平台与搜索范围' }).waitFor()
   assert.equal(await page.getByRole('combobox', { name: '区域范围', exact: true }).inputValue(), '成渝经济圈')
   assert.equal(await page.getByRole('button', { name: /鱼泡直聘/u }).getAttribute('aria-pressed'), 'true')
+  const captureOpened = desktop.waitForEvent('window')
   await page.getByRole('button', { name: '开始检索', exact: true }).click()
-  const pendingOpen = page.getByRole('button', { name: '打开此岗位并登录', exact: true })
+  const capture = await captureOpened
+  await capture.getByRole('button', { name: '登录合成站点', exact: true }).waitFor()
+  const pendingOpen = page.getByRole('button', { name: '打开登录', exact: true })
   await pendingOpen.waitFor()
-  assert.deepEqual(fixture.toolCalls, ['web_search', 'web_fetch'])
+  assert.deepEqual(fixture.toolCalls, ['web_search'])
+  assert.equal(fixture.deniedCalls[0], 'web_fetch')
+  assert.ok(['bash', 'pwsh'].includes(fixture.deniedCalls[1]))
+  const offeredTools = fixture.requests.flatMap(request => request.tools ?? []).map(tool => tool.function?.name)
+  assert.ok(offeredTools.includes(fixture.deniedCalls[1]), 'Shell denial must exercise an actually registered shell, not an unknown name')
+  const deniedResults = fixture.requests.at(-1).messages.filter(message => message.role === 'tool').slice(-2)
+    .map(message => typeof message.content === 'string' ? message.content : JSON.stringify(message.content))
+  assert.equal(deniedResults.length, 2)
+  assert.ok(deniedResults.every(content => content.includes('JD 研究仅允许搜索候选链接')), 'Fetch and shell must both reach the Host executor denial')
+  assert.ok(fixture.siteRequests.length > 0 && fixture.siteRequests.every(request => /Chrome\//u.test(request.user_agent)), 'Job pages must only be requested by the rendered browser, never anonymous web_fetch')
   assert.equal((await rpc('/jd', 'list')).length, 2)
   checks.push('new searches immediately archive distinct Host sessions; target drafts, selected platforms and range survive A/B switching')
-  const continueCapture = page.getByRole('button', { name: '登录后继续采集', exact: true })
-  assert.equal(await continueCapture.isVisible(), false, 'Continue must not be offered without a capture window')
+  const continueCapture = page.getByRole('button', { name: '继续浏览器采集', exact: true })
+  await continueCapture.waitFor()
   assert.equal(await page.getByRole('button', { name: '选为登录采集来源', exact: true }).count(), 0)
   assert.equal(await page.getByRole('button', { name: '直接登录采集或导入原文', exact: true }).count(), 0)
-  const [capture] = await Promise.all([desktop.waitForEvent('window'), pendingOpen.click()])
+  await pendingOpen.click()
   await capture.getByRole('button', { name: '登录合成站点', exact: true }).waitFor()
   assert.equal(await capture.evaluate(() => typeof window.corchJd), 'undefined')
   await continueCapture.click()
@@ -290,21 +325,35 @@ try {
   assert.equal(await importedBody.inputValue(), mdFile.buffer.toString())
   await continueCapture.waitFor()
   assert.equal(capture.isClosed(), false)
-  const reopen = page.getByRole('button', { name: '重新打开岗位采集窗口', exact: true })
-  const fileMetrics = await buttonMetrics([['选择原文文件', fileControl], ['重新打开岗位采集窗口', reopen], ['登录后继续采集', continueCapture]])
+  const reopen = page.getByRole('button', { name: '打开岗位浏览器', exact: true })
+  const fileMetrics = await buttonMetrics([['选择原文文件', fileControl], ['打开岗位浏览器', reopen], ['继续浏览器采集', continueCapture]])
   for (const control of fileMetrics) {
     assert.ok(Math.abs(control.height - 38) <= 1, `Unexpected file/capture action height: ${control.name}`)
     for (const property of ['font', 'padding', 'radius']) assert.deepEqual(control[property], fileMetrics[0][property])
   }
   presentation.file_import = { txt_loaded: true, md_loaded: true, same_file_reselected_with_keyboard: true, filename_visible: true,
     draft_restored_on_switch_and_reload: true, manual_original_not_saved: true, wide: fileMetrics,
-    narrow: await narrowControls([['选择原文文件', fileControl], ['重新打开岗位采集窗口', reopen], ['登录后继续采集', continueCapture]], 'file-import-narrow.png') }
+    narrow: await narrowControls([['选择原文文件', fileControl], ['打开岗位浏览器', reopen], ['继续浏览器采集', continueCapture]], 'file-import-narrow.png') }
   await page.screenshot({ path: join(out, 'file-import.png'), fullPage: true })
-  await capture.goto(fixture.origin + '/challenge')
-  await continueCapture.click()
-  await page.getByRole('alert').filter({ hasText: '平台触发了安全验证或访问限制' }).waitFor()
+  try { await capture.goto(fixture.origin + '/risk-page') }
+  catch (error) {
+    if (!/ERR_ABORTED|ERR_BLOCKED_BY_CLIENT/u.test(error.message)) throw error
+  }
+  await stoppedPlatform('127.0.0.1')
+  const challenge = await native('read', { id: first.id })
+  assert.equal(challenge.state, 'blocked')
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+  await page.getByText('127.0.0.1 · 风控暂停', { exact: true }).waitFor()
+  const stoppedCount = fixture.siteRequests.length
+  const stopped = await native('collect', { id: second.id, sources: [{ url: fixture.origin + '/job', title: '合成岗位' }] })
+  assert.equal(stopped.items[0].state, 'blocked')
+  assert.equal(fixture.siteRequests.length, stoppedCount, 'A stopped platform cannot navigate from another project')
+  const prematureResume = await native('resume', { id: first.id, url: fixture.origin + '/job' })
+  assert.equal(prematureResume.item.state, 'failed')
+  assert.ok((await native('platforms')).some(platform => platform.blocked))
   assert.equal((await rpc('/jd', 'read', { id: first.id })).sources.length, 0)
-  await capture.goto(fixture.origin + '/job')
+  await page.getByRole('button', { name: '手动处理验证', exact: true }).click()
+  await capture.getByRole('button', { name: '登录合成站点', exact: true }).waitFor()
   await capture.getByLabel('合成账号', { exact: true }).fill('synthetic-user')
   await capture.getByLabel('合成密码', { exact: true }).fill('synthetic-password')
   await capture.getByRole('button', { name: '登录合成站点', exact: true }).click()
@@ -312,7 +361,7 @@ try {
   const [detail] = await Promise.all([desktop.waitForEvent('window'), capture.getByRole('link', { name: '新窗口打开岗位', exact: true }).click()])
   await detail.getByRole('heading', { name: '合成后端开发岗位', exact: true }).waitFor()
   await capture.close()
-  await continueCapture.click()
+  await page.getByRole('button', { name: '已完成验证，恢复采集', exact: true }).click()
   await page.getByText('JD 原文和来源已保存。', { exact: true }).waitFor()
   const saved = await rpc('/jd', 'read', { id: first.id })
   assert.equal(saved.sources.length, 1)
@@ -324,13 +373,20 @@ try {
   assert.ok(saved.sources[0].source_url.endsWith('/job?detail=1'))
   assert.equal(saved.sources[0].content_hash, createHash('sha256').update(saved.sources[0].body).digest('hex'))
   assert.ok(!JSON.stringify(saved).includes('synthetic_jd_session'))
+  assert.ok((await native('platforms')).every(platform => !platform.blocked), 'Only a verified rendered JD clears the circuit')
+  const cacheCount = fixture.siteRequests.length
+  const cached = await native('collect', { id: second.id, sources: [{ url: saved.sources[0].source_url, title: saved.sources[0].title }] })
+  assert.equal(cached.items[0].cached, true)
+  assert.equal(cached.items[0].captured_at, saved.sources[0].captured_at)
+  assert.equal(cached.items[0].content_hash, saved.sources[0].content_hash)
+  assert.equal(fixture.siteRequests.length, cacheCount, 'Another project must reuse a cached original without navigation')
   await detail.close()
   await page.reload()
   await page.getByRole('button', { name: 'JD 搜索', exact: true }).waitFor()
   await openResearch(); await selectProject(first.id)
   await page.getByRole('heading', { name: 'JD 原文与来源' }).waitFor()
   assert.equal(await continueCapture.isVisible(), false, 'Closed capture cannot remain actionable after reload')
-  checks.push('one click opens isolated login; login/challenge pages are rejected; capture and file drafts restore; popup survives parent close; original hashes persist without cookies')
+  checks.push('search-only executor rejects fetch and shell; browser-first login and challenge pages remain unverified; a platform circuit blocks other projects until explicit verification reads a real JD; cache hits do not navigate')
   await page.getByRole('button', { name: '使用 1 份原文生成五级图谱', exact: true }).click()
   await page.getByRole('heading', { name: '五级岗位能力图谱', exact: true }).waitFor({ timeout: 60000 })
   const graphProject = await rpc('/jd', 'read', { id: first.id })
@@ -391,9 +447,13 @@ try {
   await page.getByRole('heading', { name: '选择平台与搜索范围' }).waitFor()
   assert.equal(await page.getByRole('combobox', { name: '区域范围', exact: true }).inputValue(), '成渝经济圈')
   await rpc('/api', 'session.selectModel', { sessionId: repeated.session_id, provider: 'jd-fixture', model: 'jd-fixture-model' })
+  const restartSiteCount = fixture.siteRequests.length
   await page.getByRole('button', { name: '开始检索', exact: true }).click()
-  await page.getByRole('button', { name: '打开此岗位并登录', exact: true }).waitFor()
-  assert.deepEqual(fixture.toolCalls, ['web_search', 'web_fetch', 'web_search', 'web_fetch'])
+  const repeatedProject = await savedProject(repeated.id, project => project.sources.length === 1 && project.pending_sources.length === 0, 'browser cache reused after restart')
+  assert.equal(repeatedProject.sources[0].content_hash, saved.sources[0].content_hash)
+  assert.equal(repeatedProject.sources[0].captured_at, saved.sources[0].captured_at)
+  assert.equal(fixture.siteRequests.length, restartSiteCount, 'Restarted client must use persisted cache without logging in or navigating')
+  assert.deepEqual(fixture.toolCalls, ['web_search', 'web_search'])
   assert.deepEqual((await rpc('/jd', 'read', { id: first.id })).graphs, beforeRestart.graphs)
   await selectProject(first.id)
   await page.getByRole('button', { name: '4 能力图谱', exact: true }).click()
@@ -409,7 +469,9 @@ try {
     levels: graphProject.graphs[0].nodes.map(node => ({ kind: node.kind, title: node.title, basis: node.basis, quotes: node.evidence.map(entry => entry.quote) })),
     tools: fixture.toolCalls, original_saved: saved.sources[0].body.includes(fixtureBody), acquisition: saved.sources[0].acquisition,
     search_sessions: { archived_before_search: true, independent_sessions: true, repeat_search_creates_archive: true, target_restored: true, filters_restored: true, capture_draft_restored: true, step_and_version_restored_after_restart: true },
-    capture: { one_click_open: true, continue_requires_window: true, login_rejected: true, security_challenge_rejected: true, popup_survives_parent_close: true },
+    capture: { browser_first: true, continue_requires_window: true, login_rejected: true, security_challenge_rejected: true, popup_survives_parent_close: true },
+    collection_policy: { fetch_and_shell_denied_by_executor: true, browser_requests_only: true, cross_project_platform_stop: true,
+      explicit_verified_resume: true, cache_without_navigation: true, persisted_cache_after_restart: true, original_capture_time_preserved: true },
     confirmation: { host_persisted: true, discoverable_for_curriculum: true, export_denied_before_confirmation: true, each_version_requires_confirmation: true, confirmed_versions: allConfirmed.confirmations.map(item => item.version) },
     html_export: { saved_in_client_data: true, system_browser_requested: true, exact_source_quotes: true, hashes_and_urls: true, inference_marked: true, source_text_immutable: true },
     file_import: { txt_loaded: true, md_loaded: true, keyboard_same_file_reselection: true, filename_feedback: true, unsaved_draft_restored: true },
@@ -424,14 +486,19 @@ try {
   assert.ok([first.id, second.id, repeated.id].every(id => persistedFiles.includes(id + '.json')))
   passed = true
 } catch (error) {
+  failure = { message: error.message, stack: error.stack }
+  console.error(error.stack ?? error.message)
+  await writeFile(join(out, 'failure.json'), JSON.stringify({ failure, site_requests: fixture.siteRequests,
+    tools: fixture.toolCalls, denied_tools: fixture.deniedCalls }, null, 2) + '\n')
+  await saveVerification()
   if (page && !page.isClosed()) {
-    await page.screenshot({ path: join(out, 'failure.png'), fullPage: true }).catch(() => {})
-    await writeFile(join(out, 'failure.aria.txt'), await page.locator('body').ariaSnapshot()).catch(() => {})
-    await writeFile(join(out, 'failure.html'), await page.content()).catch(() => {})
+    await page.screenshot({ path: join(out, 'failure.png'), fullPage: true, timeout: 5000 }).catch(() => {})
+    await page.locator('body').ariaSnapshot({ timeout: 5000 }).then(snapshot => writeFile(join(out, 'failure.aria.txt'), snapshot)).catch(() => {})
+    await page.content().then(html => writeFile(join(out, 'failure.html'), html)).catch(() => {})
   }
   throw error
 } finally {
-  await writeFile(join(out, 'verification.json'), JSON.stringify({ passed, checks, errors, presentation, actual_desktop: true, actual_loader: true, synthetic_external_systems: true, paid_model_calls: 0 }, null, 2) + '\n')
+  await saveVerification()
   await desktop?.close()
   await fixture.close()
 }

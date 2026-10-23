@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { mkdir, readFile, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
-import { identifier, parseProject } from './document.ts'
+import { graphNodes, identifier, parseProject } from './document.ts'
 import type { JdConfirmedSummary, JdProject, JdProjectSummary } from './types.ts'
 
 /** File-backed project repository shared by browser and desktop clients. */
@@ -120,6 +120,8 @@ export class JdProjectStore {
       if (project.graphs.slice(previous?.graphs.length ?? 0)
         .some(graph => Object.keys(graph.source_hashes).some(id => excluded.has(id))))
         throw new Error('新增图谱不能引用已剔除的 JD 原文')
+      for (const graph of project.graphs.slice(previous?.graphs.length ?? 0))
+        graphNodes(graph, project.sources.filter(source => graph.source_hashes[source.id] === source.content_hash))
       this.verifyHashes(project)
       return this.commit(project)
     })
