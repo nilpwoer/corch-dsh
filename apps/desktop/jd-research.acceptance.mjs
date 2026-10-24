@@ -7,7 +7,7 @@ import { resolve, join, sep } from 'node:path'
 import { parseArgs } from 'node:util'
 import { fileURLToPath } from 'node:url'
 import { backendEnvironment } from './policy.mjs'
-import { autoFixtureBody, autoReplayBody, fixtureBody, startJdFixture } from './jd-research-fixture.mjs'
+import { autoFixtureBody, autoReplayBody, delayedFixtureBody, feedbackFixtureBody, fixtureBody, startJdFixture } from './jd-research-fixture.mjs'
 
 const require = createRequire(import.meta.url)
 const { _electron: electron } = require('playwright')
@@ -546,6 +546,54 @@ try {
   assert.deepEqual((await rpc('/jd', 'read', { id: second.id })).workspace, secondBeforeAutomatic.workspace)
   await autoCapture.close()
   checks.push('login alone automatically archives complete originals in the originating project outside its view; partial walls and security verification do not auto-save; drafts survive and an interrupted commit response replays exactly once after reload')
+
+  await openResearch()
+  const openDetails = page.getByRole('button', { name: '打开详情', exact: true })
+  if (await openDetails.count()) await openDetails.click()
+  await page.getByRole('button', { name: '＋ 新建搜索', exact: true }).click()
+  const feedback = (await archivedProjects(5)).find(project => ![first.id, second.id, repeated.id, automatic.id].includes(project.id))
+  assert.ok(feedback)
+  await selectedProject(feedback.id)
+  await page.getByRole('textbox', { name: '学科 / 专业', exact: true }).fill('岗位采集反馈验收')
+  await page.getByRole('textbox', { name: '岗位名称（可手动修改，使用顿号分隔）', exact: true }).fill('数据接口维护员')
+  await rpc('/api', 'session.selectModel', { sessionId: feedback.session_id, provider: 'jd-fixture', model: 'jd-fixture-model' })
+  await page.getByRole('button', { name: '确认岗位并继续', exact: true }).click()
+  await page.getByRole('button', { name: '开始检索', exact: true }).click()
+  for (let attempt = 0; attempt < 300 && fixture.pendingSlowJobs() === 0; attempt++) await new Promise(resolve => setTimeout(resolve, 100))
+  assert.equal(fixture.pendingSlowJobs(), 1, 'The batch must still be waiting on its unfinished second HTTP page')
+  const earlySaved = await savedProject(feedback.id, project => project.sources.some(source => source.body.includes(feedbackFixtureBody)), 'the first complete source is durable before its batch completes')
+  assert.equal(earlySaved.sources.length, 1)
+  assert.ok(!earlySaved.sources[0].body.includes('合成账号导航') && !earlySaved.sources[0].body.includes('其他岗位推荐'))
+  const savedFeedback = page.locator('[data-jd-save-complete]')
+  await savedFeedback.getByText('正文已保存 · 本次搜索已保存 1 份浏览器 JD', { exact: true }).waitFor()
+  await savedFeedback.getByText('其他来源仍在采集；已保存的岗位无需等待本批完成。', { exact: true }).waitFor()
+  await page.getByRole('region', { name: '平台采集状态', exact: true }).getByText('127.0.0.1 · 正文已读取 · 已保存 1 份', { exact: true }).waitFor()
+  assert.equal(fixture.pendingSlowJobs(), 1, 'Success feedback must appear before the slow page has been released')
+  await page.screenshot({ path: join(out, 'saved-during-long-batch.png'), fullPage: true })
+  fixture.releaseSlowJob()
+  const unavailableCard = page.locator('article').filter({ has: page.getByRole('button', { name: '查看失效页面', exact: true }) })
+  await unavailableCard.getByRole('button', { name: '查看失效页面', exact: true }).waitFor()
+  await unavailableCard.getByText(/岗位页面已失效，登录不能恢复该岗位/u).waitFor()
+  assert.equal(await unavailableCard.getByRole('button', { name: '打开登录', exact: true }).count(), 0)
+  const feedbackSaved = await savedProject(feedback.id, project => project.sources.length === 2 && project.pending_sources.some(source => source.url.endsWith('/unavailable-job')), 'valid batch pages saved and expired page retained without recommendation capture')
+  assert.ok(feedbackSaved.sources.some(source => source.body.includes(delayedFixtureBody)))
+  assert.ok(feedbackSaved.sources.every(source => !source.source_url.endsWith('/unavailable-job') && !source.body.includes('推荐照护岗位')))
+  assert.equal(feedbackSaved.pending_sources.length, 1)
+  assert.match(feedbackSaved.pending_sources[0].reason, /失效|不存在/u)
+  await page.waitForFunction(() => document.querySelector('[data-jd-save-complete]')?.textContent.includes('已保存 2 份浏览器 JD'))
+  const unavailableVisits = fixture.siteRequests.filter(request => request.path === '/unavailable-job').length
+  assert.equal(unavailableVisits, 1)
+  const collectRemaining = page.getByRole('button', { name: '继续采集待处理岗位', exact: true })
+  assert.equal(await collectRemaining.isDisabled(), true, 'Expired-only candidates must not offer automatic retry')
+  await page.reload()
+  await page.getByRole('button', { name: 'JD 搜索', exact: true }).waitFor()
+  await openResearch()
+  await selectProject(feedback.id)
+  await unavailableCard.getByRole('button', { name: '查看失效页面', exact: true }).waitFor()
+  assert.equal(await collectRemaining.isDisabled(), true)
+  assert.equal(fixture.siteRequests.filter(request => request.path === '/unavailable-job').length, unavailableVisits)
+  assert.equal((await rpc('/jd', 'read', { id: feedback.id })).sources.length, 2)
+  checks.push('a complete source commits and shows clear saved feedback while the remaining batch HTTP response is unfinished; expired pages with recommended duties stay excluded and do not invite login or automatic retries after reload')
   const actual = {
     levels: graphProject.graphs[0].nodes.map(node => ({ kind: node.kind, title: node.title, basis: node.basis, quotes: node.evidence.map(entry => entry.quote) })),
     tools: fixture.toolCalls, original_saved: saved.sources[0].body.includes(fixtureBody), acquisition: saved.sources[0].acquisition,
@@ -556,6 +604,9 @@ try {
     automatic_capture: { login_without_continue_or_read: true, partial_login_original_rejected: true, verification_requires_explicit_resume: true,
       origin_project_saved_while_other_selected: true, details_closed: true, other_project_unchanged: true, user_draft_preserved: true,
       committed_delivery_unacknowledged_before_reload: true, reload_replay_idempotent: true, acknowledgement_after_save: true },
+    batch_feedback: { source_saved_before_batch_end: true, visible_saved_count_before_batch_end: true, busy_state_explains_remaining_sources: true,
+      scoped_zhaopin_duties_only: true, expired_recommendations_rejected: true, expired_link_not_a_login_request: true,
+      no_automatic_expired_retry_after_reload: true },
     confirmation: { host_persisted: true, discoverable_for_curriculum: true, export_denied_before_confirmation: true, each_version_requires_confirmation: true, confirmed_versions: allConfirmed.confirmations.map(item => item.version) },
     html_export: { saved_in_client_data: true, system_browser_requested: true, exact_source_quotes: true, hashes_and_urls: true, inference_marked: true, source_text_immutable: true },
     file_import: { txt_loaded: true, md_loaded: true, keyboard_same_file_reselection: true, filename_feedback: true, unsaved_draft_restored: true },
@@ -567,7 +618,7 @@ try {
   await writeFile(join(out, 'html-exports.json'), JSON.stringify([{ version: 1, path: firstHtml.path, sha256: firstHtml.sha256 }, { version: 2, path: secondHtml.path, sha256: secondHtml.sha256 }], null, 2) + '\n')
   assert.deepEqual(errors, [])
   const persistedFiles = await readdir(join(data, 'dsh/jd-projects'))
-  assert.ok([first.id, second.id, repeated.id, automatic.id].every(id => persistedFiles.includes(id + '.json')))
+  assert.ok([first.id, second.id, repeated.id, automatic.id, feedback.id].every(id => persistedFiles.includes(id + '.json')))
   passed = true
 } catch (error) {
   failure = { message: error.message, stack: error.stack }

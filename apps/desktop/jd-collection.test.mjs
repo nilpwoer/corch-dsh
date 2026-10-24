@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createJdCollection, jdChallengeURL, jdHasDuties, jdLoginWall, jdPlatform, jdSourceURL } from './jd-collection.mjs'
+import { createJdCollection, jdChallengeURL, jdHasDuties, jdLoginWall, jdPlatform, jdSourceURL, jdUnavailableReason } from './jd-collection.mjs'
 
 const settings = { min_interval_ms: 100, cache_ttl_ms: 1000, max_navigations_per_hour: 3, max_sources_per_batch: 20, render_settle_ms: 100 }
 function directory(t, override = {}) {
@@ -179,4 +179,52 @@ test('automatic inbox refuses partial or empty-heading JD and preserves malforme
   writeFileSync(file, evidence)
   assert.throws(() => createJdCollection({ dataDirectory }), /投递正文或来源校验失败/u)
   assert.equal(readFileSync(file, 'utf8'), evidence)
+})
+
+test('unavailable-source cache contains no recommended original and expires normally', async t => {
+  const dataDirectory = directory(t)
+  const policy = createJdCollection({ dataDirectory })
+  const url = 'https://m.58.com/cd/tech/expired.shtml'
+  await policy.reserve(url)
+  policy.cacheUnavailable(url, jdUnavailableReason('对不起，您查看的内容已不存在'))
+  assert.equal(policy.cached(url).state, 'not_a_jd')
+  assert.equal(policy.statuses()[0].cache_count, 0)
+  const file = join(dataDirectory, 'jd-collection', createHash('sha256').update(url).digest('hex') + '.json')
+  const saved = JSON.parse(readFileSync(file, 'utf8'))
+  assert.equal(Object.hasOwn(saved, 'body'), false)
+  saved.classified_at = new Date(Date.now() - 2000).toISOString()
+  writeFileSync(file, JSON.stringify(saved))
+  assert.equal(policy.cached(url), undefined)
+})
+
+test('old Zhaopin whole-page cache is retained but requires a scoped fresh extraction', t => {
+  const dataDirectory = directory(t)
+  const policy = createJdCollection({ dataDirectory })
+  const url = 'https://www.zhaopin.com/jobdetail/example.htm'
+  const item = { ...captured(), url }
+  const file = join(dataDirectory, 'jd-collection', createHash('sha256').update(url).digest('hex') + '.json')
+  writeFileSync(file, JSON.stringify(item))
+  assert.equal(policy.cached(url), undefined)
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), item)
+  policy.cache(url, item)
+  assert.deepEqual(policy.cached(url), { ...item, cached: true })
+  assert.equal(Object.hasOwn(policy.cached(url), 'extraction_version'), false)
+})
+
+test('replacing positive and unavailable caches updates the positive-original count symmetrically', t => {
+  const dataDirectory = directory(t)
+  const policy = createJdCollection({ dataDirectory })
+  const item = captured()
+  policy.cache(url, item)
+  assert.equal(policy.statuses()[0].cache_count, 1)
+  policy.cacheUnavailable(url, jdUnavailableReason('您查看的内容不存在'))
+  policy.cacheUnavailable(url, jdUnavailableReason('您查看的内容不存在'))
+  assert.equal(policy.statuses()[0].cache_count, 0)
+  assert.equal(policy.cached(url).state, 'not_a_jd')
+  policy.cache(url, item)
+  policy.cache(url, item)
+  assert.equal(policy.statuses()[0].cache_count, 1)
+  assert.equal(policy.cached(url).state, 'captured')
+  const restarted = createJdCollection({ dataDirectory })
+  assert.equal(restarted.statuses()[0].cache_count, 1)
 })

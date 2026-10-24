@@ -146,12 +146,77 @@ test('failed automatic saves keep their native delivery and retry only after a s
   vi.mocked(pendingJdBrowserDeliveries).mockResolvedValue([autoDelivery(origin)])
   const stop = syncJdBrowserDeliveries(input)
   await screen.findByText('模拟磁盘写入失败')
+  expect(screen.queryByText(/正文已保存 · 本次搜索已保存/u)).toBeNull()
   expect(ackJdBrowserDeliveries).not.toHaveBeenCalled()
   expect(records.get(origin.id)?.sources).toEqual([])
   fireEvent.click(screen.getByRole('button', { name: '重试保存' }))
   await waitFor(() => { expect(ackJdBrowserDeliveries).toHaveBeenCalledWith([autoDelivery(origin).id]) })
   await stop()
   expect(records.get(origin.id)?.sources).toHaveLength(1)
+  expect(screen.getByText('正文已保存 · 本次搜索已保存 1 份浏览器 JD')).toBeTruthy()
+})
+test('a saved platform reports its source while another browser candidate is still running', async () => {
+  const origin = draft('platform-progress')
+  origin.roles = ['Go 工程师']
+  origin.workspace = { ...origin.workspace!, step: 2 }
+  const { input, records } = fixture([origin])
+  const delivery = autoDelivery(origin)
+  delivery.item = { ...delivery.item, title: '智联 Go 工程师', url: 'https://www.zhaopin.com/jobdetail/actual.htm' }
+  const second = { title: '等待响应岗位', url: 'https://other.example/job/slow', reason: '候选链接' }
+  input.pendingJdSources = () => [{ title: delivery.item.title, url: delivery.requested_url, reason: '候选链接' }, second]
+  let finish: ((value: Awaited<ReturnType<typeof collectJdBrowser>>) => void) | undefined
+  vi.mocked(collectJdBrowser).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+  render(<JdSearchWorkbench {...input} />)
+  fireEvent.click(await screen.findByRole('button', { name: '开始检索' }))
+  await waitFor(() => { expect(finish).toBeDefined() })
+  vi.mocked(jdBrowserPlatforms).mockResolvedValue([{ platform: 'zhaopin.com', blocked: false, login_required: false, cache_count: 1 }])
+  vi.mocked(pendingJdBrowserDeliveries).mockResolvedValue([delivery])
+  const stop = syncJdBrowserDeliveries(input)
+  await screen.findByText('正文已保存 · 本次搜索已保存 1 份浏览器 JD')
+  expect(await screen.findByText('zhaopin.com · 正文已读取 · 已保存 1 份')).toBeTruthy()
+  expect(screen.getByText(/最近保存：智联 Go 工程师/u)).toBeTruthy()
+  expect(screen.getByText('其他来源仍在采集；已保存的岗位无需等待本批完成。')).toBeTruthy()
+  expect(screen.getByRole<HTMLButtonElement>('button', { name: '浏览器正在采集，按平台限速中…' }).disabled).toBe(true)
+  expect(screen.queryByText(/已登录/u)).toBeNull()
+  expect(records.get(origin.id)?.sources).toHaveLength(1)
+  await stop()
+  await act(async () => { finish?.({ items: [delivery.item, { state: 'failed', url: second.url, message: '读取超时' }], platforms: [] }) })
+})
+test('automatic save feedback follows its original search when the workbench switches sessions', async () => {
+  const origin = draft('platform-source-origin')
+  const other = draft('platform-source-other')
+  const { input } = fixture([origin, other])
+  const view = render(<JdSearchWorkbench {...input} sessionId={other.session_id} />)
+  await screen.findByLabelText('学科 / 专业')
+  vi.mocked(pendingJdBrowserDeliveries).mockResolvedValue([autoDelivery(origin)])
+  const stop = syncJdBrowserDeliveries(input)
+  await waitFor(() => { expect(ackJdBrowserDeliveries).toHaveBeenCalled() })
+  expect(screen.queryByText(/正文已保存 · 本次搜索已保存/u)).toBeNull()
+  view.rerender(<JdSearchWorkbench {...input} sessionId={origin.session_id} />)
+  expect(await screen.findByText('正文已保存 · 本次搜索已保存 1 份浏览器 JD')).toBeTruthy()
+  expect(screen.getByText(/最近保存：自动保存岗位/u)).toBeTruthy()
+  await stop()
+})
+test('unavailable job pages explain that login cannot restore them and are skipped by automatic retries', async () => {
+  const origin = draft('unavailable-source')
+  origin.workspace = { ...origin.workspace!, step: 3 }
+  const unavailable = { title: '58 原岗位', url: 'https://m.58.com/cd/tech/invalid', reason: '岗位页面已失效：您查看的内容不存在' }
+  const login = { title: '其他平台岗位', url: 'https://www.zhipin.com/job_detail/valid', reason: '登录状态已失效，需要重新登录查看完整岗位' }
+  origin.pending_sources = [unavailable, login]
+  const { input } = fixture([origin])
+  vi.mocked(jdBrowserPlatforms).mockResolvedValue([
+    { platform: '58.com', blocked: false, login_required: true, cache_count: 0 },
+    { platform: 'zhipin.com', blocked: false, login_required: true, cache_count: 0 },
+  ])
+  render(<JdSearchWorkbench {...input} />)
+  fireEvent.click(await screen.findByRole('button', { name: '查看失效页面' }))
+  expect(screen.getByText('58.com · 岗位页面失效')).toBeTruthy()
+  expect(screen.getByText('zhipin.com · 需要登录')).toBeTruthy()
+  await screen.findByText('已打开失效页面供查看；登录不能恢复已下线岗位，请换用其他有效来源。')
+  expect(screen.getByRole('button', { name: '打开登录' })).toBeTruthy()
+  await waitFor(() => { expect(screen.getByRole<HTMLButtonElement>('button', { name: '继续采集待处理岗位' }).disabled).toBe(false) })
+  fireEvent.click(screen.getByRole('button', { name: '继续采集待处理岗位' }))
+  await waitFor(() => { expect(collectJdBrowser).toHaveBeenCalledWith(origin.id, [login]) })
 })
 test('retry after a committed save loses its response keeps newer drafts and acknowledges without reload', async () => {
   const origin = draft('automatic-response-loss')

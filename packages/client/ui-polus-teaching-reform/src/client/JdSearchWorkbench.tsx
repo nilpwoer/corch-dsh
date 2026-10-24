@@ -106,6 +106,9 @@ function platformForUrl(url: string, platforms: JdPlatformState[]): JdPlatformSt
   try { hostname = new URL(url).hostname } catch { return undefined }
   return platforms.find(item => hostname === item.platform || hostname.endsWith(`.${item.platform}`))
 }
+function isUnavailableSource(reason: string): boolean {
+  return /您查看的内容不存在|(?:岗位|职位|招聘信息|页面|链接|来源|内容)(?:已(?:被)?)?(?:不存在|下线|下架|删除|失效|关闭|过期|停止招聘)/u.test(reason)
+}
 
 /** Restore a separate workbench instance for each owning Host search session.
  * @param props - Session identity and durable research operations.
@@ -118,6 +121,7 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
   const [controller] = useState(() => jdResearchController(props.saveJdProject, props.sessionId))
   const { current, revision, edits, timer, running } = controller
   const [project, setProject] = useState<JdProject | null>(current.current)
+  const [savedProject, setSavedProject] = useState<JdProject | null>(controller.saved.current)
   const [loading, setLoading] = useState(!current.current)
   const [busy, setBusy] = useState(running.current)
   const [saving, setSaving] = useState(controller.saving.current)
@@ -172,6 +176,7 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
     mounted.current = true
     const sync = (): void => {
       setProject(current.current)
+      setSavedProject(controller.saved.current)
       setBusy(running.current)
       setSaving(controller.saving.current)
       setSaveError(controller.saveError.current)
@@ -188,6 +193,7 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
       const saved = record ? await props.loadJdProject(record.id) : await props.initializeJdProject(props.sessionId)
       if (!saved || saved.session_id !== props.sessionId) return
       revision.current = saved.revision
+      controller.saved.current = saved
       publish(saved)
     }
     const requestFlush = (event: Event): void => {
@@ -222,6 +228,18 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
       })
     }
   }, [props.sessionId])
+  const savedBrowserSignature = savedProject?.sources.filter(source => source.acquisition === 'browser')
+    .map(source => `${source.source_url}:${source.content_hash}`).join('\n') ?? ''
+  useEffect(() => {
+    if (!savedBrowserSignature) return
+    let active = true
+    void jdBrowserPlatforms().then((items) => {
+      if (!active) return
+      controller.platforms.current = items
+      notify()
+    }).catch(report)
+    return () => { active = false }
+  }, [savedBrowserSignature])
   const go = (step: JdWorkspace['step']): void => {
     run(async () => { changeWorkspace({ step, error: '' }); await flush() })
   }
@@ -288,10 +306,11 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
       ? { ...item, reason: `${label}${result.message ? `：${result.message}` : ''}` } : item) }))
     await flush()
   }
-  const collectCandidates = async (sources: { url: string; title: string }[]): Promise<void> => {
+  const collectCandidates = async (sources: { url: string; title: string; reason?: string }[]): Promise<void> => {
     const value = requireProject()
     const candidates: { url: string; title: string }[] = []
     for (const source of sources) {
+      if (isUnavailableSource(source.reason ?? '')) continue
       const platform = platformForUrl(source.url, controller.platforms.current)
       if (platform?.blocked) {
         await retainOutcome({ state: 'blocked', url: source.url, ...platform.reason ? { message: platform.reason } : {} }, source.url)
@@ -339,7 +358,7 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
       if (result.item.state !== 'captured' && mounted.current) setNotice('尚未读取到完整 JD，平台仍暂停自动访问。')
     })
   }
-  const beginCapture = (pending?: { url: string; title: string }): void => {
+  const beginCapture = (pending?: { url: string; title: string; reason?: string }): void => {
     run(async () => {
       if (pending) captureChange({ url: pending.url, title: pending.title })
       await flush()
@@ -351,7 +370,9 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
       controller.browserOpen.current = true
       notify()
       if (mounted.current) {
-        setNotice('浏览器会复用已有登录状态；仅在平台要求时登录。完整岗位正文可读后将自动采集保存，无需返回点击继续；风控恢复仍需明确确认。')
+        setNotice(isUnavailableSource(pending?.reason ?? '')
+          ? '已打开失效页面供查看；登录不能恢复已下线岗位，请换用其他有效来源。'
+          : '浏览器会复用已有登录状态；仅在平台要求时登录。完整岗位正文可读后将自动采集保存，无需返回点击继续；风控恢复仍需明确确认。')
       }
     })
   }
@@ -409,6 +430,7 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
         if (!selected) throw new Error('请先生成并保存图谱')
         const saved = await props.confirmJdProject(value.id, selected.version, value.revision)
         revision.current = saved.revision
+        controller.saved.current = saved
         publish(saved)
         window.dispatchEvent(new Event('jd-projects-changed'))
         if (mounted.current) setNotice(`已确认 v${selected.version} 能力图谱，已保存供后续课程建设使用。`)
@@ -439,8 +461,13 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
   const retained = project.sources.filter(source => !source.excluded)
   const confirmed = graph && project.confirmations?.find(item => item.version === graph.version)
   const targetLocked = busy || state.search_status !== 'draft'
+  const savedBrowserSources = savedProject?.sources.filter(source => source.acquisition === 'browser') ?? []
+  const latestBrowserSource = savedBrowserSources.at(-1)
+  const platformKeys = [...new Set([...platforms.map(item => item.platform),
+    ...savedBrowserSources.map(source => platformForUrl(source.source_url, platforms)?.platform ?? new URL(source.source_url).hostname)])]
   const capturePlatform = platformForUrl(capture.url, platforms)
-  const hasCollectableSource = project.pending_sources.some(item => !platformForUrl(item.url, platforms)?.blocked)
+  const hasCollectableSource = project.pending_sources.some(item => !isUnavailableSource(item.reason)
+    && !platformForUrl(item.url, platforms)?.blocked)
   return <div className={css.workbench}>
     <header className={css.header}><div><span className={css.kicker}>岗位研究工作台</span><h1>JD 搜索与岗位能力图谱</h1>
       <p>每次搜索独立存档；确认图谱后可用于课程建设并导出 HTML 报告。</p></div></header>
@@ -450,6 +477,11 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
         await flush(); window.dispatchEvent(new Event('jd-browser-delivery-retry'))
       }) }}>重试保存</button>}</div>}
       {notice && <div className={css.notice} role="status">{notice}</div>}
+      {latestBrowserSource && <div className={css.notice} role="status" aria-live="polite" data-jd-save-complete>
+        <strong>正文已保存 · 本次搜索已保存 {savedBrowserSources.length} 份浏览器 JD</strong>
+        <p>最近保存：{latestBrowserSource.title}（{new URL(latestBrowserSource.source_url).hostname}）。原文、来源和内容指纹已入档。</p>
+        {busy && <p>其他来源仍在采集；已保存的岗位无需等待本批完成。</p>}
+      </div>}
       {state.search_status === 'running' && !busy && <div className={css.loginNotice}>该搜索尚未完成。可稍后重新打开查看；重新检索会建立新档案并保留本次记录。</div>}
       <nav className={css.progress} aria-label="研究步骤">{STEPS.map((label, index) =>
         <button type="button" key={label} disabled={busy || (index === 3 && !graph)} className={state.step === index + 1 ? css.progressActive : css.progressButton}
@@ -507,12 +539,22 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
       {state.step === 3 && <>
         <Header step={3} title="JD 原文与来源" text="登录页、反爬提示和搜索摘要不算岗位原文。保留原始 URL、时间和内容指纹；手动导入的来源由你声明。" />
         <div className={css.notice}>同一平台复用登录与原文缓存。登录后完整 JD 可读即自动保存到原搜索，切换搜索或关闭工作台也会继续保存。风控平台仍暂停，需明确确认恢复；登录失效与网络失败分别保留原因。</div>
-        {platforms.length > 0 && <section className={css.platformStatusList} aria-label="平台采集状态">{platforms.map(item =>
-          <article key={item.platform} className={item.blocked ? css.platformStopped : css.platformStatus}>
-            <strong>{item.platform} · {item.blocked ? '风控暂停' : item.login_required ? '需要登录' : '可继续采集'}</strong>
-            <p>{item.blocked ? item.reason : '复用已有浏览器会话'} · {item.cache_count} 条缓存</p>
-            {item.next_navigation_at && <small>下次允许访问：{new Date(item.next_navigation_at).toLocaleString()}</small>}
-          </article>)}</section>}
+        {platformKeys.length > 0 && <section className={css.platformStatusList} aria-label="平台采集状态">{platformKeys.map((key) => {
+          const item = platforms.find(platform => platform.platform === key)
+          const count = savedBrowserSources.filter(source => new URL(source.source_url).hostname === key
+            || new URL(source.source_url).hostname.endsWith(`.${key}`)).length
+          const pending = project.pending_sources.filter(source => new URL(source.url).hostname === key
+            || new URL(source.url).hostname.endsWith(`.${key}`))
+          const unavailable = pending.length > 0 && pending.every(source => isUnavailableSource(source.reason))
+          const status = item?.blocked ? '风控暂停' : unavailable ? '岗位页面失效' : item?.login_required ? '需要登录'
+            : count ? '正文已读取' : item?.cache_count ? '缓存可用' : '尚未保存正文'
+          return <article key={key} className={item?.blocked ? css.platformStopped : css.platformStatus}>
+            <strong>{key} · {status}{count > 0 ? ` · 已保存 ${count} 份` : ''}</strong>
+            <p>{item?.blocked ? item.reason : unavailable ? '当前候选页面已失效，请更换有效岗位来源'
+              : count ? '原文和来源已保存到当前搜索' : '账号登录状态请以平台页面为准'}{item ? ` · ${item.cache_count} 条缓存` : ''}</p>
+            {item?.next_navigation_at && <small>下次允许访问：{new Date(item.next_navigation_at).toLocaleString()}</small>}
+          </article>
+        })}</section>}
         {project.pending_sources.length > 0 && <div className={css.captureActions}>
           <button type="button" className={css.primaryButton} disabled={busy || !hasJdBrowser() || !hasCollectableSource}
             onClick={collectPending}>{busy ? '浏览器正在采集，按平台限速中…' : '继续采集待处理岗位'}</button>
@@ -520,13 +562,15 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
         </div>}
         {project.pending_sources.map((item) => {
           const platform = platformForUrl(item.url, platforms)
+          const unavailable = isUnavailableSource(item.reason)
           return <article key={item.url} className={css.card}><strong>{item.title}</strong><p>{item.reason}</p>
+            {unavailable && <p>岗位页面已失效，登录不能恢复该岗位。请换用其他有效来源；若已有合法取得的原文，可手动导入并注明来源。</p>}
             <div className={css.captureActions}>{platform?.blocked ? <>
               <button type="button" className={css.primaryButton} disabled={busy} onClick={() => { verifyPlatform(item) }}>手动处理验证</button>
               <button type="button" className={css.infoButton} disabled={busy || !browserOpen}
                 onClick={() => { resumePlatform(item.url) }}>已完成验证，恢复采集</button>
             </> : <button type="button" className={css.primaryButton} disabled={busy}
-              onClick={() => { beginCapture(item) }}>{platform?.login_required ? '打开登录' : '浏览器读取此岗位'}</button>}</div>
+              onClick={() => { beginCapture(item) }}>{unavailable ? '查看失效页面' : platform?.login_required ? '打开登录' : '浏览器读取此岗位'}</button>}</div>
             <p className={css.muted}>{item.url}</p></article>
         })}
         <section className={css.card} aria-label="采集或导入 JD">

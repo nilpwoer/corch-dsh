@@ -44,6 +44,7 @@
   "tools": [
     "web_search",
     "web_search",
+    "web_search",
     "web_search"
   ],
   "original_saved": true,
@@ -84,6 +85,15 @@
     "committed_delivery_unacknowledged_before_reload": true,
     "reload_replay_idempotent": true,
     "acknowledgement_after_save": true
+  },
+  "batch_feedback": {
+    "source_saved_before_batch_end": true,
+    "visible_saved_count_before_batch_end": true,
+    "busy_state_explains_remaining_sources": true,
+    "scoped_zhaopin_duties_only": true,
+    "expired_recommendations_rejected": true,
+    "expired_link_not_a_login_request": true,
+    "no_automatic_expired_retry_after_reload": true
   },
   "confirmation": {
     "host_persisted": true,

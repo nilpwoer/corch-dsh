@@ -7,6 +7,7 @@ type Ref<T> = { current: T }
 type ProjectOperations = Pick<TeachingReformProps, 'loadJdProject' | 'saveJdProject'>
 type ResearchController = {
   current: Ref<JdProject | null>
+  saved: Ref<JdProject | null>
   revision: Ref<number>
   edits: Ref<number>
   persisted: Ref<number>
@@ -33,7 +34,7 @@ export function jdResearchController(save: ProjectOperations['saveJdProject'], s
   let controller = sessions.get(sessionId)
   if (!controller) {
     controller = {
-      current: { current: null }, revision: { current: 0 }, edits: { current: 0 }, persisted: { current: 0 },
+      current: { current: null }, saved: { current: null }, revision: { current: 0 }, edits: { current: 0 }, persisted: { current: 0 },
       serial: { current: Promise.resolve() }, timer: { current: undefined }, running: { current: false },
       saving: { current: false }, saveError: { current: false }, browserOpen: { current: false },
       platforms: { current: [] }, listeners: new Set(),
@@ -65,6 +66,7 @@ export function flushJdResearch(controller: ResearchController, save: ProjectOpe
       notifyJdResearch(controller)
       try {
         const saved = await save(snapshot)
+        controller.saved.current = saved
         controller.revision.current = saved.revision
         controller.persisted.current = generation
         controller.saveError.current = false
@@ -98,6 +100,7 @@ export async function saveJdBrowserDelivery(operations: ProjectOperations, deliv
   await controller.restoring
   if (!controller.current.current) {
     controller.current.current = saved
+    controller.saved.current = saved
     controller.revision.current = saved.revision
   }
   await controller.serial.current
@@ -106,6 +109,7 @@ export async function saveJdBrowserDelivery(operations: ProjectOperations, deliv
   if (alreadySaved && saved.revision > controller.revision.current) {
     // A committed save can lose its response; advance only from evidence already present in the Host copy.
     controller.revision.current = saved.revision
+    controller.saved.current = saved
     controller.current.current = { ...controller.current.current, revision: saved.revision }
   }
   const current = controller.current.current

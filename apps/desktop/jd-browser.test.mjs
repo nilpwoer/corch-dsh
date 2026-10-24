@@ -98,6 +98,28 @@ test('phone-only and passport login pages pause collection without misclassifyin
   assert.equal(read('<aside>扫码登录</aside>' + detail, firstSource).login, false)
 })
 
+const zhaopinDetail = '<h1>Go开发工程师</h1><div class="describtion-card seo-card"><div class="seo-card__header"><h2 class="seo-card__title">职位描述</h2></div><div class="seo-card__content"><p>岗位职责：开发和维护 Go 后端接口。</p><p>任职要求：熟悉 SQL、Gin 与并发编程。</p></div></div>'
+
+test('Zhaopin reads the observed description card without account navigation or recommended jobs', () => {
+  const html = '<nav>已登录账号 张同学 首页 简历管理</nav>' + zhaopinDetail + '<aside class="job-description">推荐岗位\n岗位职责：推广保险。任职要求：销售经验。</aside>'
+  const page = read(html, 'https://www.zhaopin.com/jobdetail/example.htm')
+  assert.equal(page.title, 'Go开发工程师')
+  assert.match(page.body, /岗位职责：开发和维护 Go 后端接口/u)
+  assert.match(page.body, /任职要求：熟悉 SQL/u)
+  assert.doesNotMatch(page.body, /张同学|简历管理|推荐岗位|推广保险/u)
+  assert.equal(page.login, false)
+  assert.equal(read('<nav>账号姓名</nav><main><h2>推荐岗位</h2>岗位职责：推广保险。</main>', 'https://www.zhaopin.com/jobdetail/unknown.htm').body, '')
+})
+
+const expiredPage = '<title>软件开发工程师</title><div class="error-render zhaopin-detail-error-render error"><img class="error-render-prompt-image" alt=""><p>对不起，您查看的内容已不存在</p></div><a>登录</a><section class="post_card job-description"><h2>类似职位</h2>岗位职责：开发后端接口。任职要求：掌握数据库。</section>'
+
+test('an unavailable source cannot turn recommendations or a login control into the requested JD', () => {
+  const page = read(expiredPage + '<input type="password">', 'https://m.58.com/cd/tech/64308757563398x.shtml')
+  assert.equal(page.body, '')
+  assert.equal(page.login, false)
+  assert.match(page.unavailable_reason, /已失效或内容不存在/u)
+})
+
 function browserFixture(result, options = {}) {
   const windows = []
   const navigations = []
@@ -604,4 +626,42 @@ test('preload pending notifications expose no IPC event or body and unsubscribe 
   assert.deepEqual(await bridge.corchJd.pending(), ['corch:jd:pending'])
   const ids = ['a'.repeat(64)]
   assert.deepEqual(await bridge.corchJd.ack({ ids }), ['corch:jd:ack', { ids }])
+})
+
+test('each captured item is delivered before a later loading source finishes the batch', async t => {
+  let settled = false
+  const fixture = durableFixture(t, url => read(zhaopinDetail, url), {
+    loadTimeoutMs: 700,
+    onLoad(window, url) { if (url === secondSource) window.loading = true },
+  })
+  const batch = fixture.browser.collect({ id: 'project-batch', sources: [{ url: firstSource }, { url: secondSource }] }).finally(() => { settled = true })
+  await new Promise(resolve => setTimeout(resolve, 300))
+  const first = fixture.browser.pending().deliveries[0]
+  assert.equal(settled, false)
+  assert.equal(first.project_id, 'project-batch')
+  assert.equal(first.requested_url, firstSource)
+  assert.equal(first.item.url, firstSource)
+  assert.doesNotMatch(first.item.body, /推荐岗位/u)
+  const result = await batch
+  assert.deepEqual(result.items.map(item => item.state), ['captured', 'failed'])
+  assert.equal(fixture.browser.pending().deliveries.length, 1)
+})
+
+test('expired sources return promptly and reuse a body-free TTL result without retrying or blocking the platform', async t => {
+  const fixture = durableFixture(t, url => read(expiredPage, url))
+  const url = 'https://m.58.com/cd/tech/expired.shtml'
+  const first = await fixture.browser.collect({ id: 'project-1', sources: [{ url }] })
+  assert.equal(first.items[0].state, 'not_a_jd')
+  assert.match(first.items[0].message, /已失效/u)
+  assert.equal(fixture.browser.pending().deliveries.length, 0)
+  assert.equal(fixture.browser.platforms()[0].cache_count, 0)
+  assert.equal(fixture.browser.platforms()[0].blocked, false)
+  assert.equal(fixture.browser.platforms()[0].login_required, false)
+  const repeated = await fixture.browser.collect({ id: 'project-2', sources: [{ url }] })
+  assert.equal(repeated.items[0].state, 'not_a_jd')
+  assert.equal(fixture.navigations.length, 1)
+  fixture.browser.close({ id: 'project-1' })
+  await fixture.browser.open({ id: 'project-2', url })
+  assert.equal(fixture.navigations.length, 2, 'An explicit view action can open the expired page under normal rate limits')
+  assert.equal(fixture.browser.pending().deliveries.length, 0)
 })

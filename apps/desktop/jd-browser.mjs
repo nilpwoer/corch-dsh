@@ -1,6 +1,6 @@
 /** Isolated human-login capture windows. Only rendered text leaves the browser session. */
 import { randomUUID, createHash } from 'node:crypto'
-import { createJdCollection, jdChallengeURL, jdHasDuties, jdLoginWall, jdPlatform, jdSourceURL } from './jd-collection.mjs'
+import { createJdCollection, jdChallengeURL, jdHasDuties, jdLoginWall, jdPlatform, jdSourceURL, jdUnavailableReason } from './jd-collection.mjs'
 
 const CAPTURE_WINDOW_TITLE = 'JD 采集 · 完整岗位正文可读后自动保存；风控验证须确认恢复'
 
@@ -8,24 +8,29 @@ const safeURL = jdSourceURL
 
 /** Read rendered duties and identify the displayed job without reading browser credentials.
  * @param document - Current page DOM, evaluated inside the isolated capture window.
+ * @param unavailableReason - Unavailable-source classifier included when the reader is serialized into a renderer.
  * @returns Visible duties sections, login and security-challenge flags, and the job's unambiguous source URL, or null when a list selection cannot be identified.
  */
-export function readJdPage(document) {
+export function readJdPage(document, unavailableReason = jdUnavailableReason) {
   const visible = element => !!(element.getClientRects().length && document.defaultView.getComputedStyle(element).visibility !== 'hidden')
   const duties = element => /(?:岗位职责|工作职责|职位描述|任职要求|职位要求|工作内容|职责描述|job description|responsibilit)[\s:：]*\S/iu.test(element.innerText || '')
+  const pageURL = new URL(document.location.href)
+  const zhaopin = pageURL.hostname === 'zhaopin.com' || pageURL.hostname.endsWith('.zhaopin.com')
+  const zhaopinCard = [...document.querySelectorAll('.describtion-card')].find(element => visible(element) && duties(element) && element.querySelector('.seo-card__content'))
   const details = [...document.querySelectorAll('[class*="job-detail"], [class*="job_detail"], [class*="jobDetail"]')].filter(visible)
   const detail = details.find(duties)
   const section = [...document.querySelectorAll('[class*="job-description"], [class*="job-sec"], main, article')].find(element => visible(element) && duties(element))
-  const root = detail || section || document.body
+  const root = zhaopinCard || (zhaopin ? undefined : detail || section || document.body)
   const descriptionSelector = '[class*="job-sec-text"], [class*="job-description"]'
   const descriptions = [...(root?.matches(descriptionSelector) ? [root] : []), ...(root?.querySelectorAll(descriptionSelector) || [])].filter(element => visible(element) && duties(element))
   const descriptionRoots = descriptions.filter(element => !descriptions.some(other => other !== element && other.contains(element)))
-  const body = descriptionRoots.length ? descriptionRoots.map(element => element.innerText).join('\n\n') : root?.innerText || ''
+  const body = zhaopinCard
+    ? [zhaopinCard.querySelector('.seo-card__title')?.innerText, zhaopinCard.querySelector('.seo-card__content').innerText].filter(Boolean).join('\n')
+    : descriptionRoots.length ? descriptionRoots.map(element => element.innerText).join('\n\n') : root?.innerText || ''
   const heading = [...(root?.querySelectorAll('h1, [class*="job-title"], [class*="job-name"]') || [])].find(visible)
   const pageHeading = [...document.querySelectorAll('h1')].find(visible)
   const firstLine = element => (element?.innerText || '').split('\n').find(line => line.trim())?.trim()
   const detailTitle = detail && firstLine(detail)
-  const pageURL = new URL(document.location.href)
   const boss = pageURL.hostname === 'zhipin.com' || pageURL.hostname.endsWith('.zhipin.com')
   const directBoss = boss && /^\/job_detail\/[^/]+\.html$/u.test(pageURL.pathname)
   const title = ((directBoss && pageHeading?.innerText) || heading?.innerText || (detailTitle && !/^(?:岗位职责|工作职责|职位描述|任职要求|职位要求|工作内容|职责描述|job description|responsibilit)/iu.test(detailTitle) && detailTitle) || pageHeading?.innerText || document.title).trim()
@@ -49,8 +54,11 @@ export function readJdPage(document) {
   const hasDuties = /岗位职责|工作职责|职位描述|任职要求|职位要求|工作内容|职责描述|job description|responsibilit/iu.test(body)
   const login = [...document.querySelectorAll('input[type=password],input[autocomplete=one-time-code]')].some(visible)
     || !hasDuties && (/^passport\./iu.test(pageURL.hostname) || /\/(?:login|signin|passport)(?:[./_-]|$)/iu.test(pageURL.pathname) || /扫码登录|短信登录|手机验证码登录/u.test(pageText))
-  return { title, body, url: sourceURL, blocked, login }
+  const unavailable = unavailableReason(pageText)
+  return { title, body: unavailable ? '' : body, url: sourceURL, blocked, login: unavailable ? false : login, unavailable_reason: unavailable }
 }
+
+const pageReaderSource = () => `(document) => (${readJdPage.toString()})(document, ${jdUnavailableReason.toString()})`
 
 /** Watch DOM changes without polling; navigation and replacement dispose the renderer observer.
  * @param document - Capture page document.
@@ -128,9 +136,14 @@ export function createJdBrowser({ BrowserWindow, maxCaptureChars, loadTimeoutMs,
     try { onPending?.() }
     catch { /* A closing workbench can reject a wake-up; the durable inbox is replayed by its next pending read. */ }
   }
+  const persistDelivery = (projectId, requestedURL, item) => {
+    const added = policy().enqueue({ project_id: projectId, requested_url: requestedURL, item })
+    automaticError = undefined
+    return added
+  }
   const deliver = (state, item) => {
     if (!state.autoCapture || state.verification || policy().blocked(state.sourceURL)) return
-    const added = policy().enqueue({ project_id: state.ownerId, requested_url: state.requestedURL, item })
+    const added = persistDelivery(state.ownerId, state.requestedURL, item)
     state.autoCapture = false
     automaticError = undefined
     for (const capture of state.windows) startMonitor(capture, state)
@@ -153,8 +166,8 @@ export function createJdBrowser({ BrowserWindow, maxCaptureChars, loadTimeoutMs,
     const ownerId = state.ownerId
     const current = () => !disposed && !window.isDestroyed() && state.bindingGeneration === binding && state.ownerId === ownerId && window.jdMonitorEpoch === epoch && !state.verification && !state.suspended && !policy().blocked(state.sourceURL)
     window.jdMonitorKey ||= '__corchJdSecurity_' + randomUUID()
-    const ready = state.autoCapture && allowReady ? `(page) => page.url !== null && !page.login && !(${jdLoginWall.toString()})(page.body) && !/请先登录|登录后(?:才能|可查看|查看)|扫码查看/u.test(page.body) && (${jdHasDuties.toString()})(page.body)` : 'undefined'
-    const script = `(${monitorJdSecurity.toString()})(document, ${readJdPage.toString()}, ${policy().settings.render_settle_ms}, ${JSON.stringify(window.jdMonitorKey)}, ${ready}, ${epoch})`
+    const ready = state.autoCapture && allowReady ? `(page) => !page.unavailable_reason && page.url !== null && !page.login && !(${jdLoginWall.toString()})(page.body) && !/请先登录|登录后(?:才能|可查看|查看)|扫码查看/u.test(page.body) && (${jdHasDuties.toString()})(page.body)` : 'undefined'
+    const script = `(${monitorJdSecurity.toString()})(document, ${pageReaderSource()}, ${policy().settings.render_settle_ms}, ${JSON.stringify(window.jdMonitorKey)}, ${ready}, ${epoch})`
     void window.webContents.executeJavaScript(script).then(async result => {
       if (!current()) return
       if (result === true) { stopPlatform(state.sourceURL, '页面动态显示安全验证或访问限制，自动访问已停止'); return }
@@ -276,12 +289,18 @@ export function createJdBrowser({ BrowserWindow, maxCaptureChars, loadTimeoutMs,
     if (policy().blocked(state.sourceURL) && !allowResume) return blockedItem(state.sourceURL)
     if (window.webContents.isLoadingMainFrame()) throw new Error('页面仍在加载，请稍后继续采集')
     const actualURL = safeURL(window.webContents.getURL())
-    const result = await window.webContents.executeJavaScript(`(${readJdPage.toString()})(document)`)
+    const result = await window.webContents.executeJavaScript(`(${pageReaderSource()})(document)`)
     if (!isActive() || state.bindingGeneration !== binding) throw new Error('岗位页面采集已停止或已切换搜索')
     if (policy().blocked(state.sourceURL) && !allowResume) return blockedItem(state.sourceURL)
     if (result.blocked || jdChallengeURL(actualURL)) {
       stopPlatform(state.sourceURL, '页面显示安全验证或访问限制，自动访问已停止')
       return blockedItem(state.sourceURL)
+    }
+    state.unavailableReason = result.unavailable_reason
+    if (result.unavailable_reason) {
+      state.autoCapture = false
+      policy().cacheUnavailable(state.sourceURL, result.unavailable_reason)
+      return { state: 'not_a_jd', url: state.sourceURL, message: result.unavailable_reason }
     }
     if (result.login || jdLoginWall(result.body) || /请先登录|登录后(?:才能|可查看|查看)|扫码查看/u.test(result.body)) {
       policy().login(state.sourceURL, true)
@@ -332,7 +351,7 @@ export function createJdBrowser({ BrowserWindow, maxCaptureChars, loadTimeoutMs,
           if (window.webContents.isLoadingMainFrame()) continue
           try {
             const item = await inspect(state, { isActive: () => active && !disposed && !window.isDestroyed() })
-            if (item.state !== 'not_a_jd') return item
+            if (item.state !== 'not_a_jd' || state.unavailableReason) return item
           } catch (error) {
             if (!window.webContents.isLoadingMainFrame()) throw error
           }
@@ -380,13 +399,18 @@ export function createJdBrowser({ BrowserWindow, maxCaptureChars, loadTimeoutMs,
       const items = []
       for (const source of sources.slice(0, policy().settings.max_sources_per_batch)) items.push(await policy().run(source.url, async () => {
         const cached = policy().cached(source.url)
-        if (cached) return cached
+        if (cached) {
+          if (cached.state === 'captured' && persistDelivery(input.id, source.url, cached)) notifyPending()
+          return cached
+        }
         if (policy().blocked(source.url)) return blockedItem(source.url)
         const existing = platformWindows.get(jdPlatform(source.url))
         if (existing?.verification || policy().statuses().find(item => item.platform === jdPlatform(source.url))?.login_required) return { state: 'login_required', url: source.url, message: '该平台正在等待你完成登录或验证，已暂停自动打开其他岗位。' }
         const state = getState(input.id, source.url)
+        const binding = state.bindingGeneration
         state.autoCapture = false
         const item = await navigate(state, source.url)
+        if (item.state === 'captured' && state.bindingGeneration === binding && persistDelivery(input.id, source.url, item)) notifyPending()
         if (item.state === 'login_required') {
           state.autoCapture = true
           for (const capture of state.windows) startMonitor(capture, state)

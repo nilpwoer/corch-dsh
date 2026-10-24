@@ -56,6 +56,16 @@ export function jdHasDuties(body) {
   return content.length >= 4 && !/^(?:正在)?加载(?:中)?(?:请稍候|请稍后)?$/u.test(content)
 }
 
+/** Identify an expired source page before considering duties shown in recommendations.
+ * @param body - Visible page text or a previously cached original.
+ * @returns Explicit unavailability reason, or an empty string when no unavailable-page marker is present.
+ */
+export function jdUnavailableReason(body) {
+  return /您查看的内容(?:已)?不存在|(?:您查看的|该|此)(?:职位|岗位|招聘信息|职位信息)(?:已|已经)(?:失效|下线|关闭|删除|过期|停止招聘)|(?:该|此)(?:职位|岗位|招聘信息|职位信息)不存在/u.test(body)
+    ? '该岗位已失效或内容不存在，未采集页面上的推荐职位；请选择其他有效岗位来源。'
+    : ''
+}
+
 /** Persist policy and successful originals outside research projects; malformed settings or durable state fail closed.
  * @param options - Desktop data directory; omitted only by in-memory browser fixtures.
  * @returns Cache, circuit-breaker, sequential scheduling, and request-budget operations.
@@ -87,7 +97,7 @@ export function createJdCollection({ dataDirectory } = {}) {
   const inboxPath = directory && join(directory, 'inbox.json')
   let inbox = inboxPath && existsSync(inboxPath) ? JSON.parse(readFileSync(inboxPath, 'utf8')) : { version: 1, deliveries: [], acknowledged: [] }
   const validId = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,128}$/u.test(value)
-  const validCaptured = item => item?.state === 'captured' && typeof item.body === 'string' && typeof item.title === 'string' && typeof item.cached === 'boolean' && Number.isFinite(Date.parse(item.captured_at)) && createHash('sha256').update(item.body).digest('hex') === item.content_hash && jdSourceURL(item.url) === item.url && !jdLoginWall(item.body) && jdHasDuties(item.body)
+  const validCaptured = item => item?.state === 'captured' && typeof item.body === 'string' && typeof item.title === 'string' && typeof item.cached === 'boolean' && Number.isFinite(Date.parse(item.captured_at)) && createHash('sha256').update(item.body).digest('hex') === item.content_hash && jdSourceURL(item.url) === item.url && !jdLoginWall(item.body) && !jdUnavailableReason(item.body) && jdHasDuties(item.body)
   const deliveryId = (projectId, item) => createHash('sha256').update(projectId + '\0' + item.url + '\0' + item.content_hash).digest('hex')
   if (inbox?.version !== 1 || !Array.isArray(inbox.deliveries) || !Array.isArray(inbox.acknowledged) || inbox.acknowledged.some(id => typeof id !== 'string' || !/^[a-f0-9]{64}$/u.test(id))) throw new Error('JD 自动采集投递记录无效，已停止自动保存')
   for (const delivery of inbox.deliveries) if (!validId(delivery.project_id) || jdSourceURL(delivery.requested_url) !== delivery.requested_url || !validCaptured(delivery.item) || delivery.id !== deliveryId(delivery.project_id, delivery.item) || jdPlatform(delivery.requested_url) !== jdPlatform(delivery.item.url)) throw new Error('JD 自动采集投递正文或来源校验失败，已停止自动保存')
@@ -96,21 +106,33 @@ export function createJdCollection({ dataDirectory } = {}) {
   const platform = key => state.platforms[key] ||= { blocked: false, navigations: [], last_navigation: 0, login_required: false }
   const save = () => { if (statePath) atomic(statePath, state) }
   const cacheKey = url => createHash('sha256').update(jdSourceURL(url)).digest('hex')
+  const storedCache = key => {
+    const file = directory && join(directory, key + '.json')
+    return file && existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : memoryCache.get(key)
+  }
   const cacheRead = url => {
     const key = cacheKey(url)
-    const file = directory && join(directory, key + '.json')
-    const item = file && existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : memoryCache.get(key)
+    const item = storedCache(key)
     if (!item) return undefined
+    if (item.state === 'not_a_jd' && item.unavailable === true) {
+      if (jdSourceURL(item.url) !== jdSourceURL(url) || typeof item.message !== 'string' || !Number.isFinite(Date.parse(item.classified_at))) throw new Error('JD 失效来源缓存校验失败')
+      const age = Date.now() - Date.parse(item.classified_at)
+      return age >= 0 && age <= settings.cache_ttl_ms ? { state: 'not_a_jd', url: item.url, message: item.message } : undefined
+    }
     if (item.state !== 'captured' || typeof item.body !== 'string' || typeof item.title !== 'string' || !Number.isFinite(Date.parse(item.captured_at)) || createHash('sha256').update(item.body).digest('hex') !== item.content_hash || jdSourceURL(item.url) !== item.url || jdPlatform(item.url) !== jdPlatform(url)) throw new Error('JD 原文缓存校验失败，已停止使用该缓存')
+    const unavailable = jdUnavailableReason(item.body)
+    if (unavailable) return { state: 'not_a_jd', url: item.url, message: unavailable }
     if (jdLoginWall(item.body)) {
       platform(jdPlatform(url)).login_required = true
       save()
       return { state: 'login_required', url: item.url, message: '已有记录包含“登录查看完整内容”等提示，属于部分公开正文，未作为完整 JD 使用。请登录后重新采集完整岗位。' }
     }
     if (!jdHasDuties(item.body)) return undefined
+    if (jdPlatform(url) === 'zhaopin.com' && item.extraction_version !== 1) return undefined
     const age = Date.now() - Date.parse(item.captured_at)
     if (age < 0 || age > settings.cache_ttl_ms) return undefined
-    return { ...item, cached: true }
+    const { extraction_version: _version, ...captured } = item
+    return { ...captured, cached: true }
   }
   return {
     settings,
@@ -142,13 +164,25 @@ export function createJdCollection({ dataDirectory } = {}) {
     cache(url, item) {
       if (jdLoginWall(item.body)) throw new Error('包含登录墙的部分 JD 不能保存为完整原文缓存')
       if (!jdHasDuties(item.body)) throw new Error('未取得实质岗位职责或任职要求，不能保存为完整原文缓存')
-      const value = { state: 'captured', url: item.url, title: item.title, body: item.body, captured_at: item.captured_at, content_hash: item.content_hash, cached: false }
+      if (jdUnavailableReason(item.body)) throw new Error('已失效来源不能保存推荐职位为原文缓存')
+      const value = { state: 'captured', url: item.url, title: item.title, body: item.body, captured_at: item.captured_at, content_hash: item.content_hash, cached: false, extraction_version: 1 }
       const key = cacheKey(url)
-      const existed = directory ? existsSync(join(directory, key + '.json')) : memoryCache.has(key)
+      const wasCaptured = storedCache(key)?.state === 'captured'
       if (directory) atomic(join(directory, key + '.json'), value)
       else memoryCache.set(key, value)
-      platform(jdPlatform(url)).cache_count = (platform(jdPlatform(url)).cache_count || 0) + (existed ? 0 : 1)
+      platform(jdPlatform(url)).cache_count = (platform(jdPlatform(url)).cache_count || 0) + (wasCaptured ? 0 : 1)
       save()
+    },
+    cacheUnavailable(url, message) {
+      const key = cacheKey(url)
+      const wasCaptured = storedCache(key)?.state === 'captured'
+      const value = { state: 'not_a_jd', unavailable: true, url: jdSourceURL(url), message, classified_at: new Date().toISOString() }
+      if (directory) atomic(join(directory, key + '.json'), value)
+      else memoryCache.set(key, value)
+      if (wasCaptured) {
+        platform(jdPlatform(url)).cache_count = Math.max(0, (platform(jdPlatform(url)).cache_count || 0) - 1)
+        save()
+      }
     },
     statuses() {
       return Object.entries(state.platforms).map(([key, value]) => ({ platform: key, blocked: value.blocked, reason: value.reason, blocked_at: value.blocked_at, cache_count: value.cache_count || 0, login_required: value.login_required || false, next_navigation_at: new Date(value.last_navigation + settings.min_interval_ms).toISOString() }))
