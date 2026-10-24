@@ -2,16 +2,19 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { JdSearchSidebar, JdSearchWorkbench } from '../src/client/JdSearchWorkbench.tsx'
-import type { TeachingReformProps } from '../src/client/types.ts'
+import type { JdBrowserDelivery, TeachingReformProps } from '../src/client/types.ts'
 import type { JdProject, JdProjectSummary } from '../src/jd/types.ts'
 import { projectId } from '../src/jd/document.ts'
 import { graphFixture, projectFixture } from './jd-fixture.client.ts'
 import { collectJdBrowser, exportJdHtml, hasJdBrowser, jdBrowserPlatforms, jdBrowserStatus,
-  openJdBrowser, readJdBrowser, resumeJdBrowser, verifyJdBrowser } from '../src/client/jdNative.ts'
+  openJdBrowser, readJdBrowser, resumeJdBrowser, verifyJdBrowser, ackJdBrowserDeliveries,
+  observeJdBrowserDeliveries, pendingJdBrowserDeliveries } from '../src/client/jdNative.ts'
+import { syncJdBrowserDeliveries } from '../src/client/jdDeliverySync.ts'
 
 vi.mock('../src/client/jdNative.ts', () => ({
   jdBrowserStatus: vi.fn(), openJdBrowser: vi.fn(), readJdBrowser: vi.fn(), exportJdHtml: vi.fn(),
   collectJdBrowser: vi.fn(), hasJdBrowser: vi.fn(), jdBrowserPlatforms: vi.fn(), resumeJdBrowser: vi.fn(), verifyJdBrowser: vi.fn(),
+  ackJdBrowserDeliveries: vi.fn(), observeJdBrowserDeliveries: vi.fn(), pendingJdBrowserDeliveries: vi.fn(),
   jdHash: vi.fn().mockResolvedValue('synthetic-hash'),
 }))
 afterEach(cleanup)
@@ -22,6 +25,9 @@ beforeEach(() => {
   vi.mocked(jdBrowserPlatforms).mockResolvedValue([])
   vi.mocked(collectJdBrowser).mockResolvedValue({ items: [], platforms: [] })
   vi.mocked(verifyJdBrowser).mockResolvedValue(undefined)
+  vi.mocked(pendingJdBrowserDeliveries).mockResolvedValue([])
+  vi.mocked(ackJdBrowserDeliveries).mockResolvedValue(undefined)
+  vi.mocked(observeJdBrowserDeliveries).mockReturnValue(() => undefined)
   vi.mocked(openJdBrowser).mockResolvedValue('capture-window')
   vi.mocked(exportJdHtml).mockResolvedValue({ path: 'C:/Reports/graph.html', opened: 'browser' })
 })
@@ -83,6 +89,92 @@ async function enterSearch(): Promise<void> {
   await waitFor(() => { expect(screen.getByRole<HTMLButtonElement>('button', { name: '开始检索' }).disabled).toBe(false) })
   fireEvent.click(screen.getByRole('button', { name: '开始检索' }))
 }
+function autoDelivery(project: JdProject): JdBrowserDelivery {
+  return { id: `capture-${project.id}` as JdBrowserDelivery['id'], project_id: project.id, requested_url: 'https://example.test/candidate/1',
+    item: { state: 'captured', title: '自动保存岗位', url: 'https://example.test/job/actual',
+      body: '岗位职责：照护老人。任职要求：熟悉护理技能。', content_hash: 'auto-capture-hash', captured_at: project.updated_at } }
+}
+test('automatic captures save their original search without a mounted workbench and replay without duplicate evidence', async () => {
+  const origin = draft('automatic-origin')
+  const other = draft('automatic-other')
+  const delivery = autoDelivery(origin)
+  origin.pending_sources = [{ title: '候选岗位', url: delivery.requested_url, reason: '需要登录' }]
+  const { input, records } = fixture([origin, other])
+  vi.mocked(pendingJdBrowserDeliveries).mockResolvedValue([delivery])
+  const stop = syncJdBrowserDeliveries(input)
+  await waitFor(() => { expect(ackJdBrowserDeliveries).toHaveBeenCalledWith([delivery.id]) })
+  await stop()
+  const saved = records.get(origin.id)!
+  expect(saved.sources).toEqual([expect.objectContaining({ source_url: delivery.item.url, content_hash: delivery.item.content_hash,
+    captured_at: delivery.item.captured_at, acquisition: 'browser' })])
+  expect(saved.pending_sources).toEqual([])
+  expect(records.get(other.id)).toEqual(other)
+  const restarted = fixture([saved, other])
+  const stopRestarted = syncJdBrowserDeliveries(restarted.input)
+  await waitFor(() => { expect(ackJdBrowserDeliveries).toHaveBeenCalledTimes(2) })
+  await stopRestarted()
+  expect(restarted.records.get(origin.id)?.sources).toHaveLength(1)
+})
+test('automatic capture persistence shares the in-flight autosave and preserves newer draft edits', async () => {
+  const origin = draft('automatic-draft')
+  const { input, records } = fixture([origin])
+  const save = vi.mocked(input.saveJdProject).getMockImplementation()!
+  let acknowledge: (() => void) | undefined
+  vi.mocked(input.saveJdProject).mockImplementationOnce(async (value) => {
+    await new Promise<void>((resolve) => { acknowledge = resolve })
+    return save(value)
+  })
+  render(<JdSearchWorkbench {...input} />)
+  fireEvent.change(await screen.findByLabelText('学科 / 专业'), { target: { value: '护理' } })
+  await waitFor(() => { expect(acknowledge).toBeDefined() })
+  vi.mocked(pendingJdBrowserDeliveries).mockResolvedValue([autoDelivery(origin)])
+  const stop = syncJdBrowserDeliveries(input)
+  fireEvent.change(screen.getByLabelText('学科 / 专业'), { target: { value: '智慧养老护理' } })
+  await act(async () => { acknowledge?.() })
+  await waitFor(() => { expect(ackJdBrowserDeliveries).toHaveBeenCalled() })
+  await stop()
+  expect(records.get(origin.id)?.major).toBe('智慧养老护理')
+  expect(records.get(origin.id)?.sources).toHaveLength(1)
+  expect(screen.getByLabelText('学科 / 专业')).toHaveProperty('value', '智慧养老护理')
+})
+test('failed automatic saves keep their native delivery and retry only after a successful Host save', async () => {
+  const origin = draft('automatic-retry')
+  const { input, records } = fixture([origin])
+  render(<JdSearchWorkbench {...input} />)
+  await screen.findByLabelText('学科 / 专业')
+  vi.mocked(input.saveJdProject).mockRejectedValueOnce(new Error('模拟磁盘写入失败'))
+  vi.mocked(pendingJdBrowserDeliveries).mockResolvedValue([autoDelivery(origin)])
+  const stop = syncJdBrowserDeliveries(input)
+  await screen.findByText('模拟磁盘写入失败')
+  expect(ackJdBrowserDeliveries).not.toHaveBeenCalled()
+  expect(records.get(origin.id)?.sources).toEqual([])
+  fireEvent.click(screen.getByRole('button', { name: '重试保存' }))
+  await waitFor(() => { expect(ackJdBrowserDeliveries).toHaveBeenCalledWith([autoDelivery(origin).id]) })
+  await stop()
+  expect(records.get(origin.id)?.sources).toHaveLength(1)
+})
+test('retry after a committed save loses its response keeps newer drafts and acknowledges without reload', async () => {
+  const origin = draft('automatic-response-loss')
+  const { input, records } = fixture([origin])
+  render(<JdSearchWorkbench {...input} />)
+  await screen.findByLabelText('学科 / 专业')
+  const save = vi.mocked(input.saveJdProject).getMockImplementation()!
+  vi.mocked(input.saveJdProject).mockImplementationOnce(async (value) => {
+    await save(value)
+    throw new Error('Host 已提交但响应丢失')
+  })
+  vi.mocked(pendingJdBrowserDeliveries).mockResolvedValue([autoDelivery(origin)])
+  const stop = syncJdBrowserDeliveries(input)
+  await screen.findByText('Host 已提交但响应丢失')
+  expect(records.get(origin.id)?.sources).toHaveLength(1)
+  expect(ackJdBrowserDeliveries).not.toHaveBeenCalled()
+  fireEvent.change(screen.getByLabelText('学科 / 专业'), { target: { value: '响应丢失后的新草稿' } })
+  await act(async () => { window.dispatchEvent(new Event('focus')) })
+  await waitFor(() => { expect(ackJdBrowserDeliveries).toHaveBeenCalledWith([autoDelivery(origin).id]) })
+  await stop()
+  expect(records.get(origin.id)?.sources).toHaveLength(1)
+  expect(records.get(origin.id)?.major).toBe('响应丢失后的新草稿')
+})
 test('role inference and search are archived in the owning JD session', async () => {
   const { input, records } = fixture()
   render(<JdSearchWorkbench {...input} />)

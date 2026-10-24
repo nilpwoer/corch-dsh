@@ -7,7 +7,7 @@ import { resolve, join, sep } from 'node:path'
 import { parseArgs } from 'node:util'
 import { fileURLToPath } from 'node:url'
 import { backendEnvironment } from './policy.mjs'
-import { fixtureBody, startJdFixture } from './jd-research-fixture.mjs'
+import { autoFixtureBody, autoReplayBody, fixtureBody, startJdFixture } from './jd-research-fixture.mjs'
 
 const require = createRequire(import.meta.url)
 const { _electron: electron } = require('playwright')
@@ -76,6 +76,14 @@ async function stoppedPlatform(platform) {
     await new Promise(resolve => setTimeout(resolve, 100))
   }
   assert.fail('Rendered security challenge did not persist a platform stop: ' + platform)
+}
+async function pendingDeliveries(predicate, description) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const result = await native('pending')
+    if (predicate(result.deliveries)) return result.deliveries
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  assert.fail('Native delivery inbox did not reach: ' + description)
 }
 async function openResearch() {
   await page.getByRole('button', { name: 'JD 搜索', exact: true }).click()
@@ -361,6 +369,11 @@ try {
   const [detail] = await Promise.all([desktop.waitForEvent('window'), capture.getByRole('link', { name: '新窗口打开岗位', exact: true }).click()])
   await detail.getByRole('heading', { name: '合成后端开发岗位', exact: true }).waitFor()
   await capture.close()
+  const renderSettleMs = JSON.parse(await readFile(join(data, 'jd-collection-settings.json'), 'utf8')).render_settle_ms
+  await new Promise(resolve => setTimeout(resolve, renderSettleMs * 2))
+  assert.equal((await rpc('/jd', 'read', { id: first.id })).sources.length, 0, 'A readable JD in verification mode must still require explicit resume')
+  assert.ok((await native('platforms')).some(platform => platform.blocked), 'A readable verification page must not silently clear the platform stop')
+  assert.ok((await native('pending')).deliveries.every(delivery => delivery.project_id !== first.id), 'Verification pages cannot enqueue automatic source delivery')
   await page.getByRole('button', { name: '已完成验证，恢复采集', exact: true }).click()
   await page.getByText('JD 原文和来源已保存。', { exact: true }).waitFor()
   const saved = await rpc('/jd', 'read', { id: first.id })
@@ -465,6 +478,74 @@ try {
   await page.getByRole('heading', { name: '从学科专业推理实际岗位' }).waitFor()
   assert.equal(await page.getByRole('textbox', { name: '学科 / 专业', exact: true }).inputValue(), '智慧养老护理')
   checks.push('actual restart restores independent project drafts, selected step/version, immutable graph versions and confirmations without model regeneration')
+
+  const secondBeforeAutomatic = await rpc('/jd', 'read', { id: second.id })
+  await page.getByRole('button', { name: '＋ 新建搜索', exact: true }).click()
+  const automatic = (await archivedProjects(4)).find(project => ![first.id, second.id, repeated.id].includes(project.id))
+  assert.ok(automatic)
+  await selectedProject(automatic.id)
+  await page.getByRole('textbox', { name: '学科 / 专业', exact: true }).fill('自动登录验收')
+  await page.getByRole('textbox', { name: '岗位名称（可手动修改，使用顿号分隔）', exact: true }).fill('照护设备维护员')
+  await rpc('/api', 'session.selectModel', { sessionId: automatic.session_id, provider: 'jd-fixture', model: 'jd-fixture-model' })
+  await page.getByRole('button', { name: '确认岗位并继续', exact: true }).click()
+  const automaticWindow = desktop.waitForEvent('window')
+  await page.getByRole('button', { name: '开始检索', exact: true }).click()
+  const autoCapture = await automaticWindow
+  await autoCapture.getByRole('button', { name: '登录自动采集合成站点', exact: true }).waitFor()
+  await page.getByRole('button', { name: '打开登录', exact: true }).waitFor()
+  const autoDraftText = '岗位职责：这是用户尚未导入的独立草稿，不应被自动采集清除。'
+  await page.getByRole('region', { name: '采集或导入 JD', exact: true }).getByRole('textbox', { name: /^导入\s*JD\s*原文$/u }).fill(autoDraftText)
+  await page.getByRole('textbox', { name: '企业（可填未披露）', exact: true }).fill('自动采集前的用户草稿企业')
+  const autoDraft = await savedProject(automatic.id, project => project.workspace.capture.body === autoDraftText, 'independent automatic-capture draft')
+  assert.equal(autoDraft.sources.length, 0, 'A partial login-walled job cannot be automatically stored')
+  await selectProject(second.id)
+  await page.getByRole('button', { name: '关闭详情', exact: true }).click()
+  await autoCapture.getByLabel('自动采集合成账号', { exact: true }).fill('synthetic-auto-user')
+  await autoCapture.getByLabel('自动采集合成密码', { exact: true }).fill('synthetic-auto-password')
+  await autoCapture.getByRole('button', { name: '登录自动采集合成站点', exact: true }).click()
+  await autoCapture.getByRole('heading', { name: '合成自动存档岗位', exact: true }).waitFor()
+  const autoSaved = await savedProject(automatic.id, project => project.sources.some(source => source.body.includes(autoFixtureBody)), 'automatic save after login while another project is selected and Details is closed')
+  assert.equal(autoSaved.sources.length, 1)
+  assert.equal(autoSaved.sources[0].acquisition, 'browser')
+  assert.equal(autoSaved.sources[0].content_hash, createHash('sha256').update(autoSaved.sources[0].body).digest('hex'))
+  assert.equal(autoSaved.workspace.capture.body, autoDraftText)
+  assert.equal(autoSaved.workspace.capture.company, '自动采集前的用户草稿企业')
+  assert.deepEqual((await rpc('/jd', 'read', { id: second.id })).sources, secondBeforeAutomatic.sources)
+  assert.deepEqual((await rpc('/jd', 'read', { id: second.id })).workspace, secondBeforeAutomatic.workspace)
+  await pendingDeliveries(deliveries => deliveries.every(delivery => delivery.project_id !== automatic.id), 'saved delivery acknowledged')
+
+  const replayUrl = fixture.origin + '/auto-job?replay=1'
+  let committedBeforeReload
+  const interruptSaveResponse = async (route) => {
+    const requestedProject = route.request().postDataJSON()?.payload?.project
+    if (requestedProject?.id !== automatic.id || !requestedProject.sources.some(source => source.body.includes(autoReplayBody))) {
+      await route.continue()
+      return
+    }
+    const response = await route.fetch()
+    committedBeforeReload = await response.json()
+    // The real Host commit succeeds; renderer reload aborts its unanswered fetch before acknowledgement.
+  }
+  await page.route('**/jd/save', interruptSaveResponse)
+  await native('open', { id: automatic.id, url: replayUrl })
+  for (let attempt = 0; attempt < 100 && !committedBeforeReload; attempt++) await new Promise(resolve => setTimeout(resolve, 100))
+  assert.ok(committedBeforeReload?.result?.ok, 'Automatic delivery must reach a real Host commit before the simulated interrupted response')
+  const committedProject = await rpc('/jd', 'read', { id: automatic.id })
+  assert.equal(committedProject.sources.filter(source => source.body.includes(autoReplayBody)).length, 1)
+  const unacknowledged = await pendingDeliveries(deliveries => deliveries.some(delivery => delivery.project_id === automatic.id && delivery.item.body.includes(autoReplayBody)), 'committed delivery remains unacknowledged before renderer reload')
+  const replayDeliveryIds = unacknowledged.filter(delivery => delivery.project_id === automatic.id).map(delivery => delivery.id)
+  await page.unroute('**/jd/save', interruptSaveResponse)
+  await page.reload()
+  await page.getByRole('button', { name: 'JD 搜索', exact: true }).waitFor()
+  await pendingDeliveries(deliveries => deliveries.every(delivery => !replayDeliveryIds.includes(delivery.id)), 'reloaded global receiver replays and acknowledges the saved delivery')
+  const replayed = await rpc('/jd', 'read', { id: automatic.id })
+  assert.equal(replayed.sources.length, 2)
+  assert.equal(replayed.sources.filter(source => source.body.includes(autoReplayBody)).length, 1)
+  assert.equal(replayed.workspace.capture.body, autoDraftText)
+  assert.equal(replayed.workspace.capture.company, '自动采集前的用户草稿企业')
+  assert.deepEqual((await rpc('/jd', 'read', { id: second.id })).workspace, secondBeforeAutomatic.workspace)
+  await autoCapture.close()
+  checks.push('login alone automatically archives complete originals in the originating project outside its view; partial walls and security verification do not auto-save; drafts survive and an interrupted commit response replays exactly once after reload')
   const actual = {
     levels: graphProject.graphs[0].nodes.map(node => ({ kind: node.kind, title: node.title, basis: node.basis, quotes: node.evidence.map(entry => entry.quote) })),
     tools: fixture.toolCalls, original_saved: saved.sources[0].body.includes(fixtureBody), acquisition: saved.sources[0].acquisition,
@@ -472,6 +553,9 @@ try {
     capture: { browser_first: true, continue_requires_window: true, login_rejected: true, security_challenge_rejected: true, popup_survives_parent_close: true },
     collection_policy: { fetch_and_shell_denied_by_executor: true, browser_requests_only: true, cross_project_platform_stop: true,
       explicit_verified_resume: true, cache_without_navigation: true, persisted_cache_after_restart: true, original_capture_time_preserved: true },
+    automatic_capture: { login_without_continue_or_read: true, partial_login_original_rejected: true, verification_requires_explicit_resume: true,
+      origin_project_saved_while_other_selected: true, details_closed: true, other_project_unchanged: true, user_draft_preserved: true,
+      committed_delivery_unacknowledged_before_reload: true, reload_replay_idempotent: true, acknowledgement_after_save: true },
     confirmation: { host_persisted: true, discoverable_for_curriculum: true, export_denied_before_confirmation: true, each_version_requires_confirmation: true, confirmed_versions: allConfirmed.confirmations.map(item => item.version) },
     html_export: { saved_in_client_data: true, system_browser_requested: true, exact_source_quotes: true, hashes_and_urls: true, inference_marked: true, source_text_immutable: true },
     file_import: { txt_loaded: true, md_loaded: true, keyboard_same_file_reselection: true, filename_feedback: true, unsaved_draft_restored: true },
@@ -483,7 +567,7 @@ try {
   await writeFile(join(out, 'html-exports.json'), JSON.stringify([{ version: 1, path: firstHtml.path, sha256: firstHtml.sha256 }, { version: 2, path: secondHtml.path, sha256: secondHtml.sha256 }], null, 2) + '\n')
   assert.deepEqual(errors, [])
   const persistedFiles = await readdir(join(data, 'dsh/jd-projects'))
-  assert.ok([first.id, second.id, repeated.id].every(id => persistedFiles.includes(id + '.json')))
+  assert.ok([first.id, second.id, repeated.id, automatic.id].every(id => persistedFiles.includes(id + '.json')))
   passed = true
 } catch (error) {
   failure = { message: error.message, stack: error.stack }

@@ -43,6 +43,7 @@
   ],
   "tools": [
     "web_search",
+    "web_search",
     "web_search"
   ],
   "original_saved": true,
@@ -71,6 +72,18 @@
     "cache_without_navigation": true,
     "persisted_cache_after_restart": true,
     "original_capture_time_preserved": true
+  },
+  "automatic_capture": {
+    "login_without_continue_or_read": true,
+    "partial_login_original_rejected": true,
+    "verification_requires_explicit_resume": true,
+    "origin_project_saved_while_other_selected": true,
+    "details_closed": true,
+    "other_project_unchanged": true,
+    "user_draft_preserved": true,
+    "committed_delivery_unacknowledged_before_reload": true,
+    "reload_replay_idempotent": true,
+    "acknowledgement_after_save": true
   },
   "confirmation": {
     "host_persisted": true,

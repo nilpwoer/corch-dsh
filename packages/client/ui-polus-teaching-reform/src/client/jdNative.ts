@@ -1,5 +1,5 @@
 /** Restricted desktop capture and saved-report calls; no credentials enter research documents. */
-import type { JdBrowserCapture, JdBrowserCollection, JdBrowserOutcome, JdPlatformState } from './types.ts'
+import type { JdBrowserCapture, JdBrowserCollection, JdBrowserDelivery, JdBrowserOutcome, JdPlatformState } from './types.ts'
 
 type NativeResult<T> = { ok: true; value: T } | { ok: false; message: string }
 type ResumeResult = { item: JdBrowserOutcome; platforms: JdPlatformState[] }
@@ -16,8 +16,38 @@ declare global {
       platforms(this: void): Promise<NativeResult<JdPlatformState[]>>
       verify(this: void, input: { id: string; url: string }): Promise<NativeResult<{ id: string; state: string }>>
       resume(this: void, input: { id: string; url?: string }): Promise<NativeResult<ResumeResult>>
+      pending(this: void): Promise<NativeResult<{ deliveries: JdBrowserDelivery[] }>>
+      ack(this: void, input: { ids: JdBrowserDelivery['id'][] }): Promise<NativeResult<void>>
+      onPending(this: void, listener: () => void): () => void
     }
   }
+}
+
+/** Read durable automatic captures without removing them from the native inbox.
+ * @returns Pending captures, or an empty inbox in an ordinary browser.
+ */
+export async function pendingJdBrowserDeliveries(): Promise<JdBrowserDelivery[]> {
+  if (typeof window.corchJd?.pending !== 'function') return []
+  const result = await window.corchJd.pending()
+  if (!result.ok) throw new Error(result.message)
+  return result.value.deliveries
+}
+
+/** Remove native captures only after their original Host projects have been saved.
+ * @param ids - Successfully persisted delivery identifiers.
+ */
+export async function ackJdBrowserDeliveries(ids: JdBrowserDelivery['id'][]): Promise<void> {
+  if (!window.corchJd) throw new Error('浏览器原文投递接口不可用')
+  const result = await window.corchJd.ack({ ids })
+  if (!result.ok) throw new Error(result.message)
+}
+
+/** Subscribe to body-free inbox notifications from the desktop broker.
+ * @param listener - Callback requesting a fresh durable inbox read.
+ * @returns Disposal that removes the native notification subscription.
+ */
+export function observeJdBrowserDeliveries(listener: () => void): () => void {
+  return window.corchJd?.onPending(listener) ?? (() => undefined)
 }
 
 /** Detect desktop browser collection without exposing its cookies to the workbench.

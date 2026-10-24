@@ -6,46 +6,11 @@ import type { JdGraph, JdProject, JdProjectSummary, JdSource, JdWorkspace } from
 import { analysisSources, frequency, graphNodes, sourceUrl } from '../jd/document.ts'
 import { collectJdBrowser, exportJdHtml, hasJdBrowser, jdBrowserPlatforms, jdBrowserStatus, jdHash,
   openJdBrowser, readJdBrowser, resumeJdBrowser, verifyJdBrowser } from './jdNative.ts'
+import { flushJdResearch, jdResearchController, notifyJdResearch } from './jdProjectState.ts'
 
 const STEPS = ['搜索目标', '平台与范围', 'JD 原文', '能力图谱']
 const PLATFORMS = ['公开网页', '58 同城', 'BOSS 直聘', '智联招聘', '前程无忧 51job', '鱼泡直聘', '四川高校人才网']
 type FlushRequest = { waits: Promise<void>[] }
-type Ref<T> = { current: T }
-type ResearchController = {
-  current: Ref<JdProject | null>
-  revision: Ref<number>
-  edits: Ref<number>
-  persisted: Ref<number>
-  serial: Ref<Promise<void>>
-  timer: Ref<ReturnType<typeof setTimeout> | undefined>
-  running: Ref<boolean>
-  saving: Ref<boolean>
-  saveError: Ref<boolean>
-  browserOpen: Ref<boolean>
-  platforms: Ref<JdPlatformState[]>
-  listeners: Set<() => void>
-  restoring?: Promise<void>
-}
-const controllers = new WeakMap<TeachingReformProps['saveJdProject'], Map<string, ResearchController>>()
-function controllerFor(props: TeachingReformProps): ResearchController {
-  let sessions = controllers.get(props.saveJdProject)
-  if (!sessions) {
-    sessions = new Map()
-    controllers.set(props.saveJdProject, sessions)
-  }
-  let controller = sessions.get(props.sessionId)
-  if (!controller) {
-    controller = {
-      current: { current: null }, revision: { current: 0 }, edits: { current: 0 }, persisted: { current: 0 },
-      serial: { current: Promise.resolve() }, timer: { current: undefined }, running: { current: false },
-      saving: { current: false }, saveError: { current: false }, browserOpen: { current: false },
-      platforms: { current: [] }, listeners: new Set(),
-    }
-    sessions.set(props.sessionId, controller)
-  }
-  return controller
-}
-
 async function flushWorkbench(): Promise<void> {
   const detail: FlushRequest = { waits: [] }
   window.dispatchEvent(new CustomEvent('jd-project-flush', { detail }))
@@ -78,11 +43,16 @@ export function JdSearchSidebar({
       })
     }
     refresh()
+    const captureFailure = (event: Event): void => {
+      if (active) setError(`浏览器原文自动保存失败：${String((event as CustomEvent<unknown>).detail)}；原文仍保留待重试。`)
+    }
     window.addEventListener('jd-projects-changed', refresh)
+    window.addEventListener('jd-browser-save-error', captureFailure)
     window.addEventListener('focus', refresh)
     return () => {
       active = false
       window.removeEventListener('jd-projects-changed', refresh)
+      window.removeEventListener('jd-browser-save-error', captureFailure)
       window.removeEventListener('focus', refresh)
     }
   }, [listJdProjects, currentSessionId])
@@ -102,7 +72,8 @@ export function JdSearchSidebar({
         <input className={css.input} aria-label="搜索记录" value={query}
           onChange={(event) => { setQuery(event.target.value) }} placeholder="按专业或岗位检索" />
       </label>
-      {error && <p role="alert" className={css.loginNotice}>{error}</p>}
+      {error && <p role="alert" className={css.loginNotice}>{error}<button className={css.infoButton} type="button"
+        onClick={() => { setError(''); window.dispatchEvent(new Event('jd-browser-delivery-retry')) }}>重试保存</button></p>}
       <div className={css.historyList}>
         {history.filter(item => item.title.toLocaleLowerCase().includes(query.toLocaleLowerCase())).map(item =>
           <button className={String(item.session_id) === currentSessionId ? css.historyActive : css.history}
@@ -144,8 +115,8 @@ export function JdSearchWorkbench(props: TeachingReformProps): ReactNode {
   return <ResearchSession key={props.sessionId} {...props} />
 }
 function ResearchSession(props: TeachingReformProps): ReactNode {
-  const [controller] = useState(() => controllerFor(props))
-  const { current, revision, edits, persisted, serial, timer, running } = controller
+  const [controller] = useState(() => jdResearchController(props.saveJdProject, props.sessionId))
+  const { current, revision, edits, timer, running } = controller
   const [project, setProject] = useState<JdProject | null>(current.current)
   const [loading, setLoading] = useState(!current.current)
   const [busy, setBusy] = useState(running.current)
@@ -156,40 +127,12 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
   const [browserOpen, setBrowserOpen] = useState(controller.browserOpen.current)
   const [platforms, setPlatforms] = useState(controller.platforms.current)
   const mounted = useRef(true)
-  const notify = (): void => { for (const listener of controller.listeners) listener() }
+  const notify = (): void => { notifyJdResearch(controller) }
   const publish = (value: JdProject): void => {
     current.current = value
     notify()
   }
-  // The controller survives view switches, so a returning view shares pending searches and their save revisions.
-  const flush = (): Promise<void> => {
-    clearTimeout(timer.current)
-    const task = serial.current.then(async () => {
-      while (current.current && persisted.current < edits.current) {
-        const generation = edits.current
-        const snapshot = { ...current.current, revision: revision.current }
-        controller.saving.current = true
-        notify()
-        try {
-          const saved = await props.saveJdProject(snapshot)
-          revision.current = saved.revision
-          persisted.current = generation
-          controller.saveError.current = false
-          publish(edits.current === generation ? saved : { ...current.current, revision: saved.revision })
-          window.dispatchEvent(new Event('jd-projects-changed'))
-        } catch (reason) {
-          controller.saveError.current = true
-          notify()
-          throw reason
-        } finally {
-          controller.saving.current = false
-          notify()
-        }
-      }
-    })
-    serial.current = task.catch(() => undefined)
-    return task
-  }
+  const flush = (): Promise<void> => flushJdResearch(controller, props.saveJdProject)
   const report = (reason: unknown): void => {
     if (mounted.current) setError(reason instanceof Error ? reason.message : '操作失败')
   }
@@ -408,7 +351,7 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
       controller.browserOpen.current = true
       notify()
       if (mounted.current) {
-        setNotice('浏览器会复用该平台已有登录状态；仅在平台要求时登录。打开岗位详情后点击“继续浏览器采集”。')
+        setNotice('浏览器会复用已有登录状态；仅在平台要求时登录。完整岗位正文可读后将自动采集保存，无需返回点击继续；风控恢复仍需明确确认。')
       }
     })
   }
@@ -460,14 +403,18 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
   const confirm = (): void => {
     run(async () => {
       await flush()
-      const value = requireProject()
-      const selected = value.graphs.find(item => item.version === workspace(value).graph_version) ?? value.graphs.at(-1)
-      if (!selected) throw new Error('请先生成并保存图谱')
-      const saved = await props.confirmJdProject(value.id, selected.version, value.revision)
-      revision.current = saved.revision
-      publish(saved)
-      window.dispatchEvent(new Event('jd-projects-changed'))
-      if (mounted.current) setNotice(`已确认 v${selected.version} 能力图谱，已保存供后续课程建设使用。`)
+      const task = controller.serial.current.then(async () => {
+        const value = requireProject()
+        const selected = value.graphs.find(item => item.version === workspace(value).graph_version) ?? value.graphs.at(-1)
+        if (!selected) throw new Error('请先生成并保存图谱')
+        const saved = await props.confirmJdProject(value.id, selected.version, value.revision)
+        revision.current = saved.revision
+        publish(saved)
+        window.dispatchEvent(new Event('jd-projects-changed'))
+        if (mounted.current) setNotice(`已确认 v${selected.version} 能力图谱，已保存供后续课程建设使用。`)
+      })
+      controller.serial.current = task.catch(() => undefined)
+      await task
     })
   }
   const exportGraph = (): void => {
@@ -499,7 +446,9 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
       <p>每次搜索独立存档；确认图谱后可用于课程建设并导出 HTML 报告。</p></div></header>
     <main className={css.content}>
       <p className={css.muted} role="status">{saving ? '正在保存…' : '已存档'} · 修订 {project.revision} · {project.sources.length} 份原文 · {project.graphs.length} 个图谱版本</p>
-      {error && <div className={css.loginNotice} role="alert">{error}{saveError && <button className={css.infoButton} type="button" disabled={busy} onClick={() => { run(async () => { await flush() }) }}>重试保存</button>}</div>}
+      {error && <div className={css.loginNotice} role="alert">{error}{saveError && <button className={css.infoButton} type="button" disabled={busy} onClick={() => { run(async () => {
+        await flush(); window.dispatchEvent(new Event('jd-browser-delivery-retry'))
+      }) }}>重试保存</button>}</div>}
       {notice && <div className={css.notice} role="status">{notice}</div>}
       {state.search_status === 'running' && !busy && <div className={css.loginNotice}>该搜索尚未完成。可稍后重新打开查看；重新检索会建立新档案并保留本次记录。</div>}
       <nav className={css.progress} aria-label="研究步骤">{STEPS.map((label, index) =>
@@ -557,7 +506,7 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
       </>}
       {state.step === 3 && <>
         <Header step={3} title="JD 原文与来源" text="登录页、反爬提示和搜索摘要不算岗位原文。保留原始 URL、时间和内容指纹；手动导入的来源由你声明。" />
-        <div className={css.notice}>同一平台复用桌面浏览器登录状态与原文缓存，避免重复登录和访问。风控平台已强制暂停；只有手动验证后实际读到完整 JD 才会恢复。登录失效与网络失败分别保留原因。</div>
+        <div className={css.notice}>同一平台复用登录与原文缓存。登录后完整 JD 可读即自动保存到原搜索，切换搜索或关闭工作台也会继续保存。风控平台仍暂停，需明确确认恢复；登录失效与网络失败分别保留原因。</div>
         {platforms.length > 0 && <section className={css.platformStatusList} aria-label="平台采集状态">{platforms.map(item =>
           <article key={item.platform} className={item.blocked ? css.platformStopped : css.platformStatus}>
             <strong>{item.platform} · {item.blocked ? '风控暂停' : item.login_required ? '需要登录' : '可继续采集'}</strong>

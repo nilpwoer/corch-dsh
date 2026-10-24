@@ -1,7 +1,8 @@
 import type { SessionId } from '@deepseek-ai/dsh-client-runtime/client'
+import type { Branded } from '@deepseek-ai/dsh-brand'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { GlobalReferenceDocument } from './interviewTypes.ts'
-import type { JdProject, JdProjectSummary } from '../jd/types.ts'
+import type { JdProject, JdProjectId, JdProjectSummary } from '../jd/types.ts'
 
 export type { InterviewProfile, ExpertMaterial } from './interviewTypes.ts'
 import type { InterviewProfile, ExpertMaterial } from './interviewTypes.ts'
@@ -84,3 +85,11 @@ export type JdBrowserOutcome = JdBrowserCapture | {
 
 /** A collection response reports each URL independently and the resulting platform policy state. */
 export type JdBrowserCollection = { items: JdBrowserOutcome[]; platforms: JdPlatformState[] }
+
+/** Durable native capture addressed to the project that opened its browser window. */
+export type JdBrowserDelivery = {
+  id: Branded<'JdBrowserDeliveryId'>
+  project_id: JdProjectId
+  requested_url: string
+  item: JdBrowserCapture
+}

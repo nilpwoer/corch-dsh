@@ -45,6 +45,17 @@ export function jdLoginWall(body) {
   return /(?:登录|登陆)(?:后)?(?:即可|可|才能|才可)?(?:查看|获取|解锁|阅读|显示)(?:完整(?:内容|职位|信息|岗位|详情|描述|任职要求|岗位职责|JD)|全部(?:内容|信息|详情|描述))|(?:完整)(?:职位|岗位|内容|信息|详情).{0,12}(?:登录|登陆)(?:后)?(?:查看|可见)/iu.test(body)
 }
 
+/** Require responsibilities or requirements followed by actual text, rather than an empty heading or loading placeholder.
+ * @param body - Rendered JD text.
+ * @returns Whether a recognized section contains substantive text.
+ */
+export function jdHasDuties(body) {
+  const match = /(?:岗位职责|工作职责|职位描述|任职要求|职位要求|工作内容|职责描述|job description|responsibilit(?:y|ies)?)[\s:：]*([\s\S]+)/iu.exec(body)
+  if (!match) return false
+  const content = match[1].replace(/岗位职责|工作职责|职位描述|任职要求|职位要求|工作内容|职责描述|job description|responsibilit(?:y|ies)?/giu, '').replace(/[^\p{L}\p{N}]/gu, '')
+  return content.length >= 4 && !/^(?:正在)?加载(?:中)?(?:请稍候|请稍后)?$/u.test(content)
+}
+
 /** Persist policy and successful originals outside research projects; malformed settings or durable state fail closed.
  * @param options - Desktop data directory; omitted only by in-memory browser fixtures.
  * @returns Cache, circuit-breaker, sequential scheduling, and request-budget operations.
@@ -73,6 +84,15 @@ export function createJdCollection({ dataDirectory } = {}) {
   const waits = new Set()
   let disposed = false
   const memoryCache = new Map()
+  const inboxPath = directory && join(directory, 'inbox.json')
+  let inbox = inboxPath && existsSync(inboxPath) ? JSON.parse(readFileSync(inboxPath, 'utf8')) : { version: 1, deliveries: [], acknowledged: [] }
+  const validId = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,128}$/u.test(value)
+  const validCaptured = item => item?.state === 'captured' && typeof item.body === 'string' && typeof item.title === 'string' && typeof item.cached === 'boolean' && Number.isFinite(Date.parse(item.captured_at)) && createHash('sha256').update(item.body).digest('hex') === item.content_hash && jdSourceURL(item.url) === item.url && !jdLoginWall(item.body) && jdHasDuties(item.body)
+  const deliveryId = (projectId, item) => createHash('sha256').update(projectId + '\0' + item.url + '\0' + item.content_hash).digest('hex')
+  if (inbox?.version !== 1 || !Array.isArray(inbox.deliveries) || !Array.isArray(inbox.acknowledged) || inbox.acknowledged.some(id => typeof id !== 'string' || !/^[a-f0-9]{64}$/u.test(id))) throw new Error('JD 自动采集投递记录无效，已停止自动保存')
+  for (const delivery of inbox.deliveries) if (!validId(delivery.project_id) || jdSourceURL(delivery.requested_url) !== delivery.requested_url || !validCaptured(delivery.item) || delivery.id !== deliveryId(delivery.project_id, delivery.item) || jdPlatform(delivery.requested_url) !== jdPlatform(delivery.item.url)) throw new Error('JD 自动采集投递正文或来源校验失败，已停止自动保存')
+  if (new Set([...inbox.deliveries.map(item => item.id), ...inbox.acknowledged]).size !== inbox.deliveries.length + inbox.acknowledged.length) throw new Error('JD 自动采集投递标识重复，已停止自动保存')
+  const saveInbox = next => { if (inboxPath) atomic(inboxPath, next); inbox = next }
   const platform = key => state.platforms[key] ||= { blocked: false, navigations: [], last_navigation: 0, login_required: false }
   const save = () => { if (statePath) atomic(statePath, state) }
   const cacheKey = url => createHash('sha256').update(jdSourceURL(url)).digest('hex')
@@ -87,12 +107,26 @@ export function createJdCollection({ dataDirectory } = {}) {
       save()
       return { state: 'login_required', url: item.url, message: '已有记录包含“登录查看完整内容”等提示，属于部分公开正文，未作为完整 JD 使用。请登录后重新采集完整岗位。' }
     }
+    if (!jdHasDuties(item.body)) return undefined
     const age = Date.now() - Date.parse(item.captured_at)
     if (age < 0 || age > settings.cache_ttl_ms) return undefined
     return { ...item, cached: true }
   }
   return {
     settings,
+    pending() { return { deliveries: structuredClone(inbox.deliveries) } },
+    enqueue({ project_id: projectId, requested_url: requestedURL, item }) {
+      if (!validId(projectId) || jdSourceURL(requestedURL) !== requestedURL || !validCaptured(item) || jdPlatform(requestedURL) !== jdPlatform(item.url)) throw new Error('自动采集的项目、完整正文或来源无效，未保存')
+      const id = deliveryId(projectId, item)
+      if (inbox.acknowledged.includes(id) || inbox.deliveries.some(delivery => delivery.id === id)) return false
+      saveInbox({ ...inbox, deliveries: [...inbox.deliveries, { id, project_id: projectId, requested_url: requestedURL, item: structuredClone(item) }] })
+      return true
+    },
+    ack(input) {
+      if (!Array.isArray(input?.ids) || input.ids.length > 1000 || input.ids.some(id => typeof id !== 'string' || !/^[a-f0-9]{64}$/u.test(id))) throw new Error('自动采集确认标识无效')
+      const confirmed = inbox.deliveries.filter(item => input.ids.includes(item.id)).map(item => item.id)
+      if (confirmed.length) saveInbox({ ...inbox, deliveries: inbox.deliveries.filter(item => !confirmed.includes(item.id)), acknowledged: [...inbox.acknowledged, ...confirmed] })
+    },
     blocked(url) { return state.platforms[jdPlatform(url)]?.blocked || false },
     block(url, reason) {
       const value = platform(jdPlatform(url))
@@ -107,6 +141,7 @@ export function createJdCollection({ dataDirectory } = {}) {
     cached: cacheRead,
     cache(url, item) {
       if (jdLoginWall(item.body)) throw new Error('包含登录墙的部分 JD 不能保存为完整原文缓存')
+      if (!jdHasDuties(item.body)) throw new Error('未取得实质岗位职责或任职要求，不能保存为完整原文缓存')
       const value = { state: 'captured', url: item.url, title: item.title, body: item.body, captured_at: item.captured_at, content_hash: item.content_hash, cached: false }
       const key = cacheKey(url)
       const existed = directory ? existsSync(join(directory, key + '.json')) : memoryCache.has(key)

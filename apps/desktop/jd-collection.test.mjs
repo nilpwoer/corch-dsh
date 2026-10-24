@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createJdCollection, jdChallengeURL, jdLoginWall, jdPlatform, jdSourceURL } from './jd-collection.mjs'
+import { createJdCollection, jdChallengeURL, jdHasDuties, jdLoginWall, jdPlatform, jdSourceURL } from './jd-collection.mjs'
 
 const settings = { min_interval_ms: 100, cache_ttl_ms: 1000, max_navigations_per_hour: 3, max_sources_per_batch: 20, render_settle_ms: 100 }
 function directory(t, override = {}) {
@@ -137,4 +137,46 @@ test('manual resume never revives reservations or tasks queued before a security
   assert.equal((await queued).state, 'blocked')
   assert.equal(await reservation, 'blocked')
   assert.equal(await policy.reserve(url), 'allowed')
+})
+
+function captured(body = '岗位职责：开发和维护后端接口。任职要求：掌握 SQL 与 .NET。') {
+  return { state: 'captured', url, title: '后端工程师', body, captured_at: new Date().toISOString(), content_hash: createHash('sha256').update(body).digest('hex'), cached: false }
+}
+
+test('automatic deliveries survive restart and acknowledge only saved items without repeating acknowledged content', t => {
+  const dataDirectory = directory(t)
+  const policy = createJdCollection({ dataDirectory })
+  const item = captured()
+  assert.equal(policy.enqueue({ project_id: 'project-1', requested_url: url, item }), true)
+  assert.equal(policy.enqueue({ project_id: 'project-1', requested_url: url, item: { ...item, captured_at: new Date(Date.now() + 1).toISOString() } }), false)
+  assert.equal(policy.enqueue({ project_id: 'project-2', requested_url: url, item }), true)
+  const snapshot = policy.pending()
+  const firstId = snapshot.deliveries[0].id
+  snapshot.deliveries[0].item.body = 'mutated read snapshot'
+  const restarted = createJdCollection({ dataDirectory })
+  assert.deepEqual(restarted.pending().deliveries[0].item, item)
+  restarted.ack({ ids: [firstId] })
+  restarted.ack({ ids: [firstId] })
+  const afterAck = createJdCollection({ dataDirectory })
+  assert.equal(afterAck.pending().deliveries.length, 1)
+  assert.equal(afterAck.pending().deliveries[0].project_id, 'project-2')
+  assert.equal(afterAck.enqueue({ project_id: 'project-1', requested_url: url, item }), false)
+  assert.throws(() => afterAck.ack({ ids: ['not-an-id'] }), /确认标识无效/u)
+})
+
+test('automatic inbox refuses partial or empty-heading JD and preserves malformed durable evidence', t => {
+  const dataDirectory = directory(t)
+  const policy = createJdCollection({ dataDirectory })
+  assert.equal(jdHasDuties('岗位职责：\n任职要求：'), false)
+  assert.equal(jdHasDuties('岗位职责：加载中，请稍候'), false)
+  assert.throws(() => policy.enqueue({ project_id: 'project-1', requested_url: url, item: captured('岗位职责：\n任职要求：') }), /完整正文/u)
+  assert.throws(() => policy.enqueue({ project_id: 'project-1', requested_url: url, item: captured('岗位职责：开发接口。登录查看完整内容') }), /完整正文/u)
+  policy.enqueue({ project_id: 'project-1', requested_url: url, item: captured() })
+  const file = join(dataDirectory, 'jd-collection/inbox.json')
+  const stored = JSON.parse(readFileSync(file, 'utf8'))
+  stored.deliveries[0].item.body = 'tampered'
+  const evidence = JSON.stringify(stored)
+  writeFileSync(file, evidence)
+  assert.throws(() => createJdCollection({ dataDirectory }), /投递正文或来源校验失败/u)
+  assert.equal(readFileSync(file, 'utf8'), evidence)
 })

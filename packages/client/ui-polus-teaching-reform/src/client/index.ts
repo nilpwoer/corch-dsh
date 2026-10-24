@@ -20,6 +20,7 @@ import { buildJdGraphPrompt, buildJdRoleInferencePrompt, buildJdSearchPrompt } f
 import { pendingJdSources } from './jdSearchResult.ts'
 import { projectId, record } from '../jd/document.ts'
 import type { JdProject, JdProjectSummary } from '../jd/types.ts'
+import { syncJdBrowserDeliveries } from './jdDeliverySync.ts'
 
 export const inject = ['sessions', 'workspaces', 'layout', 'connection', 'slots', 'betterSidebar']
 
@@ -253,6 +254,13 @@ export function apply(ctx: ClientContext): void {
   const listJdProjects = (): Promise<JdProjectSummary[]> => jdCall('list', {})
   const loadJdProject = (id: string): Promise<JdProject | null> => jdCall('read', { id })
   const saveJdProject = (project: JdProject): Promise<JdProject> => jdCall('save', { project })
+  ctx.effect(() => {
+    const dispose = syncJdBrowserDeliveries({ loadJdProject, saveJdProject })
+    const unsubscribe = connection.hostDescription.subscribe(() => {
+      if (connection.hostDescription.getSnapshot()) window.dispatchEvent(new Event('jd-browser-delivery-retry'))
+    })
+    return async () => { unsubscribe(); await dispose() }
+  }, 'polus-teaching-reform: automatic JD capture persistence')
   const subscribeJdSession = (listener: () => void): (() => void) => ctx.sessions.list.subscribe(listener)
   const getCurrentJdSession = (): string => String(ctx.sessions.list.getSnapshot().current ?? '')
   const betterSidebar = ctx.get('betterSidebar') as BetterSidebarService | undefined

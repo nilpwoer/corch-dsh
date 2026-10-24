@@ -12,6 +12,7 @@ function bridge(): NonNullable<Window['corchJd']> {
     platforms: vi.fn().mockResolvedValue({ ok: true, value: [] }),
     verify: vi.fn().mockResolvedValue({ ok: true, value: { id: 'search', state: 'opened' } }),
     resume: vi.fn().mockResolvedValue({ ok: true, value: { item: { state: 'blocked', url: 'https://example.test/job' }, platforms: [] } }),
+    pending: vi.fn().mockResolvedValue({ ok: true, value: { deliveries: [] } }), ack: vi.fn(), onPending: vi.fn(() => () => undefined),
   }
   window.corchJd = native
   return native

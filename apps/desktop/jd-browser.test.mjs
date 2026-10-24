@@ -2,7 +2,8 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { JSDOM } from 'jsdom'
 import { EventEmitter } from 'node:events'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { runInNewContext } from 'node:vm'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createJdBrowser, monitorJdSecurity, readJdPage } from './jd-browser.mjs'
@@ -454,4 +455,153 @@ test('parent capture teardown does not access destroyed native getters or interr
   assert.doesNotThrow(() => popup.destroy())
   assert.equal(fixture.browser.status({ id: 'project-1' }).state, 'closed')
   assert.doesNotThrow(() => fixture.browser.dispose())
+})
+
+test('a completed login passively captures a full JD into the durable inbox without another read', async t => {
+  const dom = renderedDOM('<main>岗位职责：开发后端接口。登录查看完整内容<input type="password"></main>', firstSource, { runScripts: 'outside-only' })
+  t.after(() => { dom.window.dispatchEvent(new dom.window.Event('pagehide')); dom.window.close() })
+  const notices = []
+  const fixture = durableFixture(t, undefined, {
+    executeJavaScript: script => dom.window.eval(script),
+    onLoad(window) { window.webContents.emit('dom-ready') },
+    onPending: (...args) => notices.push(args),
+  })
+  const batch = await fixture.browser.collect({ id: 'project-1', sources: [{ url: firstSource }] })
+  assert.equal(batch.items[0].state, 'login_required')
+  assert.equal(fixture.browser.pending().deliveries.length, 0)
+  dom.window.document.body.innerHTML = detail
+  await new Promise(resolve => setTimeout(resolve, 180))
+  const delivery = fixture.browser.pending().deliveries[0]
+  assert.equal(delivery.project_id, 'project-1')
+  assert.equal(delivery.requested_url, firstSource)
+  assert.equal(delivery.item.url, firstSource)
+  assert.equal(delivery.item.state, 'captured')
+  assert.deepEqual(notices, [[]])
+  assert.equal(fixture.navigations.length, 1)
+  fixture.browser.ack({ ids: [delivery.id] })
+  dom.window.document.body.innerHTML = detail.replace('SQL', 'PostgreSQL')
+  await new Promise(resolve => setTimeout(resolve, 180))
+  assert.equal(fixture.browser.pending().deliveries.length, 0)
+  assert.equal(notices.length, 1)
+})
+
+test('ordinary open with an existing login saves immediately and pending delivery survives a host restart', async t => {
+  const fixture = durableFixture(t, read(detail, firstSource))
+  await fixture.browser.open({ id: 'project-1', url: firstSource })
+  const delivery = fixture.browser.pending().deliveries[0]
+  assert.equal(delivery.item.state, 'captured')
+  fixture.browser.dispose()
+  const restarted = browserFixture(read(detail, firstSource), { dataDirectory: fixture.dataDirectory })
+  t.after(() => restarted.browser.dispose())
+  assert.deepEqual(restarted.browser.pending().deliveries, [delivery])
+  restarted.browser.ack({ ids: [delivery.id] })
+  await restarted.browser.open({ id: 'project-1', url: firstSource })
+  assert.equal(restarted.browser.pending().deliveries.length, 0)
+})
+
+test('a security block and its explicit verification window never auto-deliver a ready page', async t => {
+  const dom = renderedDOM('<main>岗位职责：开发后端接口。登录查看完整内容<input type="password"></main>', firstSource, { runScripts: 'outside-only' })
+  t.after(() => { dom.window.dispatchEvent(new dom.window.Event('pagehide')); dom.window.close() })
+  const fixture = durableFixture(t, undefined, { executeJavaScript: script => dom.window.eval(script), onLoad(window) { window.webContents.emit('dom-ready') } })
+  await fixture.browser.collect({ id: 'project-1', sources: [{ url: firstSource }] })
+  fixture.requests.headers({ webContentsId: fixture.windows[0].webContents.id, statusCode: 429 }, () => {})
+  dom.window.document.body.innerHTML = detail
+  await new Promise(resolve => setTimeout(resolve, 180))
+  assert.equal(fixture.browser.pending().deliveries.length, 0)
+  await fixture.browser.verify({ id: 'project-1', url: firstSource })
+  await new Promise(resolve => setTimeout(resolve, 180))
+  assert.equal(fixture.browser.pending().deliveries.length, 0)
+  assert.equal(fixture.browser.platforms()[0].blocked, true)
+  assert.equal((await fixture.browser.resume({ id: 'project-1', url: firstSource })).item.state, 'captured')
+  assert.equal(fixture.browser.pending().deliveries.length, 0)
+})
+
+test('late automatic DOM results cannot deliver into a newly selected search project', async t => {
+  const dom = renderedDOM('<main>岗位职责：开发后端接口。登录查看完整内容<input type="password"></main>', firstSource, { runScripts: 'outside-only' })
+  t.after(() => { dom.window.dispatchEvent(new dom.window.Event('pagehide')); dom.window.close() })
+  let holdNextRead = false
+  let release
+  const fixture = durableFixture(t, undefined, {
+    executeJavaScript(script) {
+      if (holdNextRead && !script.includes('monitorJdSecurity')) {
+        holdNextRead = false
+        return new Promise(resolve => { release = () => resolve(dom.window.eval(script)) })
+      }
+      return dom.window.eval(script)
+    },
+    onLoad(window) { window.webContents.emit('dom-ready') },
+  })
+  await fixture.browser.collect({ id: 'project-1', sources: [{ url: firstSource }] })
+  holdNextRead = true
+  dom.window.document.body.innerHTML = detail
+  await new Promise(resolve => setTimeout(resolve, 150))
+  assert.equal(typeof release, 'function')
+  await fixture.browser.open({ id: 'project-2', url: firstSource })
+  release()
+  await new Promise(resolve => setTimeout(resolve, 180))
+  assert.deepEqual(fixture.browser.pending().deliveries.map(item => item.project_id), ['project-2'])
+})
+
+test('initial duties followed by a hydration login wall are not auto-saved before the settle window', async t => {
+  const dom = renderedDOM('<main><h1>后端岗位</h1>岗位职责：开发和维护后端接口。</main>', firstSource, { runScripts: 'outside-only' })
+  t.after(() => { dom.window.dispatchEvent(new dom.window.Event('pagehide')); dom.window.close() })
+  const fixture = durableFixture(t, undefined, {
+    executeJavaScript: script => dom.window.eval(script),
+    onLoad(window) {
+      window.webContents.emit('dom-ready')
+      setTimeout(() => { dom.window.document.querySelector('main').insertAdjacentHTML('beforeend', '<p>登录查看完整内容</p><input type="password">') }, 30)
+    },
+  })
+  await fixture.browser.open({ id: 'project-1', url: firstSource })
+  await new Promise(resolve => setTimeout(resolve, 100))
+  assert.equal(fixture.browser.pending().deliveries.length, 0)
+  assert.equal(fixture.browser.platforms()[0].cache_count, 0)
+  assert.equal(fixture.browser.platforms()[0].login_required, true)
+})
+
+test('a deferred dom-ready injection cannot replace the newer load-complete ready observer', async t => {
+  const dom = renderedDOM('<main>岗位职责：开发后端接口。登录查看完整内容<input type="password"></main>', firstSource, { runScripts: 'outside-only' })
+  t.after(() => { dom.window.dispatchEvent(new dom.window.Event('pagehide')); dom.window.close() })
+  let deferred
+  const fixture = durableFixture(t, undefined, {
+    executeJavaScript(script, window) {
+      if (window.loading && script.includes('monitorJdSecurity')) return new Promise(resolve => { deferred = () => resolve(dom.window.eval(script)) })
+      return dom.window.eval(script)
+    },
+    onLoad(window) { window.webContents.emit('dom-ready') },
+  })
+  await fixture.browser.collect({ id: 'project-1', sources: [{ url: firstSource }] })
+  const window = fixture.windows[0]
+  dom.window.dispatchEvent(new dom.window.Event('pagehide'))
+  window.loading = true
+  window.webContents.emit('did-start-navigation', {}, firstSource, false, true)
+  dom.window.document.body.innerHTML = detail
+  window.webContents.emit('dom-ready')
+  assert.equal(typeof deferred, 'function')
+  window.loading = false
+  window.webContents.emit('did-finish-load')
+  window.webContents.emit('did-stop-loading')
+  deferred()
+  await new Promise(resolve => setTimeout(resolve, 180))
+  assert.deepEqual(fixture.browser.pending().deliveries.map(item => item.project_id), ['project-1'])
+})
+
+test('preload pending notifications expose no IPC event or body and unsubscribe cleanly', async () => {
+  const bridge = {}
+  const ipc = Object.assign(new EventEmitter(), { invoke: async (...args) => args, send() {} })
+  runInNewContext(readFileSync(new URL('./publisher-preload.cjs', import.meta.url), 'utf8'), {
+    require(name) {
+      assert.equal(name, 'electron')
+      return { contextBridge: { exposeInMainWorld(key, value) { bridge[key] = value } }, ipcRenderer: ipc }
+    },
+  })
+  const received = []
+  const unsubscribe = bridge.corchJd.onPending((...args) => received.push(args))
+  ipc.emit('corch:jd:pending', { sender: 'private native event' }, 'unexpected private body')
+  assert.deepEqual(received, [[]])
+  unsubscribe()
+  assert.equal(ipc.listenerCount('corch:jd:pending'), 0)
+  assert.deepEqual(await bridge.corchJd.pending(), ['corch:jd:pending'])
+  const ids = ['a'.repeat(64)]
+  assert.deepEqual(await bridge.corchJd.ack({ ids }), ['corch:jd:ack', { ids }])
 })

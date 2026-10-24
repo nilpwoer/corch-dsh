@@ -2,6 +2,8 @@
 import { createServer } from 'node:http'
 
 export const fixtureBody = '合成验收岗位。岗位职责：开发后端接口，编写 SQL 查询，完成接口测试。任职要求：掌握关系数据库和软件测试知识。'
+export const autoFixtureBody = '自动存档合成岗位。岗位职责：配置照护设备并核验运行数据。任职要求：掌握设备巡检与数据记录。'
+export const autoReplayBody = '自动重放合成岗位。岗位职责：检查照护终端并记录故障处理结果。任职要求：掌握终端维护和故障报告。'
 
 /** Start a login-protected job site and deterministic streaming model provider.
  * @returns Owned server, origins and captured model requests; no paid provider calls.
@@ -14,10 +16,12 @@ export async function startJdFixture() {
   let searchRuns = 0
   let origin
   const server = createServer(async (request, response) => {
-    const path = new URL(request.url, 'http://fixture').pathname
-    if (['/job', '/challenge', '/risk-page', '/sign-in'].includes(path)) siteRequests.push({
+    const requestURL = new URL(request.url, 'http://fixture')
+    const path = requestURL.pathname
+    if (['/job', '/challenge', '/risk-page', '/sign-in', '/auto-job', '/auto-sign-in'].includes(path)) siteRequests.push({
       path: request.url, user_agent: request.headers['user-agent'] ?? '',
       logged_in: (request.headers.cookie ?? '').includes('synthetic_jd_session=active'),
+      auto_logged_in: (request.headers.cookie ?? '').includes('synthetic_auto_session=active'),
     })
     if (path === '/challenge' || path === '/risk-page') {
       response.writeHead(403, { 'content-type': 'text/html;charset=utf-8' })
@@ -31,10 +35,24 @@ export async function startJdFixture() {
       return
     }
     if (path === '/sign-in') { response.writeHead(303, { location: '/job', 'set-cookie': 'synthetic_jd_session=active; HttpOnly; SameSite=Lax; Path=/; Max-Age=3600' }); response.end(); return }
+    if (path === '/auto-job') {
+      const loggedIn = (request.headers.cookie ?? '').includes('synthetic_auto_session=active')
+      const replay = requestURL.searchParams.has('replay')
+      response.writeHead(200, { 'content-type': 'text/html;charset=utf-8' })
+      response.end(loggedIn
+        ? `<title>合成自动存档岗位</title><main class="job-description"><h1>${replay ? '合成自动重放岗位' : '合成自动存档岗位'}</h1><p>${replay ? autoReplayBody : autoFixtureBody}</p></main>`
+        : '<title>合成自动采集登录</title><main class="job-description"><h1>请登录查看完整岗位</h1><p>岗位职责：配置照护设备。任职要求：登录查看完整内容</p><form method="post" action="/auto-sign-in"><label>自动采集合成账号<input name="account" autocomplete="username"></label><label>自动采集合成密码<input name="password" type="password" autocomplete="current-password"></label><button>登录自动采集合成站点</button></form></main>')
+      return
+    }
+    if (path === '/auto-sign-in') {
+      response.writeHead(303, { location: '/auto-job', 'set-cookie': 'synthetic_auto_session=active; HttpOnly; SameSite=Lax; Path=/; Max-Age=3600' })
+      response.end()
+      return
+    }
     if (path === '/anthropic/messages') {
       response.writeHead(200, { 'content-type': 'application/json' })
       response.end(JSON.stringify({ id: 'synthetic-search', role: 'assistant', type: 'message', content: [
-        { type: 'web_search_tool_result', content: [{ type: 'web_search_result', url: origin + '/job', title: '合成后端开发岗位' }] },
+        { type: 'web_search_tool_result', content: [{ type: 'web_search_result', url: origin + (searchRuns > 2 ? '/auto-job' : '/job'), title: searchRuns > 2 ? '合成自动存档岗位' : '合成后端开发岗位' }] },
       ] }))
       return
     }
@@ -66,7 +84,7 @@ export async function startJdFixture() {
       else if (searchRuns === 1 && tools.length === 2) {
         const shell = input.tools?.find(tool => /^(?:bash|pwsh)$/u.test(tool.function?.name))?.function.name ?? 'bash'
         call = { name: shell, arguments: JSON.stringify({ command: 'echo JD_GUARD_MUST_DENY' }) }
-      } else content = JSON.stringify({ pending: [{ url: origin + '/job', title: '合成后端开发岗位' }] })
+      } else content = JSON.stringify({ pending: [{ url: origin + (searchRuns > 2 ? '/auto-job' : '/job'), title: searchRuns > 2 ? '合成自动存档岗位' : '合成后端开发岗位' }] })
     }
     if (call) (call.name === 'web_search' ? toolCalls : deniedCalls).push(call.name)
     response.writeHead(200, { 'content-type': 'text/event-stream' })

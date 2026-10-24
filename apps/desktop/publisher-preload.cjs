@@ -12,6 +12,14 @@ contextBridge.exposeInMainWorld('corchJd', Object.freeze({
   read: input => ipcRenderer.invoke('corch:jd:read', input),
   collect: input => ipcRenderer.invoke('corch:jd:collect', input),
   platforms: () => ipcRenderer.invoke('corch:jd:platforms'),
+  pending: () => ipcRenderer.invoke('corch:jd:pending'),
+  ack: input => ipcRenderer.invoke('corch:jd:ack', input),
+  onPending: listener => {
+    if (typeof listener !== 'function') throw new TypeError('JD pending listener must be a function')
+    const handler = () => listener()
+    ipcRenderer.on('corch:jd:pending', handler)
+    return () => ipcRenderer.removeListener('corch:jd:pending', handler)
+  },
   verify: input => ipcRenderer.invoke('corch:jd:verify', input),
   resume: input => ipcRenderer.invoke('corch:jd:resume', input),
   close: input => ipcRenderer.invoke('corch:jd:close', input),
