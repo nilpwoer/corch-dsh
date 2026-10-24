@@ -52,6 +52,7 @@
    a 1px seam. The collapsed sidebar instead retains a bordered compact rail. */
 .frame[data-details-collapsed] .detailsCol {
   border-right: none;
+  visibility: hidden;
 }
 
 /* Drag handles are frame children (columns clip overflow): an 8px hit strip

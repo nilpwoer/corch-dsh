@@ -77,7 +77,7 @@ export async function startJdFixture() {
     }
     if (path === '/unavailable-job') {
       response.writeHead(200, { 'content-type': 'text/html;charset=utf-8' })
-      response.end('<title>内容不存在</title><main><h1>您查看的内容不存在</h1><p>该岗位已下线，请查看其他来源。</p></main><aside><h2>相似职位推荐</h2><article class="job-description"><h3>推荐照护岗位</h3><p>岗位职责：维护照护设备并记录检查情况。任职要求：掌握安全检查。</p></article></aside>')
+      response.end('<title>内容不存在</title><main class="error-render zhaopin-detail-error-render error"><h1>对不起，您查看的内容已不存在</h1><p>该岗位已下线，请查看其他来源。</p></main><aside class="post_card"><h2>相似职位推荐</h2><article class="job-description"><h3>推荐照护岗位</h3><p>岗位职责：维护照护设备并记录检查情况。任职要求：掌握安全检查。</p></article></aside>')
       return
     }
     if (path === '/anthropic/messages') {

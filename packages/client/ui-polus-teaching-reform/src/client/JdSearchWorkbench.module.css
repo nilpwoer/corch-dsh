@@ -211,3 +211,22 @@
 .platformStatus, .platformStopped { padding: 12px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 8px; font-size: 12px; overflow-wrap: anywhere; }
 .platformStatus p, .platformStopped p { margin: 7px 0; color: var(--dsw-alias-fg-secondary); }
 .platformStopped { border-left: 3px solid var(--dsw-alias-fg-warning, #b7791f); }
+.saveStatus { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.recordDetails { max-width: 100%; font-size: 12px; color: var(--dsw-alias-fg-secondary); }
+.recordDetails > summary { cursor: pointer; }
+.primaryToolbar { position: sticky; top: 0; z-index: 3; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin: 0 0 14px; padding: 12px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 9px; background: var(--dsw-alias-bg-base); font-size: 13px; }
+.sourceList { display: grid; gap: 12px; margin-bottom: 18px; }
+.sourceList h3 { margin: 0 0 8px; font-size: 15px; overflow-wrap: anywhere; }
+.sourceList p { margin: 8px 0; font-size: 12px; line-height: 1.6; }
+.sourceActions { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; margin-top: 10px; }
+.sourceActions a { font-size: 12px; }
+.saveFeedback { margin: 0 0 14px; font-size: 12px; line-height: 1.6; }
+.saveFeedback p { margin: 3px 0; color: var(--dsw-alias-fg-secondary); }
+.disclosure { padding: 14px 0; border-top: 1px solid var(--dsw-alias-border-l1); font-size: 12px; line-height: 1.6; }
+.disclosure > summary { cursor: pointer; font-size: 13px; font-weight: 600; }
+.disclosure > .card { margin-top: 12px; }
+.disclosure > p { margin: 12px 0; }
+.importForm { padding: 16px 0 4px; }
+.evidenceDetails { margin-top: 12px; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.evidenceDetails > summary { cursor: pointer; color: var(--dsw-alias-fg-secondary); }
+@media (max-width: 540px) { .primaryToolbar .primaryButton { width: 100%; white-space: normal; height: auto; min-height: 38px; padding: 8px 10px; } }

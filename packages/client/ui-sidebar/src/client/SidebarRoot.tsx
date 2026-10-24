@@ -21,7 +21,7 @@ import clsx from 'clsx'
 import { FishLogo, IconNewChatOutline16, IconPanelLeftOutline16, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SidebarRootComponentProps } from './contract/slots.ts'
 import css from './SidebarRoot.module.css'
-import { selectSidebarMode, useSidebarMode } from './mode-store.ts'
+import { getSidebarMode, selectSidebarMode, useSidebarMode } from './mode-store.ts'
 
 /** Wide-content unmount delay; matches the 150ms wide-content fade-out. */
 const COLLAPSE_SETTLE_MS = 150
@@ -52,12 +52,12 @@ export function SidebarRoot({
 }: SidebarRootComponentProps) {
   const sidebarMode = useSidebarMode()
   const setSidebarMode = (mode: 'sessions' | 'curriculum' | 'interviews' | 'jd-search'): void => {
-    if (mode === 'sessions') closeDetails()
+    if (mode === 'sessions' || mode === 'jd-search') closeDetails()
     else openDetails()
     selectSidebarMode(mode)
   }
   useEffect(() => {
-    if (sidebarMode === 'sessions') closeDetails()
+    if (sidebarMode === 'sessions' || sidebarMode === 'jd-search') closeDetails()
   }, [closeDetails, sidebarMode])
   // Wide content stays mounted while the collapse animates (fading via
   // .collapsed .wide), unmounts at settle, and remounts right away on expand.
@@ -212,7 +212,9 @@ export function SidebarRoot({
             setSidebarMode,
             reopenDetails: () => {
               closeDetails()
-              window.setTimeout(() => { openDetails() }, 0)
+              if (sidebarMode !== 'jd-search') window.setTimeout(() => {
+                if (getSidebarMode() === sidebarMode) openDetails()
+              }, 0)
             },
           })}
         </div>

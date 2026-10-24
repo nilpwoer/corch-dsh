@@ -79,7 +79,7 @@
     "partial_login_original_rejected": true,
     "verification_requires_explicit_resume": true,
     "origin_project_saved_while_other_selected": true,
-    "details_closed": true,
+    "workbench_hidden": true,
     "other_project_unchanged": true,
     "user_draft_preserved": true,
     "committed_delivery_unacknowledged_before_reload": true,
@@ -94,6 +94,22 @@
     "expired_recommendations_rejected": true,
     "expired_link_not_a_login_request": true,
     "no_automatic_expired_retry_after_reload": true
+  },
+  "compact_workbench": {
+    "saved_source_and_generation_first_screen": true,
+    "content_widths_checked": [
+      1360,
+      1024
+    ],
+    "no_horizontal_overflow": true,
+    "optional_disclosures_closed_by_default": true,
+    "disclosures_preserve_capture_and_import": true,
+    "raw_json_hidden_by_default": true,
+    "model_records_available_on_demand": true,
+    "return_to_workbench": true,
+    "repeated_jd_navigation_single_instance": true,
+    "no_empty_details_column": true,
+    "workbench_restored_after_restart": true
   },
   "confirmation": {
     "host_persisted": true,

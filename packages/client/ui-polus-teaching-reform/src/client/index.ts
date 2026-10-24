@@ -5,7 +5,7 @@ import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
-import { getSidebarMode, subscribeSidebarMode, useSidebarMode } from '@deepseek-ai/dsh-client-ui-sidebar/client'
+import { getSidebarMode, selectSidebarMode, subscribeSidebarMode, useSidebarMode } from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import { CurriculumSidebar, CurriculumWorkbench } from './CurriculumWorkbench.tsx'
 import { JdSearchSidebar, JdSearchWorkbench } from './JdSearchWorkbench.tsx'
 import { InterviewDetails, InterviewSidebar, rebindInterviewSession, selectInterview } from './InterviewWorkbench.tsx'
@@ -21,6 +21,8 @@ import { pendingJdSources } from './jdSearchResult.ts'
 import { projectId, record } from '../jd/document.ts'
 import type { JdProject, JdProjectSummary } from '../jd/types.ts'
 import { syncJdBrowserDeliveries } from './jdDeliverySync.ts'
+import { createJdResearchRoute } from './jdResearchRoute.ts'
+import { JdResearchReturn, JdResearchSurface } from './JdResearchSurface.tsx'
 
 export const inject = ['sessions', 'workspaces', 'layout', 'connection', 'slots', 'betterSidebar']
 
@@ -263,6 +265,22 @@ export function apply(ctx: ClientContext): void {
   }, 'polus-teaching-reform: automatic JD capture persistence')
   const subscribeJdSession = (listener: () => void): (() => void) => ctx.sessions.list.subscribe(listener)
   const getCurrentJdSession = (): string => String(ctx.sessions.list.getSnapshot().current ?? '')
+  const researchRoute = createJdResearchRoute({
+    currentSession: () => ctx.sessions.list.getSnapshot().current,
+    subscribeSession: subscribeJdSession,
+    ready: () => !!connection.hostDescription.getSnapshot(),
+    subscribeReady: listener => connection.hostDescription.subscribe(listener),
+    mode: getSidebarMode,
+    selectJd: () => { selectSidebarMode('jd-search') },
+    subscribeMode: subscribeSidebarMode,
+    list: listJdProjects,
+  })
+  ctx.effect(() => {
+    const stop = researchRoute.start()
+    const refresh = (): void => { void researchRoute.refresh() }
+    window.addEventListener('jd-projects-changed', refresh)
+    return async () => { window.removeEventListener('jd-projects-changed', refresh); await stop() }
+  }, 'polus-teaching-reform: saved JD routing')
   const betterSidebar = ctx.get('betterSidebar') as BetterSidebarService | undefined
   ctx.effect(() => {
     if (betterSidebar === undefined) return () => undefined
@@ -374,7 +392,8 @@ export function apply(ctx: ClientContext): void {
     const rename = await session.rename(title)
     if (!rename.ok) throw new Error(rename.error.message)
     ctx.sessions.open(id)
-    queueMicrotask(() => { ctx.layout.openDetails() })
+    researchRoute.showWorkbench()
+    queueMicrotask(() => { ctx.layout.closeDetails() })
   }
 
   const initializeJdProject = async (id: SessionId): Promise<JdProject> => {
@@ -385,6 +404,12 @@ export function apply(ctx: ClientContext): void {
       return saved
     }
     throw new Error('当前会话不是 JD 搜索，请点击“新建搜索”建立独立存档。')
+  }
+
+  const openJdProject = (id: string): void => {
+    ctx.sessions.open(id as SessionId)
+    researchRoute.showWorkbench()
+    queueMicrotask(() => { ctx.layout.closeDetails() })
   }
 
   // Switching a project must switch the host conversation as well as the
@@ -432,11 +457,55 @@ export function apply(ctx: ClientContext): void {
     inject: () => ({
       createJdSearchSession,
       listJdProjects,
-      openJdProject: (id: string) => { ctx.sessions.open(id as SessionId); queueMicrotask(() => { ctx.layout.openDetails() }) },
+      openJdProject,
       subscribeJdSession,
       getCurrentJdSession,
     }),
   }, JdSearchSidebar))
+
+  ctx.slots.inject('polus.jd.workbench', () => ctx.slots.register({
+    name: 'polus.jd.workbench',
+    inject: () => ({
+      generateInterview, observeInterviewCommands, runJdSearch, inferJdRoles, generateJdGraph,
+      pendingJdSources: readPending, listJdProjects, loadJdProject, saveJdProject,
+      exportJdProject: (id: string, version: number) => jdCall<{ html: string }>('export', { id, version }),
+      confirmJdProject: (id: string, version: number, revision: number) => jdCall<JdProject>('confirm', { id, version, revision }),
+      createJdSearchSession, initializeJdProject,
+      openJdProject,
+    }),
+  }, JdSearchWorkbench))
+
+  ctx.slots.inject('conversation', () => {
+    let disposeRegistration: (() => void) | undefined
+    const reconcile = (): void => {
+      const visible = researchRoute.getSnapshot().route !== 'native'
+      if (!visible) { disposeRegistration?.(); disposeRegistration = undefined; return }
+      disposeRegistration ??= ctx.slots.register({
+        name: 'conversation', priority: -10,
+        children: { 'polus.jd.workbench': { kind: 'single', scope: 'session' } },
+        inject: () => ({ route: researchRoute, createSearch: createJdSearchSession, closeDetails: () => { ctx.layout.closeDetails() } }),
+      }, JdResearchSurface)
+    }
+    reconcile()
+    const off = researchRoute.subscribe(reconcile)
+    return () => { off(); disposeRegistration?.() }
+  })
+
+  ctx.slots.inject('conversation.session.header.actions', () => {
+    let disposeRegistration: (() => void) | undefined
+    const reconcile = (): void => {
+      if (getSidebarMode() !== 'jd-search' || researchRoute.getSnapshot().route !== 'native') {
+        disposeRegistration?.(); disposeRegistration = undefined; return
+      }
+      disposeRegistration ??= ctx.slots.register({
+        name: 'conversation.session.header.actions', id: 'polus.jd.return', order: -10,
+        inject: () => ({ showWorkbench: researchRoute.showWorkbench }),
+      }, JdResearchReturn)
+    }
+    reconcile()
+    const off = researchRoute.subscribe(reconcile)
+    return () => { off(); disposeRegistration?.() }
+  })
 
   // The details slot already supplies the live sessionId and runtime props;
   // this wrapper only selects one of the two teaching-reform workbenches.
@@ -444,7 +513,7 @@ export function apply(ctx: ClientContext): void {
     let disposeRegistration: (() => void) | undefined
     const reconcile = (): void => {
       disposeRegistration?.()
-      disposeRegistration = getSidebarMode() === 'curriculum' || getSidebarMode() === 'interviews' || getSidebarMode() === 'jd-search'
+      disposeRegistration = getSidebarMode() === 'curriculum' || getSidebarMode() === 'interviews'
         ? ctx.slots.register({ name: 'conversation.details.context', inject: () => ({
           generateInterview,
           observeInterviewCommands,
@@ -459,7 +528,7 @@ export function apply(ctx: ClientContext): void {
           confirmJdProject: (id: string, version: number, revision: number) => jdCall<JdProject>('confirm', { id, version, revision }),
           createJdSearchSession,
           initializeJdProject,
-          openJdProject: (id: string) => { ctx.sessions.open(id as SessionId); queueMicrotask(() => { ctx.layout.openDetails() }) },
+          openJdProject,
           openExpertMaterialPreview: (sessionId: SessionId, material: ExpertMaterial) => {
             betterSidebar?.openTab?.({
               id: `polus-teaching-reform:expert-material:${material.id}`,
@@ -484,7 +553,6 @@ export function apply(ctx: ClientContext): void {
 function TeachingReformDetailsRouter(props: TeachingReformProps): ReactNode {
   const mode = useSidebarMode() as string
   if (mode === 'curriculum') return createElement(CurriculumWorkbench, props)
-  if (mode === 'jd-search') return createElement(JdSearchWorkbench, { ...props, key: String(props.sessionId) })
   return createElement(InterviewDetails, props)
 }
 

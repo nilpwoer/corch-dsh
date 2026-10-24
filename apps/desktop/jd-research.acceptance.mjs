@@ -90,6 +90,67 @@ async function openResearch() {
   const open = page.getByRole('button', { name: '打开侧边栏', exact: true })
   if (await open.count()) await open.click()
 }
+async function disclosure(label, opened = true) {
+  const summary = page.locator('summary').filter({ hasText: label })
+  await summary.waitFor()
+  const current = await summary.evaluate(element => element.parentElement.open)
+  if (current !== opened) await summary.click()
+}
+async function singleJdView() {
+  await page.getByRole('region', { name: 'JD 研究工作台', exact: true }).waitFor()
+  await page.evaluate(async () => {
+    const start = performance.now()
+    while (performance.now() - start < 650) await new Promise(resolve => requestAnimationFrame(resolve))
+  })
+  assert.equal(await page.locator('section[aria-label="JD 研究工作台"]').count(), 1)
+  assert.equal(await page.locator('nav[aria-label="研究步骤"]').count(), 1)
+  assert.equal(await page.getByRole('button', { name: '关闭详情', exact: true }).count(), 0, 'JD navigation must not leave an empty Details column')
+  assert.equal(await page.locator('p:visible').filter({ hasText: /^\{"pending":/u }).count(), 0)
+}
+async function compactDefaults() {
+  for (const text of await page.locator('[data-jd-project-id]').allTextContents()) assert.ok(!/修订\s*\d/u.test(text), 'History must keep technical revisions out of its default labels')
+  for (const label of [/^搜索记录详情$/u, /^手动导入原文$/u, /^采集帮助$/u, /^平台状态（/u, /^待处理来源（/u]) {
+    const summary = page.locator('summary').filter({ hasText: label })
+    if (await summary.count()) assert.equal(await summary.evaluate(element => element.parentElement.open), false, `Default disclosure must be closed: ${label}`)
+  }
+  assert.equal(await page.getByLabel('读取原文文件', { exact: true }).isVisible(), false)
+  assert.equal(await page.getByRole('button', { name: '查看失效页面', exact: true }).isVisible(), false)
+  assert.equal(await page.getByRole('region', { name: '平台采集状态', exact: true }).isVisible(), false)
+}
+async function compactFirstScreen(sourceTitle, count) {
+  const window = await desktop.browserWindow(page)
+  const originalBounds = await window.evaluate(window => window.getBounds())
+  const measurements = []
+  try {
+    for (const width of [1360, 1024]) {
+      await window.evaluate((window, width) => { window.setContentSize(width, 900); window.focus() }, width)
+      await page.waitForFunction(width => innerWidth === width, width)
+      const result = await page.getByRole('main').filter({ has: page.getByRole('navigation', { name: '研究步骤', exact: true }) }).evaluate(async (main, { sourceTitle, count }) => {
+        for (let element = main; element; element = element.parentElement) element.scrollTop = 0
+        for (let frame = 0; frame < 12; frame++) await new Promise(resolve => requestAnimationFrame(resolve))
+        const describe = element => {
+          const rect = element.getBoundingClientRect()
+          let visible = rect.width > 0 && rect.height > 0 && rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight
+          for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+            const bounds = parent.getBoundingClientRect(), style = getComputedStyle(parent)
+            if (/(?:auto|scroll|hidden|clip)/u.test(style.overflowX + style.overflowY)) visible &&= rect.left >= bounds.left - 1 && rect.right <= bounds.right + 1 && rect.top >= bounds.top - 1 && rect.bottom <= bounds.bottom + 1
+          }
+          return { visible, left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom }
+        }
+        const generate = [...main.querySelectorAll('button')].find(element => element.textContent.trim() === `使用 ${count} 份原文生成五级图谱`)
+        const source = [...main.querySelectorAll('h3')].find(element => element.textContent.includes(sourceTitle))
+        return { width: innerWidth, height: innerHeight, client_width: main.clientWidth, scroll_width: main.scrollWidth,
+          generate: generate && describe(generate), source: source && describe(source) }
+      }, { sourceTitle, count })
+      assert.ok(result.scroll_width <= result.client_width + 1, 'Compact workbench must not overflow horizontally')
+      assert.equal(result.generate?.visible, true, 'Next-step action must be visible on the first screen')
+      assert.equal(result.source?.visible, true, 'A saved original must be visible on the first screen')
+      await page.screenshot({ path: join(out, `compact-first-screen-${width}.png`), fullPage: false })
+      measurements.push(result)
+    }
+  } finally { await window.evaluate((window, bounds) => window.setBounds(bounds), originalBounds) }
+  presentation.compact_first_screen = measurements
+}
 async function savedProject(id, predicate, description) {
   for (let attempt = 0; attempt < 100; attempt++) {
     const project = await rpc('/jd', 'read', { id })
@@ -275,6 +336,19 @@ try {
   await page.getByRole('button', { name: '开始检索', exact: true }).click()
   const capture = await captureOpened
   await capture.getByRole('button', { name: '登录合成站点', exact: true }).waitFor()
+  const rawModelJson = page.locator('p:visible').filter({ hasText: /^\{"pending":/u })
+  assert.equal(await rawModelJson.count(), 0, 'Raw model JSON must be hidden in the default JD workbench')
+  await page.getByRole('button', { name: 'JD 搜索', exact: true }).click()
+  await page.getByRole('button', { name: 'JD 搜索', exact: true }).click()
+  await singleJdView()
+  await page.getByRole('button', { name: '查看运行记录', exact: true }).click()
+  await page.getByRole('button', { name: '返回JD工作台', exact: true }).waitFor()
+  await rawModelJson.first().waitFor()
+  await page.getByRole('button', { name: '返回JD工作台', exact: true }).click()
+  await page.getByRole('navigation', { name: '研究步骤', exact: true }).waitFor()
+  assert.equal(await rawModelJson.count(), 0)
+  await singleJdView()
+  await disclosure(/^待处理来源（/u)
   const pendingOpen = page.getByRole('button', { name: '打开登录', exact: true })
   await pendingOpen.waitFor()
   assert.deepEqual(fixture.toolCalls, ['web_search'])
@@ -299,6 +373,7 @@ try {
   await continueCapture.click()
   await page.getByRole('alert').filter({ hasText: '尚未取得 JD 正文' }).waitFor()
   assert.equal((await rpc('/jd', 'read', { id: first.id })).sources.length, 0)
+  await disclosure(/^手动导入原文$/u)
   const fileInput = page.getByLabel('读取原文文件', { exact: true })
   const fileControl = page.getByText('选择原文文件', { exact: true })
   const importedBody = page.getByRole('region', { name: '采集或导入 JD', exact: true }).getByRole('textbox', { name: /^导入\s*JD\s*原文$/u })
@@ -318,6 +393,7 @@ try {
   await selectProject(second.id)
   await selectProject(first.id)
   await page.getByRole('heading', { name: 'JD 原文与来源' }).waitFor()
+  await disclosure(/^手动导入原文$/u)
   assert.equal(await importedBody.inputValue(), mdFile.buffer.toString())
   assert.equal(await page.getByRole('textbox', { name: '企业（可填未披露）', exact: true }).inputValue(), '合成企业草稿')
   assert.equal(await page.getByRole('textbox', { name: '来源 URL', exact: true }).inputValue(), fixture.origin + '/job')
@@ -330,6 +406,7 @@ try {
   await openResearch()
   await selectProject(first.id)
   await page.getByRole('heading', { name: 'JD 原文与来源' }).waitFor()
+  await disclosure(/^手动导入原文$/u)
   assert.equal(await importedBody.inputValue(), mdFile.buffer.toString())
   await continueCapture.waitFor()
   assert.equal(capture.isClosed(), false)
@@ -351,7 +428,9 @@ try {
   const challenge = await native('read', { id: first.id })
   assert.equal(challenge.state, 'blocked')
   await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+  await disclosure(/^平台状态（/u)
   await page.getByText('127.0.0.1 · 风控暂停', { exact: true }).waitFor()
+  await disclosure(/^待处理来源（/u)
   const stoppedCount = fixture.siteRequests.length
   const stopped = await native('collect', { id: second.id, sources: [{ url: fixture.origin + '/job', title: '合成岗位' }] })
   assert.equal(stopped.items[0].state, 'blocked')
@@ -375,7 +454,7 @@ try {
   assert.ok((await native('platforms')).some(platform => platform.blocked), 'A readable verification page must not silently clear the platform stop')
   assert.ok((await native('pending')).deliveries.every(delivery => delivery.project_id !== first.id), 'Verification pages cannot enqueue automatic source delivery')
   await page.getByRole('button', { name: '已完成验证，恢复采集', exact: true }).click()
-  await page.getByText('JD 原文和来源已保存。', { exact: true }).waitFor()
+  await page.locator('[data-jd-save-complete]').getByText('正文已保存 · 本次搜索已保存 1 份浏览器 JD', { exact: true }).waitFor()
   const saved = await rpc('/jd', 'read', { id: first.id })
   assert.equal(saved.sources.length, 1)
   assert.ok(saved.sources[0].body.includes(fixtureBody))
@@ -492,14 +571,17 @@ try {
   await page.getByRole('button', { name: '开始检索', exact: true }).click()
   const autoCapture = await automaticWindow
   await autoCapture.getByRole('button', { name: '登录自动采集合成站点', exact: true }).waitFor()
+  await disclosure(/^待处理来源（/u)
   await page.getByRole('button', { name: '打开登录', exact: true }).waitFor()
+  await disclosure(/^手动导入原文$/u)
   const autoDraftText = '岗位职责：这是用户尚未导入的独立草稿，不应被自动采集清除。'
   await page.getByRole('region', { name: '采集或导入 JD', exact: true }).getByRole('textbox', { name: /^导入\s*JD\s*原文$/u }).fill(autoDraftText)
   await page.getByRole('textbox', { name: '企业（可填未披露）', exact: true }).fill('自动采集前的用户草稿企业')
   const autoDraft = await savedProject(automatic.id, project => project.workspace.capture.body === autoDraftText, 'independent automatic-capture draft')
   assert.equal(autoDraft.sources.length, 0, 'A partial login-walled job cannot be automatically stored')
   await selectProject(second.id)
-  await page.getByRole('button', { name: '关闭详情', exact: true }).click()
+  await page.getByRole('button', { name: '原生会话', exact: true }).click()
+  assert.equal(await page.locator('nav[aria-label="研究步骤"]').count(), 0, 'The originating workbench must be unmounted before automatic login capture completes')
   await autoCapture.getByLabel('自动采集合成账号', { exact: true }).fill('synthetic-auto-user')
   await autoCapture.getByLabel('自动采集合成密码', { exact: true }).fill('synthetic-auto-password')
   await autoCapture.getByRole('button', { name: '登录自动采集合成站点', exact: true }).click()
@@ -567,10 +649,12 @@ try {
   const savedFeedback = page.locator('[data-jd-save-complete]')
   await savedFeedback.getByText('正文已保存 · 本次搜索已保存 1 份浏览器 JD', { exact: true }).waitFor()
   await savedFeedback.getByText('其他来源仍在采集；已保存的岗位无需等待本批完成。', { exact: true }).waitFor()
+  await disclosure(/^平台状态（/u)
   await page.getByRole('region', { name: '平台采集状态', exact: true }).getByText('127.0.0.1 · 正文已读取 · 已保存 1 份', { exact: true }).waitFor()
   assert.equal(fixture.pendingSlowJobs(), 1, 'Success feedback must appear before the slow page has been released')
   await page.screenshot({ path: join(out, 'saved-during-long-batch.png'), fullPage: true })
   fixture.releaseSlowJob()
+  await disclosure(/^待处理来源（/u)
   const unavailableCard = page.locator('article').filter({ has: page.getByRole('button', { name: '查看失效页面', exact: true }) })
   await unavailableCard.getByRole('button', { name: '查看失效页面', exact: true }).waitFor()
   await unavailableCard.getByText(/岗位页面已失效，登录不能恢复该岗位/u).waitFor()
@@ -589,11 +673,34 @@ try {
   await page.getByRole('button', { name: 'JD 搜索', exact: true }).waitFor()
   await openResearch()
   await selectProject(feedback.id)
+  await compactDefaults()
+  assert.equal(await page.locator('p:visible').filter({ hasText: /^\{"pending":/u }).count(), 0)
+  await page.getByRole('button', { name: '查看运行记录', exact: true }).waitFor()
+  await compactFirstScreen('合成长批次首条岗位', 2)
+  const firstSavedCard = page.getByRole('region', { name: '已保存原文', exact: true }).locator('article').first()
+  const evidenceSummary = firstSavedCard.locator('summary').filter({ hasText: /^查看完整原文和证据编号$/u })
+  assert.equal(await evidenceSummary.evaluate(element => element.parentElement.open), false)
+  assert.equal(await firstSavedCard.getByText(/^SHA-256：/u).isVisible(), false)
+  await evidenceSummary.click()
+  assert.equal(await firstSavedCard.getByText(/^SHA-256：/u).isVisible(), true)
+  assert.ok((await firstSavedCard.locator('pre').textContent()).includes(feedbackFixtureBody))
+  await evidenceSummary.click()
+  await disclosure(/^平台状态（/u)
+  const platformDetails = page.getByRole('region', { name: '平台采集状态', exact: true }).locator('summary').filter({ hasText: /^平台详情$/u }).first()
+  assert.equal(await platformDetails.evaluate(element => element.parentElement.open), false)
+  await platformDetails.click()
+  await page.getByRole('region', { name: '平台采集状态', exact: true }).getByText(/条缓存/u).waitFor()
+  await disclosure(/^平台状态（/u, false)
+  await disclosure(/^采集帮助$/u)
+  await page.getByText('登录页、搜索摘要和失效页面不计入样本。平台风控会暂停自动访问，需在待处理来源中手动验证并明确确认恢复。', { exact: true }).waitFor()
+  await disclosure(/^采集帮助$/u, false)
+  await disclosure(/^待处理来源（/u)
   await unavailableCard.getByRole('button', { name: '查看失效页面', exact: true }).waitFor()
   assert.equal(await collectRemaining.isDisabled(), true)
   assert.equal(fixture.siteRequests.filter(request => request.path === '/unavailable-job').length, unavailableVisits)
   assert.equal((await rpc('/jd', 'read', { id: feedback.id })).sources.length, 2)
   checks.push('a complete source commits and shows clear saved feedback while the remaining batch HTTP response is unfinished; expired pages with recommended duties stay excluded and do not invite login or automatic retries after reload')
+  checks.push('the JD workbench hides model JSON by default and restores after restart; optional records and disclosures remain usable; saved originals and generation stay visible without horizontal overflow at 1360 and 1024 content pixels')
   const actual = {
     levels: graphProject.graphs[0].nodes.map(node => ({ kind: node.kind, title: node.title, basis: node.basis, quotes: node.evidence.map(entry => entry.quote) })),
     tools: fixture.toolCalls, original_saved: saved.sources[0].body.includes(fixtureBody), acquisition: saved.sources[0].acquisition,
@@ -602,11 +709,15 @@ try {
     collection_policy: { fetch_and_shell_denied_by_executor: true, browser_requests_only: true, cross_project_platform_stop: true,
       explicit_verified_resume: true, cache_without_navigation: true, persisted_cache_after_restart: true, original_capture_time_preserved: true },
     automatic_capture: { login_without_continue_or_read: true, partial_login_original_rejected: true, verification_requires_explicit_resume: true,
-      origin_project_saved_while_other_selected: true, details_closed: true, other_project_unchanged: true, user_draft_preserved: true,
+      origin_project_saved_while_other_selected: true, workbench_hidden: true, other_project_unchanged: true, user_draft_preserved: true,
       committed_delivery_unacknowledged_before_reload: true, reload_replay_idempotent: true, acknowledgement_after_save: true },
     batch_feedback: { source_saved_before_batch_end: true, visible_saved_count_before_batch_end: true, busy_state_explains_remaining_sources: true,
       scoped_zhaopin_duties_only: true, expired_recommendations_rejected: true, expired_link_not_a_login_request: true,
       no_automatic_expired_retry_after_reload: true },
+    compact_workbench: { saved_source_and_generation_first_screen: true, content_widths_checked: [1360, 1024], no_horizontal_overflow: true,
+      optional_disclosures_closed_by_default: true, disclosures_preserve_capture_and_import: true, raw_json_hidden_by_default: true,
+      model_records_available_on_demand: true, return_to_workbench: true, repeated_jd_navigation_single_instance: true,
+      no_empty_details_column: true, workbench_restored_after_restart: true },
     confirmation: { host_persisted: true, discoverable_for_curriculum: true, export_denied_before_confirmation: true, each_version_requires_confirmation: true, confirmed_versions: allConfirmed.confirmations.map(item => item.version) },
     html_export: { saved_in_client_data: true, system_browser_requested: true, exact_source_quotes: true, hashes_and_urls: true, inference_marked: true, source_text_immutable: true },
     file_import: { txt_loaded: true, md_loaded: true, keyboard_same_file_reselection: true, filename_feedback: true, unsaved_draft_restored: true },

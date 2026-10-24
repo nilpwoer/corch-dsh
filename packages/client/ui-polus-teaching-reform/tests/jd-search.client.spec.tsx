@@ -94,6 +94,97 @@ function autoDelivery(project: JdProject): JdBrowserDelivery {
     item: { state: 'captured', title: '自动保存岗位', url: 'https://example.test/job/actual',
       body: '岗位职责：照护老人。任职要求：熟悉护理技能。', content_hash: 'auto-capture-hash', captured_at: project.updated_at } }
 }
+function disclosure(name: string): HTMLDetailsElement {
+  const details = screen.getByText(name, { selector: 'summary' }).closest('details')
+  if (!details) throw new Error(`Missing disclosure: ${name}`)
+  return details
+}
+test('saved originals and the next action precede collapsed failure and import sections while evidence remains available', async () => {
+  const value = projectFixture()
+  const seed = value.sources[0]!
+  value.sources = [1, 2, 3].map(index => ({ ...seed, id: `JD-${index}`, title: `已保存岗位 ${index}`,
+    source_url: `https://saved.example/job/${index}`, acquisition: 'browser', content_hash: `saved-hash-${index}` }))
+  value.workspace = { ...draft().workspace!, step: 3 }
+  value.pending_sources = Array.from({ length: 9 }, (_, index) => ({ title: `待处理岗位 ${index}`,
+    url: `https://pending-${index}.example/job/1`, reason: '网络读取失败，原链接保留待处理' }))
+  const { input } = fixture([value])
+  vi.mocked(jdBrowserPlatforms).mockResolvedValue(value.pending_sources.map(source => ({
+    platform: new URL(source.url).hostname, blocked: false, login_required: false, cache_count: 7,
+    next_navigation_at: '2999-01-01T00:00:00.000Z',
+  })))
+  render(<JdSearchWorkbench {...input} />)
+  const next = await screen.findByRole('button', { name: '使用 3 份原文生成五级图谱' })
+  const saved = screen.getByRole('region', { name: '已保存原文' })
+  const pending = disclosure('待处理来源（9）')
+  expect(next.compareDocumentPosition(saved) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
+  expect(saved.compareDocumentPosition(pending) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
+  expect(pending.open).toBe(false)
+  expect(disclosure('手动导入原文').open).toBe(false)
+  expect(disclosure('采集帮助').open).toBe(false)
+  expect(disclosure('搜索记录详情').open).toBe(false)
+  for (const hash of screen.getAllByText(/SHA-256：saved-hash/u)) expect(hash.closest('details')?.open).toBe(false)
+  expect(screen.getAllByRole('link', { name: '原始来源' })).toHaveLength(3)
+  expect(screen.getAllByText(/正文已保存 · 本次搜索已保存/u)).toHaveLength(1)
+  fireEvent.click(screen.getAllByText('查看完整原文和证据编号', { selector: 'summary' })[0]!)
+  expect(screen.getByText('SHA-256：saved-hash-1').closest('details')?.open).toBe(true)
+  expect(screen.getAllByText(`采集时间：${seed.captured_at}`)).toHaveLength(3)
+  fireEvent.click(screen.getByRole('button', { name: '1 搜索目标' }))
+  await screen.findByLabelText('学科 / 专业')
+  expect(screen.queryByText(/正文已保存 · 本次搜索已保存/u)).toBeNull()
+  await waitFor(() => { expect(screen.getByRole<HTMLButtonElement>('button', { name: '2 平台与范围' }).disabled).toBe(false) })
+  fireEvent.click(screen.getByRole('button', { name: '2 平台与范围' }))
+  await screen.findByLabelText('区域范围')
+  expect(screen.queryByText(/正文已保存 · 本次搜索已保存/u)).toBeNull()
+  expect(screen.queryByText('浏览器渲染 · 复用已有登录')).toBeNull()
+})
+test('a visible platform-stop action opens the folded recovery controls without clearing the stop', async () => {
+  const value = draft('compact-recovery')
+  value.workspace = { ...value.workspace!, step: 3 }
+  value.pending_sources = [{ title: '验证岗位', url: 'https://www.zhaopin.com/job/1', reason: '平台安全验证' }]
+  const { input } = fixture([value])
+  vi.mocked(jdBrowserPlatforms).mockResolvedValue([{ platform: 'zhaopin.com', blocked: true,
+    login_required: false, cache_count: 0, reason: '平台安全验证' }])
+  render(<JdSearchWorkbench {...input} />)
+  const recover = await screen.findByRole('button', { name: '处理平台验证' })
+  expect(disclosure('待处理来源（1）').open).toBe(false)
+  Object.defineProperty(disclosure('待处理来源（1）'), 'scrollIntoView', { value: vi.fn() })
+  fireEvent.click(recover)
+  expect(disclosure('待处理来源（1）').open).toBe(true)
+  expect(screen.getByRole('button', { name: '手动处理验证' })).toBeTruthy()
+  expect(verifyJdBrowser).not.toHaveBeenCalled()
+  expect(resumeJdBrowser).not.toHaveBeenCalled()
+})
+test('the folded import form preserves its draft and permits selecting the same keyboard-focusable file again', async () => {
+  const value = draft('compact-import')
+  value.workspace = { ...value.workspace!, step: 3 }
+  const { input, records } = fixture([value])
+  render(<JdSearchWorkbench {...input} />)
+  await screen.findByRole('heading', { name: 'JD 原文与来源' })
+  const form = disclosure('手动导入原文')
+  expect(form.open).toBe(false)
+  fireEvent.click(screen.getByText('手动导入原文', { selector: 'summary' }))
+  expect(form.open).toBe(true)
+  fireEvent.change(screen.getByLabelText('岗位名称'), { target: { value: '导入草稿岗位' } })
+  const file = new File(['岗位职责：护理老人。任职要求：护理专业。'], 'same.txt', { type: 'text/plain' })
+  const read = vi.fn().mockResolvedValue('岗位职责：护理老人。任职要求：护理专业。')
+  Object.defineProperty(file, 'text', { value: read })
+  const picker = screen.getByLabelText<HTMLInputElement>('读取原文文件')
+  picker.focus()
+  expect(document.activeElement).toBe(picker)
+  fireEvent.change(picker, { target: { files: [file] } })
+  await screen.findByText('已读取：same.txt')
+  await waitFor(() => { expect(picker.disabled).toBe(false) })
+  expect(picker.value).toBe('')
+  fireEvent.click(screen.getByText('手动导入原文', { selector: 'summary' }))
+  expect(form.open).toBe(false)
+  fireEvent.click(screen.getByText('手动导入原文', { selector: 'summary' }))
+  fireEvent.change(picker, { target: { files: [file] } })
+  await waitFor(() => { expect(read).toHaveBeenCalledTimes(2) })
+  await flush()
+  expect(screen.getByLabelText('岗位名称')).toHaveProperty('value', '导入草稿岗位')
+  expect(records.get(value.id)?.workspace?.capture).toMatchObject({ title: '导入草稿岗位', file_name: 'same.txt',
+    body: '岗位职责：护理老人。任职要求：护理专业。' })
+})
 test('automatic captures save their original search without a mounted workbench and replay without duplicate evidence', async () => {
   const origin = draft('automatic-origin')
   const other = draft('automatic-other')
@@ -153,7 +244,9 @@ test('failed automatic saves keep their native delivery and retry only after a s
   await waitFor(() => { expect(ackJdBrowserDeliveries).toHaveBeenCalledWith([autoDelivery(origin).id]) })
   await stop()
   expect(records.get(origin.id)?.sources).toHaveLength(1)
-  expect(screen.getByText('正文已保存 · 本次搜索已保存 1 份浏览器 JD')).toBeTruthy()
+  expect(screen.queryByText('正文已保存 · 本次搜索已保存 1 份浏览器 JD')).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: '3 JD 原文' }))
+  expect(await screen.findByText('正文已保存 · 本次搜索已保存 1 份浏览器 JD')).toBeTruthy()
 })
 test('a saved platform reports its source while another browser candidate is still running', async () => {
   const origin = draft('platform-progress')
@@ -193,6 +286,7 @@ test('automatic save feedback follows its original search when the workbench swi
   await waitFor(() => { expect(ackJdBrowserDeliveries).toHaveBeenCalled() })
   expect(screen.queryByText(/正文已保存 · 本次搜索已保存/u)).toBeNull()
   view.rerender(<JdSearchWorkbench {...input} sessionId={origin.session_id} />)
+  fireEvent.click(await screen.findByRole('button', { name: '3 JD 原文' }))
   expect(await screen.findByText('正文已保存 · 本次搜索已保存 1 份浏览器 JD')).toBeTruthy()
   expect(screen.getByText(/最近保存：自动保存岗位/u)).toBeTruthy()
   await stop()
@@ -417,7 +511,7 @@ test('discovery is saved before browser reads and cached evidence keeps its acqu
   })
   render(<JdSearchWorkbench {...input} />)
   fireEvent.click(await screen.findByRole('button', { name: '开始检索' }))
-  await screen.findByText('已复用浏览器采集缓存，保留原始采集时间与内容指纹。')
+  await screen.findByText('正文已保存 · 本次搜索已保存 1 份浏览器 JD')
   expect(records.get(value.id)).toMatchObject({ pending_sources: [], sources: [expect.objectContaining({
     acquisition: 'browser', content_hash: 'original-cache-hash', captured_at: '2026-01-01T00:00:00.000Z',
   })] })
@@ -547,7 +641,7 @@ test('restored capture windows save the actual displayed job title and URL after
     content_hash: 'captured-new-hash', captured_at: value.updated_at })
   render(<JdSearchWorkbench {...input} />)
   fireEvent.click(await screen.findByRole('button', { name: '继续浏览器采集' }))
-  await screen.findByText('JD 原文和来源已保存。')
+  await screen.findByText('正文已保存 · 本次搜索已保存 1 份浏览器 JD')
   expect(records.get(value.id)?.sources).toEqual([expect.objectContaining({
     title: '实际打开的新岗位', source_url: 'https://jobs.example.test/job/new', acquisition: 'browser',
   })])
@@ -604,7 +698,7 @@ test('the sidebar filters persisted records and awaits workbench edits before sw
     expandSidebar={() => undefined} sidebarMode="sessions" setSidebarMode={() => undefined}
     subscribeJdSession={subscribeJdSession} getCurrentJdSession={() => selected} /></>)
   await screen.findByLabelText('学科 / 专业')
-  await screen.findByRole('button', { name: /智慧养老岗位研究/ })
+  expect((await screen.findByRole('button', { name: /智慧养老岗位研究/ })).textContent).not.toContain('修订')
   fireEvent.change(screen.getByLabelText('学科 / 专业'), { target: { value: '计算机' } })
   fireEvent.change(screen.getByLabelText('搜索记录'), { target: { value: '智慧养老' } })
   expect(screen.queryByRole('button', { name: /未命名岗位研究/ })).toBeNull()

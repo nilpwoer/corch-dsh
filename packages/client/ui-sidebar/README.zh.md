@@ -4,7 +4,7 @@
 
 侧边栏外壳插件：负责品牌行、New Session 操作、布局持有的折叠控件、可感知滚动的区域 seat，以及固定在底部的 Settings seat。`sidebar.workspaces` 是 root chain：[ui-workspace](../ui-workspace/README.zh.md) 持有原生 Workspace 与 Session 浏览器，可选的浏览器插件则通过外壳的模式 owner 选择同一位置。本包既不派生浏览器行，也不持有其视图偏好。折叠到布局拥有的 56px 轨道仍属于本地呈现行为。约定：[slot 系统标准](../../../.agents/notes/implemented/architecture/2026-07-22-slot-type-chain-implementation.zh.md)。
 
-布局层在侧栏之前放置贯穿整列的固定 App Rail。入口包括原生会话和教改工作台，全部复用共享的 `sidebar.workspaces` 模式，不复制会话或工作台状态。原生会话的新建入口只在原生会话模式显示。
+布局层在侧栏之前放置贯穿整列的固定 App Rail。入口包括原生会话和教改工作台，全部复用共享的 `sidebar.workspaces` 模式，不复制会话或工作台状态。原生会话与 JD 搜索保持详情列关闭，JD 研究占据主对话区域；重复选择 JD 不会打开空详情列。课程与访谈入口保留详情面板；延迟重新打开前若所选模式已变化，则取消该次打开。原生会话的新建入口只在原生会话模式显示。
 
 展开的品牌行把 `sidebar.brand.mark` 与 `sidebar.brand.name` 渲染为两个独立的 single slot，收起轨道则渲染同一个 mark slot。没有占位者时，外壳使用鱼形标记，以及带有构建期 7 位 `DSH_CLIENT_COMMIT_HASH` 徽标的 `DSH Local Build` 标签。部署包可以单独替换任一值，而无须替换 New Session 控件或轨道几何；声明感知的 `slots.inject()` 让这种包无论先于还是后于侧边栏激活都能生效。
 

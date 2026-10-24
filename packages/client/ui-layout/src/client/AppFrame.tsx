@@ -31,9 +31,9 @@ function CenterColumn(props: { children?: ReactNode }) {
   return <div className={css.centerCol}>{props.children}</div>
 }
 
-/** Details column grid item; width 0 keeps the subtree mounted (never unmount on close). */
-function DetailsColumn(props: { children?: ReactNode }) {
-  return <div className={css.detailsCol}>{props.children}</div>
+/** Closed details retain their mounted state while leaving keyboard and accessibility navigation. */
+function DetailsColumn(props: { collapsed: boolean; children?: ReactNode }) {
+  return <div className={css.detailsCol} aria-hidden={props.collapsed || undefined}>{props.children}</div>
 }
 
 /**
@@ -189,7 +189,7 @@ export function AppFrame({
             paint. The details surface is deliberately between navigation and
             conversation so feature workbenches can sit beside their project
             lists while the ordinary Conversation remains the rightmost pane. */}
-        <DetailsColumn>{renderSlot('details', {})}</DetailsColumn>
+        <DetailsColumn collapsed={cols.details === 0}>{renderSlot('details', {})}</DetailsColumn>
         <CenterColumn>{renderSlot('conversation', {})}</CenterColumn>
       </>
       <div className={css.overlayLayer} data-shell-overlay>

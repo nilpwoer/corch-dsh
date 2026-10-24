@@ -2,7 +2,7 @@ import { IconNewChatOutline16, Tooltip } from '@deepseek-ai/dsh-client-ui-primit
 import type { PropsLocale, PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
 import type { AppRailOwnerProps } from '@deepseek-ai/dsh-client-ui-layout/client'
 import { TbChalkboardTeacher, TbFileCv, TbUserBolt } from 'react-icons/tb'
-import { selectSidebarMode, useSidebarMode } from './mode-store.ts'
+import { getSidebarMode, selectSidebarMode, useSidebarMode } from './mode-store.ts'
 import css from './AppRail.module.css'
 
 /** Render the layout-level workbench navigation column. */
@@ -14,14 +14,14 @@ type AppRailProps = AppRailOwnerProps & PropsLocale<'sidebar'> & PropsRenderSlot
 export function AppRail({ collapsed, toggleSidebar, openDetails, closeDetails, t, renderSlot }: AppRailProps) {
   const mode = useSidebarMode()
   const select = (nextMode: 'sessions' | 'curriculum' | 'interviews' | 'jd-search'): void => {
-    if (nextMode === mode && nextMode !== 'sessions') {
+    if (nextMode === mode && nextMode !== 'sessions' && nextMode !== 'jd-search') {
       closeDetails()
-      window.setTimeout(() => { openDetails() }, 0)
+      window.setTimeout(() => { if (getSidebarMode() === nextMode) openDetails() }, 0)
       if (collapsed) toggleSidebar()
       return
     }
     selectSidebarMode(nextMode)
-    if (nextMode === 'sessions') closeDetails()
+    if (nextMode === 'sessions' || nextMode === 'jd-search') closeDetails()
     else openDetails()
     if (collapsed) toggleSidebar()
   }

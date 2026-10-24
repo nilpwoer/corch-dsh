@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import type {
   SidebarFooterActionOwnerProps, SidebarRootComponentProps, SidebarSectionOwnerProps,
 } from '../src/client/contract/slots.ts'
 import { SidebarRoot } from '../src/client/SidebarRoot.tsx'
 import { en } from '../src/client/locales.ts'
+import { selectSidebarMode } from '../src/client/mode-store.ts'
 
 // English-dictionary translate stub: the shell renders the same copy the
 // assertions below query by accessible name.
@@ -14,6 +15,7 @@ const t: SidebarRootComponentProps['t'] = key => (en as Record<string, string>)[
 
 afterEach(() => {
   cleanup()
+  selectSidebarMode('sessions')
   vi.unstubAllEnvs()
   vi.useRealTimers()
 })
@@ -62,6 +64,11 @@ function mountShell({ collapsed = false, width = 300 }: { collapsed?: boolean; w
     toggleSidebar,
     closeDetails,
     openDetails,
+    reopenDetails: () => {
+      const reopen = regionOwner?.reopenDetails
+      if (reopen === undefined) throw new Error('region reopen action not rendered')
+      reopen()
+    },
     regionOwner: () => {
       if (regionOwner === undefined) throw new Error('region owner not rendered')
       return regionOwner
@@ -78,6 +85,28 @@ function mountShell({ collapsed = false, width = 300 }: { collapsed?: boolean; w
 }
 
 describe('SidebarRoot shell', () => {
+  it('keeps the detail panel closed for JD research and explicit region reopening', () => {
+    vi.useFakeTimers()
+    const b = mountShell()
+    act(() => { b.regionOwner().setSidebarMode('jd-search') })
+    b.closeDetails.mockClear()
+    act(() => { b.reopenDetails() })
+    act(() => { vi.runOnlyPendingTimers() })
+    expect(b.closeDetails).toHaveBeenCalledOnce()
+    expect(b.openDetails).not.toHaveBeenCalled()
+  })
+
+  it('drops a queued detail opening when the region switches to JD research', () => {
+    vi.useFakeTimers()
+    const b = mountShell()
+    act(() => { b.regionOwner().setSidebarMode('interviews') })
+    act(() => { b.reopenDetails() })
+    b.openDetails.mockClear()
+    act(() => { b.regionOwner().setSidebarMode('jd-search') })
+    act(() => { vi.runOnlyPendingTimers() })
+    expect(b.openDetails).not.toHaveBeenCalled()
+  })
+
   it('routes New Session (capsule + wordmark) and the column toggle', () => {
     const b = mountShell()
     expect(screen.getByTestId('custom-brand-mark')).toBeTruthy()

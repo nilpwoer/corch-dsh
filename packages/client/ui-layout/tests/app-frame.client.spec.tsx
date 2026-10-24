@@ -15,7 +15,7 @@ import { act, cleanup, render } from '@testing-library/react'
 import { useSyncExternalStore } from 'react'
 import { AppFrame } from '@deepseek-ai/dsh-client-ui-layout/src/client/AppFrame.tsx'
 import type { AppFrameProps } from '@deepseek-ai/dsh-client-ui-layout/src/client/AppFrame.tsx'
-import { SIDEBAR_COLLAPSED } from '@deepseek-ai/dsh-client-ui-layout/src/client/columns.ts'
+import { CENTER_MIN, DETAILS_DEFAULT, DETAILS_MIN, SIDEBAR_COLLAPSED } from '@deepseek-ai/dsh-client-ui-layout/src/client/columns.ts'
 import { createLayoutStore } from '@deepseek-ai/dsh-client-ui-layout/src/client/stores.ts'
 import type {
   SessionId, SessionListState, WorkspaceListState,
@@ -60,7 +60,7 @@ function mountFrame() {
     slotCalls.push({ key, props: owner })
     if (key === 'sidebar') return <div data-testid="sidebar-content" />
     if (key === 'conversation') return <div data-testid="center-content" />
-    if (key === 'details') return <div data-testid="details-content" />
+    if (key === 'details') return <div data-testid="details-content"><button type="button">Inspect source</button></div>
     if (key === 'conversation.empty') return <div data-testid="empty-content" />
     return <div data-testid="other-content" />
   }) as AppFrameProps['renderSlot']
@@ -177,7 +177,7 @@ describe('AppFrame', () => {
     expect(tracks(frame)).toEqual([280, 0])
 
     act(() => { instance.actions.openDetails() })
-    expect(tracks(frame)).toEqual([280, 360])
+    expect(tracks(frame)).toEqual([280, DETAILS_DEFAULT])
 
     selectedSession.current = 's-next' as SessionId
     act(() => { rerenderFrame() })
@@ -233,17 +233,17 @@ describe('AppFrame', () => {
     act(() => { instance.actions.openDetails() })
     const handles = frame.querySelectorAll('[class*="handle"]')
     drag(handles[1]!, 640, 700)
-    expect(tracks(frame)[1]).toBe(420)
+    expect(tracks(frame)[1]).toBe(DETAILS_DEFAULT + 60)
   })
 
   it('drag base is the rendered (concession-clamped) width, not the preference', () => {
-    frameWidth = 1250 // step-2 squeeze: details renders 330 while preference is 360
+    frameWidth = 280 + DETAILS_MIN + CENTER_MIN + 30
     const { frame, instance } = mountFrame()
     act(() => { instance.actions.openDetails() })
-    expect(tracks(frame)).toEqual([280, 330])
+    expect(tracks(frame)).toEqual([280, DETAILS_MIN + 30])
     const handles = frame.querySelectorAll('[class*="handle"]')
     drag(handles[1]!, 610, 620) // widen by 10 from the rendered width
-    expect(instance.getSnapshot().details).toBe(340)
+    expect(instance.getSnapshot().details).toBe(DETAILS_MIN + 40)
   })
 
   it('details column stays mounted at zero width', () => {
@@ -251,6 +251,19 @@ describe('AppFrame', () => {
     expect(tracks(frame)).toEqual([280, 0])
     expect(getByTestId('details-content')).toBeTruthy()
     expect(frame.hasAttribute('data-details-collapsed')).toBe(true)
+  })
+
+  it('removes closed details from accessible navigation without discarding their mounted content', () => {
+    const view = mountFrame()
+    const content = view.getByTestId('details-content')
+    expect(view.queryByRole('button', { name: 'Inspect source' })).toBeNull()
+    act(() => { view.instance.actions.openDetails() })
+    const action = view.getByRole('button', { name: 'Inspect source' })
+    act(() => { view.instance.actions.closeDetails() })
+    expect(view.queryByRole('button', { name: 'Inspect source' })).toBeNull()
+    expect(view.getByTestId('details-content')).toBe(content)
+    act(() => { view.instance.actions.openDetails() })
+    expect(view.getByRole('button', { name: 'Inspect source' })).toBe(action)
   })
 
   it('closed sidebar keeps its compact rail with mounted slot content and collapsed owner props', () => {
@@ -266,12 +279,12 @@ describe('AppFrame', () => {
   it('viewport shrink triggers the concession chain via ResizeObserver', () => {
     const { frame, instance } = mountFrame()
     act(() => { instance.actions.openDetails() })
-    frameWidth = 1250
+    frameWidth = 280 + DETAILS_MIN + CENTER_MIN + 30
     act(() => { fireResize?.(); vi.advanceTimersByTime(20) })
-    expect(tracks(frame)).toEqual([280, 330])
+    expect(tracks(frame)).toEqual([280, DETAILS_MIN + 30])
     frameWidth = 1920
     act(() => { fireResize?.(); vi.advanceTimersByTime(20) })
-    expect(tracks(frame)).toEqual([280, 360])
+    expect(tracks(frame)).toEqual([280, DETAILS_DEFAULT])
   })
 
   it('drag handles disappear for collapsed columns', () => {
@@ -393,8 +406,8 @@ describe('AppFrame — unmount with an in-flight resize frame', () => {
   it('double resize inside one frame rides the pending rAF (??= guard)', () => {
     const { frame, instance } = mountFrame()
     act(() => { instance.actions.openDetails() })
-    frameWidth = 1250
+    frameWidth = 280 + DETAILS_MIN + CENTER_MIN + 30
     act(() => { fireResize?.(); fireResize?.(); vi.advanceTimersByTime(20) })
-    expect(tracks(frame)).toEqual([280, 330])
+    expect(tracks(frame)).toEqual([280, DETAILS_MIN + 30])
   })
 })

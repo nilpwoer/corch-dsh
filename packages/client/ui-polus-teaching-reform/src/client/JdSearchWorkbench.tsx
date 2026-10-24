@@ -81,7 +81,7 @@ export function JdSearchSidebar({
             data-jd-project-id={item.id} data-jd-session-id={item.session_id}
             aria-current={String(item.session_id) === currentSessionId ? 'page' : undefined}
             onClick={() => { switchRecord(() => { openJdProject(item.session_id) }) }}>
-            <strong>{item.title}</strong><small>{new Date(item.updated_at).toLocaleString()}</small><small>修订 {item.revision}</small>
+            <strong>{item.title}</strong><small>{new Date(item.updated_at).toLocaleString()}</small>
           </button>)}
       </div>
       {history.length === 0 && <div className={css.emptyHistory}>新建搜索后自动存档，每次搜索使用独立会话。</div>}
@@ -130,6 +130,12 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
   const [saveError, setSaveError] = useState(controller.saveError.current)
   const [browserOpen, setBrowserOpen] = useState(controller.browserOpen.current)
   const [platforms, setPlatforms] = useState(controller.platforms.current)
+  const pendingDetails = useRef<HTMLDetailsElement>(null)
+  const revealPending = (): void => {
+    if (!pendingDetails.current) return
+    pendingDetails.current.open = true
+    pendingDetails.current.scrollIntoView({ block: 'nearest' })
+  }
   const mounted = useRef(true)
   const notify = (): void => { notifyJdResearch(controller) }
   const publish = (value: JdProject): void => {
@@ -468,20 +474,25 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
   const capturePlatform = platformForUrl(capture.url, platforms)
   const hasCollectableSource = project.pending_sources.some(item => !isUnavailableSource(item.reason)
     && !platformForUrl(item.url, platforms)?.blocked)
+  const blockedPlatforms = platforms.filter(item => item.blocked
+    && project.pending_sources.some(source => platformForUrl(source.url, platforms)?.platform === item.platform)).length
+  const savedNotice = /JD 原文和来源已保存|该 JD 原文已保存|已复用浏览器采集缓存/u.test(notice)
   return <div className={css.workbench}>
     <header className={css.header}><div><span className={css.kicker}>岗位研究工作台</span><h1>JD 搜索与岗位能力图谱</h1>
-      <p>每次搜索独立存档；确认图谱后可用于课程建设并导出 HTML 报告。</p></div></header>
+      <p>搜索与原文自动保存，确认图谱后用于课程建设。</p></div></header>
     <main className={css.content}>
-      <p className={css.muted} role="status">{saving ? '正在保存…' : '已存档'} · 修订 {project.revision} · {project.sources.length} 份原文 · {project.graphs.length} 个图谱版本</p>
+      <div className={css.saveStatus}>{(saving || state.step !== 3 || !latestBrowserSource)
+        && <span className={css.muted} role="status">{saving ? '正在保存…' : '已自动保存'}</span>}
+      <details className={css.recordDetails}><summary>搜索记录详情</summary>
+        <p>修订 {project.revision} · {project.sources.length} 份原文 · {project.graphs.length} 个图谱版本</p>
+        <p>更新时间：{project.updated_at}</p>
+      </details>
+      </div>
       {error && <div className={css.loginNotice} role="alert">{error}{saveError && <button className={css.infoButton} type="button" disabled={busy} onClick={() => { run(async () => {
         await flush(); window.dispatchEvent(new Event('jd-browser-delivery-retry'))
-      }) }}>重试保存</button>}</div>}
-      {notice && <div className={css.notice} role="status">{notice}</div>}
-      {latestBrowserSource && <div className={css.notice} role="status" aria-live="polite" data-jd-save-complete>
-        <strong>正文已保存 · 本次搜索已保存 {savedBrowserSources.length} 份浏览器 JD</strong>
-        <p>最近保存：{latestBrowserSource.title}（{new URL(latestBrowserSource.source_url).hostname}）。原文、来源和内容指纹已入档。</p>
-        {busy && <p>其他来源仍在采集；已保存的岗位无需等待本批完成。</p>}
-      </div>}
+      }) }}>重试保存</button>}{!saveError && state.step === 3 && project.pending_sources.length > 0
+        && <button className={css.infoButton} type="button" onClick={revealPending}>查看待处理来源</button>}</div>}
+      {notice && !(state.step === 3 && latestBrowserSource && savedNotice) && <div className={css.notice} role="status">{notice}</div>}
       {state.search_status === 'running' && !busy && <div className={css.loginNotice}>该搜索尚未完成。可稍后重新打开查看；重新检索会建立新档案并保留本次记录。</div>}
       <nav className={css.progress} aria-label="研究步骤">{STEPS.map((label, index) =>
         <button type="button" key={label} disabled={busy || (index === 3 && !graph)} className={state.step === index + 1 ? css.progressActive : css.progressButton}
@@ -505,13 +516,13 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
           <button className={css.primaryButton} type="button" disabled={busy || !project.roles.length} onClick={() => { go(2) }}>确认岗位并继续</button></div>
       </>}
       {state.step === 2 && <>
-        <Header step={2} title="选择平台与搜索范围" text="候选链接先存档，再通过浏览器渲染读取。各平台独立限速、复用缓存与登录状态；遇到风控立即停止该平台访问，其他平台继续。" />
+        <Header step={2} title="选择平台与搜索范围" text="选择要搜索的平台、地区和岗位数量。" />
         <div className={css.platformGrid}>{PLATFORMS.map(platform => <button className={project.platforms.includes(platform) ? css.platformActive : css.platform} type="button" key={platform}
           aria-pressed={project.platforms.includes(platform)} disabled={targetLocked} onClick={() => { change(value => ({ ...value,
             platforms: value.platforms.includes(platform)
               ? value.platforms.filter(item => item !== platform)
               : [...value.platforms, platform] }))
-          }}><b>{platform}</b><small>浏览器渲染 · 复用已有登录</small></button>)}</div>
+          }}><b>{platform}</b></button>)}</div>
         <div className={css.card}>
           <label className={css.label}>区域范围<select className={css.input} value={project.region} disabled={targetLocked}
             onChange={(event) => {
@@ -532,85 +543,116 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
             }}>
             <option>5 条（测试）</option><option>20-50 条</option><option>50-100 条</option></select></label>
         </div>
-        <p className={css.notice}>{state.search_status === 'draft' ? '无需逐条重新登录。同一平台跨搜索复用登录；不同平台仍需各自授权，验证码由你亲自完成。无法读取的岗位保留链接和分类原因。' : '本次搜索的目标与范围已归档。新建搜索后可修改条件，原记录完整保留。'}</p>
+        {state.search_status !== 'draft' && <p className={css.notice}>本次搜索已归档。新建搜索后可修改条件，原记录完整保留。</p>}
         <div className={css.footer}><button className={css.primaryButton} type="button" disabled={busy || !project.roles.length || !project.platforms.length} onClick={search}>
           {busy ? '正在检索…' : state.search_status === 'draft' ? '开始检索' : '以此范围新建搜索'}</button></div>
       </>}
       {state.step === 3 && <>
-        <Header step={3} title="JD 原文与来源" text="登录页、反爬提示和搜索摘要不算岗位原文。保留原始 URL、时间和内容指纹；手动导入的来源由你声明。" />
-        <div className={css.notice}>同一平台复用登录与原文缓存。登录后完整 JD 可读即自动保存到原搜索，切换搜索或关闭工作台也会继续保存。风控平台仍暂停，需明确确认恢复；登录失效与网络失败分别保留原因。</div>
-        {platformKeys.length > 0 && <section className={css.platformStatusList} aria-label="平台采集状态">{platformKeys.map((key) => {
-          const item = platforms.find(platform => platform.platform === key)
-          const count = savedBrowserSources.filter(source => new URL(source.source_url).hostname === key
-            || new URL(source.source_url).hostname.endsWith(`.${key}`)).length
-          const pending = project.pending_sources.filter(source => new URL(source.url).hostname === key
-            || new URL(source.url).hostname.endsWith(`.${key}`))
-          const unavailable = pending.length > 0 && pending.every(source => isUnavailableSource(source.reason))
-          const status = item?.blocked ? '风控暂停' : unavailable ? '岗位页面失效' : item?.login_required ? '需要登录'
-            : count ? '正文已读取' : item?.cache_count ? '缓存可用' : '尚未保存正文'
-          return <article key={key} className={item?.blocked ? css.platformStopped : css.platformStatus}>
-            <strong>{key} · {status}{count > 0 ? ` · 已保存 ${count} 份` : ''}</strong>
-            <p>{item?.blocked ? item.reason : unavailable ? '当前候选页面已失效，请更换有效岗位来源'
-              : count ? '原文和来源已保存到当前搜索' : '账号登录状态请以平台页面为准'}{item ? ` · ${item.cache_count} 条缓存` : ''}</p>
-            {item?.next_navigation_at && <small>下次允许访问：{new Date(item.next_navigation_at).toLocaleString()}</small>}
-          </article>
-        })}</section>}
-        {project.pending_sources.length > 0 && <div className={css.captureActions}>
-          <button type="button" className={css.primaryButton} disabled={busy || !hasJdBrowser() || !hasCollectableSource}
-            onClick={collectPending}>{busy ? '浏览器正在采集，按平台限速中…' : '继续采集待处理岗位'}</button>
-          <span className={css.muted}>风控平台由客户端强制跳过；成功缓存优先复用。</span>
+        <Header step={3} title="JD 原文与来源" text="先查看并筛选已保存原文，再生成能力图谱。待处理来源不计入样本。" />
+        <div className={css.primaryToolbar} aria-label="原文下一步">
+          <span>已保留 <strong>{retained.length}</strong> 份原文</span>
+          <button className={css.primaryButton} type="button" disabled={busy || !retained.length} onClick={generate}>{busy ? '正在处理…' : `使用 ${retained.length} 份原文生成五级图谱`}</button>
+        </div>
+        {blockedPlatforms > 0 && <div className={css.loginNotice} role="status">
+          {blockedPlatforms} 个平台已暂停自动访问。
+          <button type="button" className={css.infoButton} onClick={revealPending}>处理平台验证</button>
         </div>}
-        {project.pending_sources.map((item) => {
-          const platform = platformForUrl(item.url, platforms)
-          const unavailable = isUnavailableSource(item.reason)
-          return <article key={item.url} className={css.card}><strong>{item.title}</strong><p>{item.reason}</p>
-            {unavailable && <p>岗位页面已失效，登录不能恢复该岗位。请换用其他有效来源；若已有合法取得的原文，可手动导入并注明来源。</p>}
-            <div className={css.captureActions}>{platform?.blocked ? <>
-              <button type="button" className={css.primaryButton} disabled={busy} onClick={() => { verifyPlatform(item) }}>手动处理验证</button>
-              <button type="button" className={css.infoButton} disabled={busy || !browserOpen}
-                onClick={() => { resumePlatform(item.url) }}>已完成验证，恢复采集</button>
-            </> : <button type="button" className={css.primaryButton} disabled={busy}
-              onClick={() => { beginCapture(item) }}>{unavailable ? '查看失效页面' : platform?.login_required ? '打开登录' : '浏览器读取此岗位'}</button>}</div>
-            <p className={css.muted}>{item.url}</p></article>
-        })}
-        <section className={css.card} aria-label="采集或导入 JD">
-          <label className={css.label}>来源 URL<input className={css.input} value={capture.url} disabled={busy}
-            onChange={(event) => { captureChange({ url: event.target.value }) }} /></label>
-          <label className={css.label}>岗位名称<input className={css.input} value={capture.title} disabled={busy}
-            onChange={(event) => { captureChange({ title: event.target.value }) }} /></label>
-          <label className={css.label}>企业（可填未披露）<input className={css.input} value={capture.company} disabled={busy}
-            onChange={(event) => { captureChange({ company: event.target.value }) }} /></label>
-          <div className={css.captureActions}>
-            <button type="button" className={css.primaryButton} disabled={busy || !capture.url.trim() || capturePlatform?.blocked}
-              onClick={() => { beginCapture() }}>{browserOpen ? '打开岗位浏览器' : '浏览器读取此岗位'}</button>
-            {browserOpen && !capturePlatform?.blocked && <button type="button" className={css.infoButton} disabled={busy}
-              onClick={continueCapture}>继续浏览器采集</button>}
-          </div>
-          <h3 className={css.importHeading}>手动导入完整原文</h3><p>平台限制读取时，可粘贴或选择已取得的 JD 文件。请填写上方岗位名称和真实来源 URL；原文会保存为用户提供的证据。</p>
-          <label className={css.label}>导入 JD 原文<textarea className={css.textarea} value={capture.body} disabled={busy}
-            onChange={(event) => { captureChange({ body: event.target.value }) }} placeholder="粘贴完整岗位职责和任职要求；不接受搜索摘要" /></label>
-          <div className={css.fileUpload}><label className={css.filePicker}>
-            <input className={css.fileInput} type="file" aria-label="读取原文文件" aria-describedby="jd-file-feedback" accept=".txt,.md,text/plain,text/markdown" disabled={busy}
-              onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) run(async () => {
-                if (file.size > 1000000) throw new Error('原文文件超过 1 MB')
-                captureChange({ body: await file.text(), file_name: file.name }); await flush()
-              }) }} /><span className={css.filePickerButton}>选择原文文件</span></label>
-          <span id="jd-file-feedback" className={css.fileHint} role="status">{capture.file_name ? `已读取：${capture.file_name}` : '支持 .txt / .md，最大 1 MB'}</span></div>
-          <button type="button" className={css.infoButton} disabled={busy || !capture.body.trim()} onClick={importSource}>保存导入原文（用户声明来源）</button>
+        {latestBrowserSource && <div className={css.saveFeedback} role="status" aria-live="polite" data-jd-save-complete>
+          <strong>正文已保存 · 本次搜索已保存 {savedBrowserSources.length} 份浏览器 JD</strong>
+          <p>最近保存：{latestBrowserSource.title}（{new URL(latestBrowserSource.source_url).hostname}）。</p>
+          {busy && <p>其他来源仍在采集；已保存的岗位无需等待本批完成。</p>}
+        </div>}
+        <section aria-label="已保存原文" className={css.sourceList}>
+          {project.sources.length === 0 && <div className={css.notice}>尚无已保存原文，可调整搜索范围、登录采集或导入正文。</div>}
+          {project.sources.map(source => <article className={css.card} key={source.id}><h3>{source.title} {source.excluded ? '（已剔除）' : ''}</h3>
+            <p>{source.company} · {source.platform} · {source.acquisition === 'manual' ? '用户提供，未独立联网核验' : source.acquisition === 'browser' ? '浏览器已读取' : '公开 HTTP 已读取'}</p>
+            <div className={css.sourceActions}><a href={source.source_url} target="_blank" rel="noopener noreferrer">原始来源</a>
+              <button type="button" className={css.infoButton} disabled={busy} onClick={() => { run(async () => {
+                change(value => ({ ...value, sources: value.sources.map(item => item.id === source.id
+                  ? { ...item, excluded: !item.excluded }
+                  : source.excluded && item.source_url === source.source_url ? { ...item, excluded: true } : item) }))
+                await flush()
+              }) }}>{source.excluded ? '恢复原文' : '剔除原文'}</button>
+            </div>
+            <details className={css.evidenceDetails}><summary>查看完整原文和证据编号</summary>
+              <p>{source.id}</p><p className={css.muted}>采集时间：{source.captured_at}</p>
+              <p className={css.muted}>SHA-256：{source.content_hash}</p><pre className={css.sourceBody}>{source.body}</pre>
+            </details>
+          </article>)}
         </section>
-        {project.sources.length === 0 && <div className={css.notice}>尚无已保存原文，可调整搜索范围、登录采集或导入正文。</div>}
-        {project.sources.map(source => <article className={css.card} key={source.id}><h3>{source.title} {source.excluded ? '（已剔除）' : ''}</h3>
-          <p>{source.company} · {source.platform} · {source.acquisition === 'manual' ? '用户提供，未独立联网核验' : source.acquisition === 'browser' ? '浏览器已读取' : '公开 HTTP 已读取'}</p>
-          <a href={source.source_url} target="_blank" rel="noopener noreferrer">原始来源</a><p className={css.muted}>{source.captured_at} · SHA-256：{source.content_hash}</p>
-          <details><summary>查看完整原文和证据编号</summary><p>{source.id}</p><pre className={css.sourceBody}>{source.body}</pre></details>
-          <button type="button" className={css.infoButton} disabled={busy} onClick={() => { run(async () => {
-            change(value => ({ ...value, sources: value.sources.map(item => item.id === source.id
-              ? { ...item, excluded: !item.excluded }
-              : source.excluded && item.source_url === source.source_url ? { ...item, excluded: true } : item) }))
-            await flush()
-          }) }}>{source.excluded ? '恢复原文' : '剔除原文'}</button></article>)}
-        <div className={css.footer}><button className={css.infoButton} type="button" disabled={busy} onClick={() => { go(2) }}>调整搜索范围</button>
-          <button className={css.primaryButton} type="button" disabled={busy || !retained.length} onClick={generate}>{busy ? '正在处理…' : `使用 ${retained.length} 份原文生成五级图谱`}</button></div>
+        {browserOpen && !capturePlatform?.blocked && <div className={css.captureActions}>
+          <button type="button" className={css.infoButton} disabled={busy} onClick={continueCapture}>继续浏览器采集</button>
+        </div>}
+        {platformKeys.length > 0 && <details className={css.disclosure}><summary>平台状态（{platformKeys.length}）</summary>
+          <section className={css.platformStatusList} aria-label="平台采集状态">{platformKeys.map((key) => {
+            const item = platforms.find(platform => platform.platform === key)
+            const count = savedBrowserSources.filter(source => new URL(source.source_url).hostname === key
+            || new URL(source.source_url).hostname.endsWith(`.${key}`)).length
+            const pending = project.pending_sources.filter(source => new URL(source.url).hostname === key
+            || new URL(source.url).hostname.endsWith(`.${key}`))
+            const unavailable = pending.length > 0 && pending.every(source => isUnavailableSource(source.reason))
+            const status = item?.blocked ? '风控暂停' : unavailable ? '岗位页面失效' : item?.login_required ? '需要登录'
+              : count ? '正文已读取' : item?.cache_count ? '缓存可用' : '尚未保存正文'
+            return <article key={key} className={item?.blocked ? css.platformStopped : css.platformStatus}>
+              <strong>{key} · {status}{count > 0 ? ` · 已保存 ${count} 份` : ''}</strong>
+              {(item?.blocked || unavailable) && <p>{item?.blocked ? item.reason : '当前候选页面已失效，请更换有效岗位来源'}</p>}
+              <details className={css.evidenceDetails}><summary>平台详情</summary>
+                <p>账号登录状态请以平台页面为准。{item ? ` ${item.cache_count} 条缓存` : ''}</p>
+                {item?.next_navigation_at && Date.parse(item.next_navigation_at) > Date.now()
+                && <p>下次允许访问：{new Date(item.next_navigation_at).toLocaleString()}</p>}
+              </details>
+            </article>
+          })}</section></details>}
+        {project.pending_sources.length > 0 && <details className={css.disclosure} ref={pendingDetails}>
+          <summary>待处理来源（{project.pending_sources.length}）</summary>
+          <p className={css.muted}>以下为上次采集结果。展开对应来源可继续采集或手动处理平台验证。</p>
+          {project.pending_sources.length > 0 && <div className={css.captureActions}>
+            <button type="button" className={css.primaryButton} disabled={busy || !hasJdBrowser() || !hasCollectableSource}
+              onClick={collectPending}>{busy ? '浏览器正在采集，按平台限速中…' : '继续采集待处理岗位'}</button>
+          </div>}
+          {project.pending_sources.map((item) => {
+            const platform = platformForUrl(item.url, platforms)
+            const unavailable = isUnavailableSource(item.reason)
+            return <article key={item.url} className={css.card}><strong>{item.title}</strong><p>{item.reason}</p>
+              {unavailable && <p>岗位页面已失效，登录不能恢复该岗位。请换用其他有效来源；若已有合法取得的原文，可手动导入并注明来源。</p>}
+              <div className={css.captureActions}>{platform?.blocked ? <>
+                <button type="button" className={css.primaryButton} disabled={busy} onClick={() => { verifyPlatform(item) }}>手动处理验证</button>
+                <button type="button" className={css.infoButton} disabled={busy || !browserOpen}
+                  onClick={() => { resumePlatform(item.url) }}>已完成验证，恢复采集</button>
+              </> : <button type="button" className={css.primaryButton} disabled={busy}
+                onClick={() => { beginCapture(item) }}>{unavailable ? '查看失效页面' : platform?.login_required ? '打开登录' : '浏览器读取此岗位'}</button>}</div>
+              <p className={css.muted}>{item.url}</p></article>
+          })}</details>}
+        <details className={css.disclosure}><summary>手动导入原文</summary>
+          <section className={css.importForm} aria-label="采集或导入 JD">
+            <label className={css.label}>来源 URL<input className={css.input} value={capture.url} disabled={busy}
+              onChange={(event) => { captureChange({ url: event.target.value }) }} /></label>
+            <label className={css.label}>岗位名称<input className={css.input} value={capture.title} disabled={busy}
+              onChange={(event) => { captureChange({ title: event.target.value }) }} /></label>
+            <label className={css.label}>企业（可填未披露）<input className={css.input} value={capture.company} disabled={busy}
+              onChange={(event) => { captureChange({ company: event.target.value }) }} /></label>
+            <div className={css.captureActions}>
+              <button type="button" className={css.primaryButton} disabled={busy || !capture.url.trim() || capturePlatform?.blocked}
+                onClick={() => { beginCapture() }}>{browserOpen ? '打开岗位浏览器' : '浏览器读取此岗位'}</button>
+            </div>
+            <p>粘贴或选择已取得的完整 JD，填写真实岗位名称和来源。导入证据将标记为用户提供。</p>
+            <label className={css.label}>导入 JD 原文<textarea className={css.textarea} value={capture.body} disabled={busy}
+              onChange={(event) => { captureChange({ body: event.target.value }) }} placeholder="粘贴完整岗位职责和任职要求；不接受搜索摘要" /></label>
+            <div className={css.fileUpload}><label className={css.filePicker}>
+              <input className={css.fileInput} type="file" aria-label="读取原文文件" aria-describedby="jd-file-feedback" accept=".txt,.md,text/plain,text/markdown" disabled={busy}
+                onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) run(async () => {
+                  if (file.size > 1000000) throw new Error('原文文件超过 1 MB')
+                  captureChange({ body: await file.text(), file_name: file.name }); await flush()
+                }) }} /><span className={css.filePickerButton}>选择原文文件</span></label>
+            <span id="jd-file-feedback" className={css.fileHint} role="status">{capture.file_name ? `已读取：${capture.file_name}` : '支持 .txt / .md，最大 1 MB'}</span></div>
+            <button type="button" className={css.infoButton} disabled={busy || !capture.body.trim()} onClick={importSource}>保存导入原文（用户声明来源）</button>
+          </section></details>
+        <details className={css.disclosure}><summary>采集帮助</summary>
+          <p>同一平台复用已有浏览器会话。完整 JD 可读后自动保存到原搜索，切换搜索或关闭工作台不影响入档。</p>
+          <p>登录页、搜索摘要和失效页面不计入样本。平台风控会暂停自动访问，需在待处理来源中手动验证并明确确认恢复。</p>
+          <p>不同平台仍需各自授权；首次需要时再登录，不要求每个岗位重新登录。无法采集时可手动导入合法取得的完整原文。</p>
+        </details>
+        <div className={css.footer}><button className={css.infoButton} type="button" disabled={busy} onClick={() => { go(2) }}>调整搜索范围</button></div>
       </>}
       {state.step === 4 && graph && <>
         <Header step={4} title="五级岗位能力图谱" text="原文直接陈述与推断分开标记；样本引用频率不代表市场总体需求。确认后保存所选版本供课程建设使用，新版本需重新确认。" />
