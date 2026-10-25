@@ -134,6 +134,23 @@
       2
     ]
   },
+  "graph_validation_retry": {
+    "initial_replies": [
+      "invalid-json",
+      "incomplete-branch",
+      "false-direct",
+      "valid"
+    ],
+    "original_prompt_repeated_verbatim": true,
+    "invalid_graph_never_submitted": true,
+    "exactly_one_version_after_retry": true,
+    "readable_retry_progress": true,
+    "active_stream_exceeds_idle_interval": true,
+    "exhausted_attempts": 4,
+    "final_error_visible": true,
+    "confirmed_versions_immutable": true,
+    "source_and_citations_immutable": true
+  },
   "html_export": {
     "saved_in_client_data": true,
     "system_browser_requested": true,

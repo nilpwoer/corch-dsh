@@ -3249,6 +3249,10 @@ export interface Config {
   maxProjectBytes: number
   /** Maximum web_search dispatches in a single JD link-discovery operation. */
   maxDiscoveryCalls: number
+  /** Maximum complete model responses attempted before a rejected graph stops generation. */
+  maxGraphAttempts: number
+  /** Maximum wait without an active model turn, including an unavailable connection. */
+  modelIdleTimeoutMs: number
 }
 ```
 

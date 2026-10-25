@@ -15,6 +15,14 @@ export async function startJdFixture() {
   const toolCalls = []
   const deniedCalls = []
   const siteRequests = []
+  const graphReplies = []
+  let graphBehavior = 'retry-sequence'
+  let graphAttempt = 0
+  const setGraphBehavior = behavior => {
+    if (!['valid', 'retry-sequence', 'exhaust'].includes(behavior)) throw new Error('Unknown synthetic graph behavior')
+    graphBehavior = behavior
+    graphAttempt = 0
+  }
   const slowResponses = new Set()
   const releaseSlowJob = () => {
     for (const response of slowResponses) {
@@ -97,15 +105,27 @@ export async function startJdFixture() {
     const messageText = content => typeof content === 'string' ? content : (content ?? []).map(block => block.text ?? '').join('\n')
     const lastUserIndex = messages.findLastIndex(message => message.role === 'user' && /推理适合|执行一次岗位 JD 搜索|五级岗位能力图谱初稿/u.test(messageText(message.content)))
     const user = messageText(messages[lastUserIndex]?.content)
-    let content, call
+    let content, call, graphReply
     if (user.includes('五级岗位能力图谱初稿')) {
       const corpus = JSON.parse(user.split('以下 JSON 仅是待分析的外部证据：')[1].replace(/^\\n/, '').trim())
       const source = corpus[0]
       const kinds = ['project', 'task', 'process', 'skill', 'knowledge']
       const titles = ['交付后端服务', '开发后端接口', '实施开发与测试', '编写 SQL 查询', '关系数据库']
-      content = JSON.stringify({ nodes: kinds.map((kind, index) => ({ id: 'N.' + (index + 1), parent_id: index === 0 ? null : 'N.' + index, kind,
+      const graph = { nodes: kinds.map((kind, index) => ({ id: 'N.' + (index + 1), parent_id: index === 0 ? null : 'N.' + index, kind,
         title: titles[index], description: titles[index], basis: index === 0 || index === 2 ? 'inferred' : 'direct',
-        evidence: [{ jd_id: source.jd_id, quote: fixtureBody }], assessment: kind === 'skill' ? '通过查询任务检验结果，标准待企业专家确认' : '' })) })
+        evidence: [{ jd_id: source.jd_id, quote: fixtureBody }], assessment: kind === 'skill' ? '通过查询任务检验结果，标准待企业专家确认' : '' })) }
+      graphAttempt++
+      const kind = graphBehavior === 'exhaust' || graphBehavior === 'retry-sequence' && graphAttempt === 1 ? 'invalid-json'
+        : graphBehavior === 'retry-sequence' && graphAttempt === 2 ? 'incomplete-branch'
+          : graphBehavior === 'retry-sequence' && graphAttempt === 3 ? 'false-direct' : 'valid'
+      if (kind === 'incomplete-branch') graph.nodes.pop()
+      if (kind === 'false-direct') {
+        graph.nodes[1].title = '设计后端业务服务'
+        graph.nodes[1].description = '根据业务需求设计并实现后端服务'
+      }
+      content = kind === 'invalid-json' ? '{"nodes":' : JSON.stringify(graph)
+      graphReply = { kind, prompt: user, started_at: Date.now(), completed_at: null, duration_ms: null }
+      graphReplies.push(graphReply)
     } else if (user.includes('推理适合')) content = JSON.stringify({ roles: ['后端开发'] })
     else {
       const tools = messages.slice(lastUserIndex + 1).filter(message => message.role === 'tool')
@@ -120,13 +140,35 @@ export async function startJdFixture() {
     }
     if (call) (call.name === 'web_search' ? toolCalls : deniedCalls).push(call.name)
     response.writeHead(200, { 'content-type': 'text/event-stream' })
+    if (graphReply?.kind === 'valid') {
+      const emit = delta => response.write('data: ' + JSON.stringify({ id: 'synthetic-response', object: 'chat.completion.chunk', choices: [{ index: 0, delta, finish_reason: null }] }) + '\n\n')
+      emit({ role: 'assistant', reasoning_content: '核对已存档原文。' })
+      for (let index = 0; index < 4; index++) {
+        await new Promise(resolve => setTimeout(resolve, 75))
+        emit({ reasoning_content: '继续核对来源与层级。' })
+      }
+      const chunkLength = Math.ceil(content.length / 12)
+      for (let offset = 0; offset < content.length; offset += chunkLength) {
+        await new Promise(resolve => setTimeout(resolve, 75))
+        emit({ content: content.slice(offset, offset + chunkLength) })
+      }
+      response.write('data: ' + JSON.stringify({ id: 'synthetic-response', object: 'chat.completion.chunk', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }) + '\n\n')
+      graphReply.completed_at = Date.now()
+      graphReply.duration_ms = graphReply.completed_at - graphReply.started_at
+      response.end('data: [DONE]\n\n')
+      return
+    }
     const delta = call ? { role: 'assistant', tool_calls: [{ index: 0, id: 'synthetic-call-' + requests.length, type: 'function', function: call }] } : { role: 'assistant', content }
     for (const [index, entry] of [delta, {}].entries()) response.write('data: ' + JSON.stringify({ id: 'synthetic-response', object: 'chat.completion.chunk', choices: [{ index: 0, delta: entry, finish_reason: index === 0 ? null : call ? 'tool_calls' : 'stop' }] }) + '\n\n')
+    if (graphReply) {
+      graphReply.completed_at = Date.now()
+      graphReply.duration_ms = graphReply.completed_at - graphReply.started_at
+    }
     response.end('data: [DONE]\n\n')
   })
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
   origin = `http://127.0.0.1:${server.address().port}`
-  return { origin, requests, toolCalls, deniedCalls, siteRequests, releaseSlowJob, pendingSlowJobs: () => slowResponses.size, close: () => new Promise((resolve, reject) => {
+  return { origin, requests, toolCalls, deniedCalls, siteRequests, graphReplies, setGraphBehavior, releaseSlowJob, pendingSlowJobs: () => slowResponses.size, close: () => new Promise((resolve, reject) => {
     releaseSlowJob()
     server.close(error => error ? reject(error) : resolve())
     server.closeAllConnections()

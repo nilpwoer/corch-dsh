@@ -23,9 +23,11 @@ if (values.source) {
   await symlink(await realpath('apps/desktop/node_modules/dsh-better-sidebar'), join(profile, 'node_modules/dsh-better-sidebar'), 'junction')
 }
 const fixture = await startJdFixture()
-await writeFile(join(profile, 'cordis.patch.yml'), `- id: web-search-deepseek\n  config:\n    apiKey: synthetic-search-only\n    baseURL: ${fixture.origin}/anthropic\n- id: session-title-llm\n  disabled: true\n`)
+const modelIdleTimeoutMs = 500
+await writeFile(join(profile, 'cordis.patch.yml'), `- id: web-search-deepseek\n  config:\n    apiKey: synthetic-search-only\n    baseURL: ${fixture.origin}/anthropic\n- id: session-title-llm\n  disabled: true\n- id: polus-ai-teaching-reform\n  config:\n    maxGraphAttempts: 4\n    modelIdleTimeoutMs: ${modelIdleTimeoutMs}\n`)
 let desktop, page, passed = false, failure
 const checks = [], errors = []
+const graphSaveRequests = []
 const presentation = {}
 async function saveVerification() {
   await writeFile(join(out, 'verification.json'), JSON.stringify({ passed, checks, errors, failure, presentation,
@@ -60,6 +62,11 @@ async function launch() {
   }, Boolean(values['live-shell']))
   page.setDefaultTimeout(30000)
   page.on('pageerror', error => errors.push(error.message))
+  page.on('request', request => {
+    if (new URL(request.url()).pathname !== '/jd/save') return
+    const project = request.postDataJSON()?.payload?.project
+    if (project) graphSaveRequests.push(project)
+  })
   await page.getByRole('button', { name: 'JD 搜索', exact: true }).waitFor()
   for (const [name, action] of [['欢迎使用 Corch DSH', '继续'], ['添加一个 API Key 开始使用', '稍后配置']]) {
     try { await page.getByRole('dialog', { name, exact: true }).waitFor({ timeout: 5000 }) }
@@ -537,9 +544,19 @@ try {
   assert.equal(await continueCapture.isVisible(), false, 'Closed capture cannot remain actionable after reload')
   checks.push('search-only executor rejects fetch and shell; browser-first login and challenge pages remain unverified; a platform circuit blocks other projects until explicit verification reads a real JD; cache hits do not navigate')
   await page.getByRole('button', { name: '使用 1 份原文生成五级图谱', exact: true }).click()
+  await page.getByRole('status').filter({ hasText: '图谱未通过校验，正在重新生成（4/4）…' }).waitFor()
   await page.getByRole('heading', { name: '五级岗位能力图谱', exact: true }).waitFor({ timeout: 60000 })
   const graphProject = await rpc('/jd', 'read', { id: first.id })
   assert.equal(graphProject.graphs.length, 1)
+  const initialGraphReplies = fixture.graphReplies.slice()
+  assert.deepEqual(initialGraphReplies.map(reply => reply.kind), ['invalid-json', 'incomplete-branch', 'false-direct', 'valid'])
+  assert.ok(initialGraphReplies.every(reply => reply.prompt === initialGraphReplies[0].prompt), 'Automatic retries repeat the original graph prompt verbatim')
+  assert.ok(initialGraphReplies[3].duration_ms > modelIdleTimeoutMs, 'Active reasoning and text continue beyond one configured idle interval')
+  assert.deepEqual(graphProject.sources, saved.sources, 'Graph validation and retries cannot alter retained originals')
+  const firstGraphSaves = graphSaveRequests.filter(project => project.id === first.id && project.graphs.length > 0)
+  assert.ok(firstGraphSaves.length > 0)
+  for (const project of firstGraphSaves) assert.deepEqual(project.graphs, graphProject.graphs, 'Only the valid graph may reach Host persistence')
+  checks.push('one generation action retries finalized malformed JSON, a missing knowledge leaf and false direct evidence; the unchanged prompt yields exactly one valid graph while active streaming exceeds the configured idle interval')
   const graphText = await page.locator('section[aria-label="JD 研究工作台"] main').innerText()
   assert.ok(!/父节点|SHA-256|JD-[A-Za-z0-9-]+|STEP 0/u.test(graphText), 'Graph UI must describe capabilities without internal identifiers')
   assert.ok(graphText.includes('所属项目：'))
@@ -598,6 +615,31 @@ try {
   assert.ok((await readFile(fallbackPath, 'utf8')).includes(fixtureBody), 'An error string must reveal the preserved report rather than claim browser success')
   presentation.native_shell_actions = await desktop.evaluate(() => globalThis.jdAcceptanceShellActions)
   await desktop.evaluate(() => { globalThis.jdAcceptanceLaunchError = '' })
+  const beforeExhaustion = await rpc('/jd', 'read', { id: first.id })
+  const graphReplyBaseline = fixture.graphReplies.length
+  const saveBaseline = graphSaveRequests.length
+  fixture.setGraphBehavior('exhaust')
+  await page.getByRole('button', { name: '生成新版本', exact: true }).click()
+  const exhausted = await savedProject(first.id, project => project.workspace.error !== '', 'readable graph retry exhaustion')
+  await page.getByText(exhausted.workspace.error, { exact: true }).waitFor()
+  const exhaustedReplies = fixture.graphReplies.slice(graphReplyBaseline)
+  assert.equal(exhaustedReplies.length, 4, 'Host attempt limit stops repeated invalid model replies')
+  assert.ok(exhaustedReplies.every(reply => reply.kind === 'invalid-json' && reply.prompt === exhaustedReplies[0].prompt))
+  assert.ok(exhausted.workspace.error.includes('4'), 'Exhaustion feedback explains the attempted generation count')
+  assert.deepEqual(exhausted.graphs, beforeExhaustion.graphs, 'Retry exhaustion cannot create or change graph versions')
+  assert.deepEqual(exhausted.confirmations, beforeExhaustion.confirmations, 'Retry exhaustion cannot change confirmations')
+  assert.deepEqual(exhausted.sources, beforeExhaustion.sources, 'Retry exhaustion cannot edit originals, hashes or citations')
+  assert.deepEqual(exhausted.pending_sources, beforeExhaustion.pending_sources)
+  for (const project of graphSaveRequests.slice(saveBaseline).filter(project => project.id === first.id)) {
+    assert.deepEqual(project.graphs, beforeExhaustion.graphs)
+    assert.deepEqual(project.confirmations, beforeExhaustion.confirmations)
+    assert.deepEqual(project.sources, beforeExhaustion.sources)
+  }
+  presentation.graph_generation = { initial_reply_kinds: initialGraphReplies.map(reply => reply.kind),
+    active_stream_ms: initialGraphReplies[3].duration_ms, model_idle_timeout_ms: modelIdleTimeoutMs,
+    exhausted_attempts: exhaustedReplies.length, final_error: exhausted.workspace.error }
+  fixture.setGraphBehavior('valid')
+  checks.push('four failed automatic graph attempts show a readable final error and preserve both confirmed versions, exact evidence, hashes and citations without storing an invalid version')
   await page.getByRole('combobox', { name: '图谱版本', exact: true }).selectOption('1')
   await page.getByRole('button', { name: '2 平台与范围', exact: true }).click()
   await selectProject(second.id)
@@ -806,6 +848,9 @@ try {
       model_records_available_on_demand: true, return_to_workbench: true, repeated_jd_navigation_single_instance: true,
       no_empty_details_column: true, workbench_restored_after_restart: true },
     confirmation: { host_persisted: true, discoverable_for_curriculum: true, export_denied_before_confirmation: true, each_version_requires_confirmation: true, confirmed_versions: allConfirmed.confirmations.map(item => item.version) },
+    graph_validation_retry: { initial_replies: initialGraphReplies.map(reply => reply.kind), original_prompt_repeated_verbatim: true,
+      invalid_graph_never_submitted: true, exactly_one_version_after_retry: true, readable_retry_progress: true, active_stream_exceeds_idle_interval: true,
+      exhausted_attempts: exhaustedReplies.length, final_error_visible: true, confirmed_versions_immutable: true, source_and_citations_immutable: true },
     html_export: { saved_in_client_data: true, system_browser_requested: true, exact_source_quotes: true, hashes_and_urls: true, inference_marked: true, source_text_immutable: true,
       readable_numbered_sources: true, offline_original_navigation_without_scripts: true, internal_ids_not_rendered: true,
       native_file_association: true, resolved_launch_error_reveals_saved_report: true },
@@ -824,7 +869,8 @@ try {
   failure = { message: error.message, stack: error.stack }
   console.error(error.stack ?? error.message)
   await writeFile(join(out, 'failure.json'), JSON.stringify({ failure, site_requests: fixture.siteRequests,
-    tools: fixture.toolCalls, denied_tools: fixture.deniedCalls }, null, 2) + '\n')
+    tools: fixture.toolCalls, denied_tools: fixture.deniedCalls,
+    graph_replies: fixture.graphReplies.map(({ kind, duration_ms }) => ({ kind, duration_ms })) }, null, 2) + '\n')
   await saveVerification()
   if (page && !page.isClosed()) {
     await page.screenshot({ path: join(out, 'failure.png'), fullPage: true, timeout: 5000 }).catch(() => {})

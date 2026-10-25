@@ -16,13 +16,15 @@ import type { ExpertMaterial } from './types.ts'
 import { ExpertMaterialSidebarTab } from './ExpertMaterialSidebarTab.tsx'
 import { GlobalReferenceSidebarTab } from './GlobalReferenceSidebarTab.tsx'
 import { buildInterviewPrompt } from './interviewPrompt.ts'
-import { buildJdGraphPrompt, buildJdRoleInferencePrompt, buildJdSearchPrompt } from './jdSearchPrompt.ts'
+import { buildJdRoleInferencePrompt, buildJdSearchPrompt } from './jdSearchPrompt.ts'
 import { pendingJdSources } from './jdSearchResult.ts'
 import { projectId, record } from '../jd/document.ts'
-import type { JdProject, JdProjectSummary } from '../jd/types.ts'
+import type { JdGenerationPolicy, JdProject, JdProjectSummary } from '../jd/types.ts'
 import { syncJdBrowserDeliveries } from './jdDeliverySync.ts'
 import { createJdResearchRoute } from './jdResearchRoute.ts'
 import { JdResearchReturn, JdResearchSurface } from './JdResearchSurface.tsx'
+import { requestJdResponse } from './jdAgentResponse.ts'
+import { generateValidatedJdGraph } from './jdGraphGeneration.ts'
 
 export const inject = ['sessions', 'workspaces', 'layout', 'connection', 'slots', 'betterSidebar']
 
@@ -57,7 +59,7 @@ type InterviewSession = { subscribe: (listener: () => void) => () => void; getSn
 type JdAgentFunctions = {
   inferJdRoles: (id: SessionId, major: string, direction: string) => Promise<readonly string[]>
   runJdSearch: (id: SessionId, request: JdSearchRequest) => Promise<readonly JdSearchJob[]>
-  generateJdGraph: (id: SessionId, project: JdProject) => Promise<unknown>
+  generateJdGraph: (id: SessionId, project: JdProject, progress?: (message: string) => void) => Promise<unknown>
   pendingJdSources: (id: SessionId) => JdProject['pending_sources']
 }
 
@@ -127,28 +129,6 @@ const waitForInterviewResult = async (session: InterviewSession, baselineSeq: nu
   return await waitForSessionText(session, read, 'Agent 已接受任务，但在 5 分钟内未返回可解析的问题包')
 }
 
-const waitForAgentJson = async (session: InterviewSession, baselineSeq: number): Promise<string> => {
-  const read = (): string | null => {
-    const failure = session.getSnapshot().nodes.find(node => node.seq > baselineSeq && node.kind === 'turn-error')
-    if (failure !== undefined) {
-      const message = failure.message ?? (failure.data as { message?: string } | undefined)?.message
-      throw new Error(message ?? 'JD 搜索模型请求失败，请检查模型配置后重试。')
-    }
-    const candidates = session.getSnapshot().nodes
-      .filter(node => (node.kind === 'assistant' || node.kind === 'assistant-step') && node.seq > baselineSeq)
-      .toReversed()
-    for (const assistant of candidates) {
-      const data = typeof assistant.data === 'object' && assistant.data !== null ? assistant.data as { status?: string; blocks?: readonly InterviewTextBlock[]; finalNode?: { blocks?: readonly InterviewTextBlock[] } } : undefined
-      const blocks = data?.finalNode?.blocks ?? data?.blocks ?? assistant.blocks
-      const text = blocks?.filter(block => block.kind === 'text' && block.text !== undefined).map(block => block.text).join('\n').trim() ?? ''
-      if (text !== '' && hasClosedJsonObject(text)) return text
-    }
-    return null
-  }
-  return await waitForSessionText(session, read, 'Agent 已接受任务，但在 5 分钟内未返回可解析结果')
-}
-
-
 function waitForSessionText(session: InterviewSession, read: () => string | null, message: string): Promise<string> {
   const immediate = read()
   if (immediate !== null) return Promise.resolve(immediate)
@@ -180,8 +160,16 @@ function parseAgentJson(text: string): Record<string, unknown> {
   try { return record(JSON.parse(text.slice(start, end + 1))) } catch { throw new Error('Agent 返回的 JSON 无法解析') }
 }
 
-function createInterviewAgentFunctions(ctx: ClientContext, discoveryCall: (endpoint: string, id: SessionId) => Promise<void>) {
+function createInterviewAgentFunctions(ctx: ClientContext, discoveryCall: (endpoint: string, id: SessionId) => Promise<void>,
+  loadGenerationPolicy: () => Promise<JdGenerationPolicy>) {
   const pending = new Map<SessionId, JdProject['pending_sources']>()
+  const graphRuns = new Map<SessionId, Promise<unknown>>()
+  const lifetime = new AbortController()
+  const connection = ctx.get('connection') as unknown as ConnectionHandle
+  ctx.effect(() => async () => {
+    lifetime.abort()
+    await Promise.allSettled(graphRuns.values())
+  }, 'polus-teaching-reform: JD generation lifetime')
   const generateInterview = async (id: SessionId, profile: InterviewProfile): Promise<string> => {
     const session = ctx.sessions.binding(id)?.session
     if (session === undefined) throw new Error('当前访谈会话不可用')
@@ -204,14 +192,15 @@ function createInterviewAgentFunctions(ctx: ClientContext, discoveryCall: (endpo
       if (/重新生成问题包|重新生成问题|重做问题包/.test(readUserText(latest))) listener('regenerate')
     })
   }
-  const promptAgent = async (id: SessionId, prompt: string): Promise<string> => {
+  const promptAgent = async (id: SessionId, prompt: string, policy?: JdGenerationPolicy): Promise<string> => {
     const session = ctx.sessions.binding(id)?.session
-
     if (session === undefined) throw new Error('当前 JD 搜索会话不可用')
-    const baselineSeq = session.getSnapshot().nodes.reduce((max, node) => Math.max(max, node.seq), 0)
-    const result = await session.prompt([{ type: 'text', text: prompt }], 'queue')
-    if (!result.ok) throw new Error(result.error.message)
-    return await waitForAgentJson(session, baselineSeq)
+    const limits = policy ?? await loadGenerationPolicy()
+    return await requestJdResponse(session, prompt, {
+      idleTimeoutMs: limits.modelIdleTimeoutMs, signal: lifetime.signal,
+      connection: { getSnapshot: () => !!connection.hostDescription.getSnapshot(),
+        subscribe: listener => connection.hostDescription.subscribe(listener) },
+    })
   }
   const jdFunctions: JdAgentFunctions = {
     inferJdRoles: async (id, major, direction) => {
@@ -236,8 +225,15 @@ function createInterviewAgentFunctions(ctx: ClientContext, discoveryCall: (endpo
       }
     },
     pendingJdSources: id => pending.get(id) ?? [],
-    generateJdGraph: async (id, project) => parseAgentJson(await promptAgent(id, buildJdGraphPrompt(project))),
-
+    generateJdGraph: async (id, project, progress = () => undefined) => {
+      if (graphRuns.has(id)) throw new Error('该搜索正在生成能力图谱，请等待完成或停止当前生成。')
+      const run = (async () => {
+        const policy = await loadGenerationPolicy()
+        return await generateValidatedJdGraph(project, prompt => promptAgent(id, prompt, policy), policy, progress, lifetime.signal)
+      })()
+      graphRuns.set(id, run)
+      try { return await run } finally { graphRuns.delete(id) }
+    },
   }
   return { generateInterview, observeInterviewCommands, ...jdFunctions }
 }
@@ -252,7 +248,8 @@ export function apply(ctx: ClientContext): void {
   const {
     generateInterview, observeInterviewCommands, inferJdRoles, runJdSearch,
     generateJdGraph, pendingJdSources: readPending,
-  } = createInterviewAgentFunctions(ctx, async (endpoint, id) => { await jdCall(endpoint, { session_id: id }) })
+  } = createInterviewAgentFunctions(ctx, async (endpoint, id) => { await jdCall(endpoint, { session_id: id }) },
+    () => jdCall<JdGenerationPolicy>('generation-policy', {}))
   const listJdProjects = (): Promise<JdProjectSummary[]> => jdCall('list', {})
   const loadJdProject = (id: string): Promise<JdProject | null> => jdCall('read', { id })
   const saveJdProject = (project: JdProject): Promise<JdProject> => jdCall('save', { project })

@@ -36,6 +36,8 @@ Sources retain their URL, acquisition time, method and SHA-256. BOSS list detail
 
 The single graph step first offers **确认能力图谱**. The Host records that immutable version and its confirmation time for later curriculum use; `/jd/confirmed` lists the project/version identifiers, and project read retrieves the frozen graph and originals. Confirmation is not expert endorsement. A new version needs separate confirmation. Only confirmed versions expose **导出 HTML**; the Host rejects unconfirmed exports. Reports contain a cover, contents, five-level tree, evidence table and source appendix. Frozen sources use report-local numbers and job names; citations reveal the escaped complete original offline without scripts, and the original web link remains available. Internal source, node, project and session identifiers are not displayed; hashes remain in report metadata. Numbering changes no saved evidence, graph or methodology. No model request occurs on confirmation, restoration or export. Windows saves HTML under `data/exports`, opens it in the system browser and reveals its folder if opening fails. Reports disable scripts and network resources. Browser-only export downloads the HTML and requires opening it from the downloads directory. See the [confirmed-workspace decision](../../../.agents/notes/implemented/feature/2026-10-23-confirmed-jd-workspaces.md).
 
+Graph generation waits for the submitted instruction’s durable turn completion, then validates JSON, every five-level branch, exact quotes and direct/inferred labels. Rejected responses regenerate with the identical instruction and source corpus; no node, quote or label is silently repaired. Only a validated response becomes a new version. `maxGraphAttempts` defaults to three and accepts 1–5; exhaustion retains existing versions and confirmations. `modelIdleTimeoutMs` defaults to 300000 and bounds waiting without active generation or a usable connection. Active model turns have no fixed elapsed-time deadline. User stop, removal, request failure and plugin disposal stop the operation without another graph attempt. Per-session single-flight prevents duplicate feature generation; switching views preserves attempt status. The loopback-only `generation-policy` operation supplies these Host settings.
+
 ## Model Experience
 
 ### Question-package generation
@@ -60,7 +62,7 @@ Role inference receives the major and optional direction. Search receives the ch
 
 #### Token effect
 
-Inference, search and analysis are separate model operations. Native web search incurs auxiliary provider calls and adds discovery metadata; browser collection makes no model call. Retained JD originals add context during graph generation. Graph confirmation and HTML export read saved data without model calls. The five-result test mode is an upper limit, not a guarantee. Source matching, exclusion and displaying results make no extra model call.
+Inference, search and analysis are separate model operations. Native web search incurs auxiliary provider calls and adds discovery metadata; browser collection makes no model call. Retained JD originals add context during graph generation. Validation retries repeat the original generation instruction and incur additional ordinary model usage, bounded by `maxGraphAttempts`. Graph confirmation and HTML export read saved data without model calls. The five-result test mode is an upper limit, not a guarantee. Source matching, exclusion and displaying results make no extra model call.
 
 #### KV Cache effect
 

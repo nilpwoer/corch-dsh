@@ -16,12 +16,18 @@ export interface Config {
   maxProjectBytes: number
   /** Maximum web_search dispatches in a single JD link-discovery operation. */
   maxDiscoveryCalls: number
+  /** Maximum complete model responses attempted before a rejected graph stops generation. */
+  maxGraphAttempts: number
+  /** Maximum wait without an active model turn, including an unavailable connection. */
+  modelIdleTimeoutMs: number
 }
 
 export const Config: z<Config> = z.object({
   projectDirectory: z.string(),
   maxProjectBytes: z.natural().min(1).default(20 * 1024 * 1024),
   maxDiscoveryCalls: z.natural().min(1).default(5),
+  maxGraphAttempts: z.natural().min(1).max(5).default(3),
+  modelIdleTimeoutMs: z.natural().min(1).default(300000),
 })
 
 export const inject = ['connection', 'tools']
@@ -40,6 +46,9 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     try {
       if (endpoint === 'list') return { ok: true, value: await store.list() }
       if (endpoint === 'confirmed') return { ok: true, value: await store.confirmed() }
+      if (endpoint === 'generation-policy') return { ok: true, value: {
+        maxGraphAttempts: config.maxGraphAttempts, modelIdleTimeoutMs: config.modelIdleTimeoutMs,
+      } }
       const input = record(payload)
       if (endpoint === 'save') {
         const project = await store.save(input.project)

@@ -16,7 +16,7 @@ export type TeachingReformProps = PropsRuntime<'conversation.details.context'> &
   openGlobalReferencePreview?: (document: GlobalReferenceDocument) => void
   runJdSearch: (id: SessionId, request: JdSearchRequest) => Promise<readonly JdSearchJob[]>
   inferJdRoles: (id: SessionId, major: string, direction: string) => Promise<readonly string[]>
-  generateJdGraph: (id: SessionId, project: JdProject) => Promise<unknown>
+  generateJdGraph: (id: SessionId, project: JdProject, progress?: (message: string) => void) => Promise<unknown>
   listJdProjects: () => Promise<JdProjectSummary[]>
   loadJdProject: (id: string) => Promise<JdProject | null>
   saveJdProject: (project: JdProject) => Promise<JdProject>

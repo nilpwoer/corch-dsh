@@ -14,6 +14,7 @@ type ResearchController = {
   serial: Ref<Promise<void>>
   timer: Ref<ReturnType<typeof setTimeout> | undefined>
   running: Ref<boolean>
+  generationStatus: Ref<string>
   saving: Ref<boolean>
   saveError: Ref<boolean>
   browserOpen: Ref<boolean>
@@ -35,7 +36,7 @@ export function jdResearchController(save: ProjectOperations['saveJdProject'], s
   if (!controller) {
     controller = {
       current: { current: null }, saved: { current: null }, revision: { current: 0 }, edits: { current: 0 }, persisted: { current: 0 },
-      serial: { current: Promise.resolve() }, timer: { current: undefined }, running: { current: false },
+      serial: { current: Promise.resolve() }, timer: { current: undefined }, running: { current: false }, generationStatus: { current: '' },
       saving: { current: false }, saveError: { current: false }, browserOpen: { current: false },
       platforms: { current: [] }, listeners: new Set(),
     }

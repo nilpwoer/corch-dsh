@@ -132,6 +132,7 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
   const [savedProject, setSavedProject] = useState<JdProject | null>(controller.saved.current)
   const [loading, setLoading] = useState(!current.current)
   const [busy, setBusy] = useState(running.current)
+  const [generationStatus, setGenerationStatus] = useState(controller.generationStatus.current)
   const [saving, setSaving] = useState(controller.saving.current)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -174,6 +175,7 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
   const run = (operation: () => Promise<void>): void => {
     if (running.current) return
     running.current = true
+    if (current.current && workspace(current.current).error) changeWorkspace({ error: '' })
     notify()
     setError('')
     setNotice('')
@@ -183,6 +185,7 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
       await flush().catch(report)
     }).finally(() => {
       running.current = false
+      controller.generationStatus.current = ''
       notify()
     })
   }
@@ -192,6 +195,7 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
       setProject(current.current)
       setSavedProject(controller.saved.current)
       setBusy(running.current)
+      setGenerationStatus(controller.generationStatus.current)
       setSaving(controller.saving.current)
       setSaveError(controller.saveError.current)
       setBrowserOpen(controller.browserOpen.current)
@@ -436,7 +440,10 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
       const value = requireProject()
       if (!value.sources.some(source => !source.excluded)) throw new Error('请至少保留一份 JD 原文')
       analysisSources(value.sources)
-      const nodes = graphNodes(await props.generateJdGraph(value.session_id, value), value.sources)
+      const nodes = graphNodes(await props.generateJdGraph(value.session_id, value, (message) => {
+        controller.generationStatus.current = message
+        notify()
+      }), value.sources)
       const next: JdGraph = { version: value.graphs.length + 1, generated_at: new Date().toISOString(), nodes,
         source_hashes: Object.fromEntries(value.sources.filter(source => !source.excluded)
           .map(source => [source.id, source.content_hash])) }
@@ -509,6 +516,7 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
         await flush(); window.dispatchEvent(new Event('jd-browser-delivery-retry'))
       }) }}>重试保存</button>}{!saveError && state.step === 3 && project.pending_sources.length > 0
         && <button className={css.infoButton} type="button" onClick={revealPending}>查看待处理来源</button>}</div>}
+      {generationStatus && busy && <div className={css.notice} role="status">{generationStatus}</div>}
       {notice && !(state.step === 3 && latestBrowserSource && savedNotice) && <div className={css.notice} role="status">{notice}</div>}
       {state.search_status === 'running' && !busy && <div className={css.loginNotice}>该搜索尚未完成。可稍后重新打开查看；重新检索会建立新档案并保留本次记录。</div>}
       <nav className={css.progress} aria-label="研究步骤">{STEPS.map((label, index) =>

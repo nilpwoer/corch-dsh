@@ -2,6 +2,9 @@
 import type { Branded } from '@deepseek-ai/dsh-brand'
 import type { SessionId } from '@deepseek-ai/dsh-client-runtime/client'
 
+/** Host-validated generation limits; active model turns have no fixed elapsed-time deadline. */
+export type JdGenerationPolicy = { maxGraphAttempts: number; modelIdleTimeoutMs: number }
+
 /** Opaque Host repository identity, distinct from source and graph identifiers. */
 export type JdProjectId = Branded<'JdProjectId'>
 
