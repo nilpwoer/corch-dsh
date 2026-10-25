@@ -496,6 +496,41 @@ test('browser collection deduplicates imported bodies and retains revised URLs a
     expect.objectContaining({ content_hash: 'new-hash', excluded: false, acquisition: 'browser' }),
   ])
 })
+
+test('platform choices disclose login requirements and saved HTTP candidates are upgraded before collection', async () => {
+  const value = projectFixture()
+  value.workspace = { ...draft().workspace!, step: 2 }
+  const { input, records } = fixture([value])
+  input.pendingJdSources = () => [{ title: '真实招聘岗位', url: 'http://www.zhaopin.com/jobdetail/123.htm', reason: '候选链接' }]
+  vi.mocked(collectJdBrowser).mockImplementation(async (_id, sources) => {
+    expect(sources[0]?.url).toBe('https://www.zhaopin.com/jobdetail/123.htm')
+    expect(records.get(value.id)?.pending_sources[0]?.url).toBe(sources[0]?.url)
+    return { items: [{ state: 'login_required', url: sources[0]!.url, message: '需要登录' }], platforms: [] }
+  })
+  render(<JdSearchWorkbench {...input} />)
+  expect((await screen.findByRole('button', { name: 'BOSS 直聘' })).textContent).toContain('可能需要登录')
+  expect(screen.getByRole('button', { name: '公开网页' }).textContent).toContain('通常无需登录')
+  fireEvent.click(screen.getByRole('button', { name: '开始检索' }))
+  await waitFor(() => { expect(collectJdBrowser).toHaveBeenCalledTimes(1) })
+  await flush()
+  expect(records.get(value.id)?.workspace?.search_status).toBe('completed')
+})
+test('a historical HTTP rejection on a known platform can resume with its HTTPS destination', async () => {
+  const value = projectFixture()
+  value.workspace = { ...draft().workspace!, step: 3 }
+  value.pending_sources = [{ title: '历史岗位', url: 'http://www.zhaopin.com/jobdetail/456.htm', reason: '采集地址须使用 HTTPS；仅本机测试允许 HTTP' }]
+  const { input, records } = fixture([value])
+  vi.mocked(collectJdBrowser).mockImplementation(async (_id, sources) => {
+    expect(sources[0]?.url).toBe('https://www.zhaopin.com/jobdetail/456.htm')
+    expect(records.get(value.id)?.pending_sources[0]?.url).toBe(sources[0]?.url)
+    return { items: [{ state: 'login_required', url: sources[0]!.url, message: '需要登录' }], platforms: [] }
+  })
+  render(<JdSearchWorkbench {...input} />)
+  fireEvent.click(await screen.findByText('待处理来源（1）'))
+  fireEvent.click(screen.getByRole('button', { name: '继续采集待处理岗位' }))
+  await waitFor(() => { expect(collectJdBrowser).toHaveBeenCalledTimes(1) })
+  await flush()
+})
 test('discovery is saved before browser reads and cached evidence keeps its acquisition metadata', async () => {
   const value = draft()
   value.workspace = { ...value.workspace!, step: 2 }

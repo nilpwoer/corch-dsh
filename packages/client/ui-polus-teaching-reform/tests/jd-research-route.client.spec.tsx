@@ -148,6 +148,7 @@ test('an empty JD surface has a working new-search action and closes the duplica
   const createSearch = vi.fn().mockResolvedValue(undefined)
   const closeDetails = vi.fn()
   const props = { route: f.route, createSearch, closeDetails, sessionId: undefined,
+    content: <textarea aria-label="对话输入" />,
     renderSlot: () => null } as Parameters<typeof JdResearchSurface>[0]
   render(<JdResearchSurface {...props} />)
   expect(closeDetails).toHaveBeenCalled()
@@ -156,14 +157,21 @@ test('an empty JD surface has a working new-search action and closes the duplica
   await f.stop()
 })
 
-test('a saved workbench keeps native records behind an explicit action and has a return action', async () => {
+test('a saved workbench preserves the native input across pane changes and offers a full conversation view', async () => {
   const f = fixture({ current: id })
   await f.route.refresh()
   const props = { route: f.route, createSearch: vi.fn(), closeDetails: vi.fn(), sessionId: id,
+    content: <textarea aria-label="对话输入" />,
     renderSlot: () => <p>Structured saved research</p> } as Parameters<typeof JdResearchSurface>[0]
   render(<JdResearchSurface {...props} />)
   expect(screen.getByText('Structured saved research')).toBeTruthy()
-  act(() => { fireEvent.click(screen.getByRole('button', { name: '查看运行记录' })) })
+  const input = screen.getByLabelText('对话输入')
+  fireEvent.change(input, { target: { value: '我想补充岗位要求' } })
+  fireEvent.click(screen.getByRole('tab', { name: '对话' }))
+  expect(screen.getByRole('region', { name: 'JD 研究工作台' }).querySelector('[data-active-pane]')?.getAttribute('data-active-pane')).toBe('conversation')
+  fireEvent.click(screen.getByRole('tab', { name: '工作台' }))
+  expect(screen.getByLabelText<HTMLTextAreaElement>('对话输入').value).toBe('我想补充岗位要求')
+  act(() => { fireEvent.click(screen.getByRole('button', { name: '仅显示对话' })) })
   expect(f.route.getSnapshot().route).toBe('native')
   cleanup()
   render(<JdResearchReturn showWorkbench={f.route.showWorkbench} />)

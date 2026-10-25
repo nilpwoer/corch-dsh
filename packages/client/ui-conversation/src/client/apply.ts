@@ -197,6 +197,7 @@ export function apply(ctx: Context): void {
     name: 'conversation',
     locale: NS,
     children: {
+      'conversation.presentation': { kind: 'chain', scope: 'session-maybe' },
       'conversation.session': { kind: 'single', scope: 'session' },
       'conversation.session.header': { kind: 'single', scope: 'session' },
       'conversation.composer': { kind: 'chain', scope: 'session' },

@@ -475,13 +475,13 @@ export function apply(ctx: ClientContext): void {
     }),
   }, JdSearchWorkbench))
 
-  ctx.slots.inject('conversation', () => {
+  ctx.slots.inject('conversation.presentation', () => {
     let disposeRegistration: (() => void) | undefined
     const reconcile = (): void => {
       const visible = researchRoute.getSnapshot().route !== 'native'
       if (!visible) { disposeRegistration?.(); disposeRegistration = undefined; return }
       disposeRegistration ??= ctx.slots.register({
-        name: 'conversation', priority: -10,
+        name: 'conversation.presentation', priority: -10, select: () => ({}),
         children: { 'polus.jd.workbench': { kind: 'single', scope: 'session' } },
         inject: () => ({ route: researchRoute, createSearch: createJdSearchSession, closeDetails: () => { ctx.layout.closeDetails() } }),
       }, JdResearchSurface)

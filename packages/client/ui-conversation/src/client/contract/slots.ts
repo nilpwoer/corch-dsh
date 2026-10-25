@@ -59,6 +59,8 @@ export type RenderMessageImages = (owner: Omit<MessageImagesOwnerProps, 'loadIma
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface SlotMap {
+    /** Compose feature workspaces around the native conversation and composer without replacing either. */
+    'conversation.presentation': { kind: 'chain'; scope: 'session-maybe'; owner: { content: ReactNode } }
     /**
      * The entire body of one session: taking this seat means rendering that
      * session's conversation yourself. The occupant also owns the per-session
@@ -651,7 +653,7 @@ export interface HeroBrandNameOwnerProps {
  */
 export type ConversationSlotProps =
   PropsRuntime<'conversation'> & PropsRenderSlots<
-    | 'conversation.session' | 'conversation.session.header'
+    | 'conversation.presentation' | 'conversation.session' | 'conversation.session.header'
     | 'conversation.composer' | 'conversation.composer.bar'
     | 'conversation.input.overlay'
     | 'conversation.input.dock' | 'conversation.composer.dock'

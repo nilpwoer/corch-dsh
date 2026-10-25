@@ -49,6 +49,15 @@
   ],
   "original_saved": true,
   "acquisition": "browser",
+  "responsive_conversation": {
+    "wide_side_by_side": true,
+    "narrow_tabs": true,
+    "native_composer_draft_preserved": true
+  },
+  "discovery_recovery": {
+    "platform_login_hints": true,
+    "invalid_candidate_isolation": true
+  },
   "search_sessions": {
     "archived_before_search": true,
     "independent_sessions": true,
@@ -108,7 +117,7 @@
     "internal_ids_and_hashes_not_rendered": true,
     "optional_disclosures_closed_by_default": true,
     "disclosures_preserve_capture_and_import": true,
-    "raw_json_hidden_by_default": true,
+    "structured_panel_omits_raw_json": true,
     "model_records_available_on_demand": true,
     "return_to_workbench": true,
     "repeated_jd_navigation_single_instance": true,

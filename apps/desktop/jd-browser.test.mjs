@@ -349,6 +349,41 @@ test('batch limits retain an explicit pending outcome for every excess source', 
   assert.equal(fixture.navigations.length, 1)
 })
 
+test('unsafe and malformed candidates fail independently while later HTTPS originals remain collectible', async t => {
+  const fixture = durableFixture(t, url => read(detail, url))
+  const invalid = ['http://www.zhaopin.com/jobdetail/unsafe.htm', 'not a URL', 'javascript:alert(1)', 'file:///private', 'https://user:password@jobs.example/job']
+  const sources = [{ url: firstSource, title: '首条有效岗位' }, ...invalid.map(url => ({ url, title: '无效来源' })), { url: secondSource, title: '后续有效岗位' }]
+  const before = structuredClone(sources)
+  const batch = await fixture.browser.collect({ id: 'project-1', sources })
+  assert.deepEqual(batch.items.map(item => item.state), ['captured', ...invalid.map(() => 'failed'), 'captured'])
+  assert.deepEqual(batch.items.slice(1, -1).map(item => item.url), invalid)
+  for (const item of batch.items.slice(1, -1)) assert.match(item.message, /已跳过/u)
+  assert.deepEqual(fixture.navigations.map(item => item.url), [firstSource, secondSource])
+  assert.ok(batch.platforms.every(item => item.platform === 'zhipin.com'))
+  assert.deepEqual(sources, before)
+})
+
+test('invalid candidates consume batch positions and cannot advance a deferred source into the current batch', async t => {
+  const fixture = durableFixture(t, url => read(detail, url))
+  const settingsFile = join(fixture.dataDirectory, 'jd-collection-settings.json')
+  writeFileSync(settingsFile, JSON.stringify({ ...JSON.parse(readFileSync(settingsFile, 'utf8')), max_sources_per_batch: 2 }))
+  const badURL = 'http://jobs.example/unsafe'
+  const batch = await fixture.browser.collect({ id: 'project-1', sources: [{ url: badURL }, { url: firstSource }, { url: secondSource }] })
+  assert.deepEqual(batch.items.map(item => item.state), ['failed', 'captured', 'failed'])
+  assert.equal(batch.items[0].url, badURL)
+  assert.equal(batch.items[2].url, secondSource)
+  assert.match(batch.items[2].message, /保留待采集/u)
+  assert.deepEqual(fixture.navigations.map(item => item.url), [firstSource])
+})
+
+test('malformed candidate objects cannot abort a batch or trigger browser navigation', async t => {
+  const fixture = durableFixture(t, url => read(detail, url))
+  const batch = await fixture.browser.collect({ id: 'project-1', sources: [null, { url: 42 }, { url: firstSource }] })
+  assert.deepEqual(batch.items.map(item => item.state), ['failed', 'failed', 'captured'])
+  assert.deepEqual(batch.items.slice(0, 2).map(item => item.url), ['', ''])
+  assert.deepEqual(fixture.navigations.map(item => item.url), [firstSource])
+})
+
 test('a challenge appearing after initial capture stops background traffic without another read action', async t => {
   let challenge = false
   const fixture = durableFixture(t, url => read(challenge ? '<main>Cookies support required</main>' : detail, url))

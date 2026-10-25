@@ -183,7 +183,7 @@ export function ConversationRoot({
     </div>
   )
 
-  return (
+  const content = (
     <div className={css.root} data-phase={phase}>
       {renderSlot('conversation.session.header', {})}
       <div className={css.scrollBody} data-conversation-scroll="">
@@ -192,4 +192,5 @@ export function ConversationRoot({
       </div>
     </div>
   )
+  return renderSlotChain('conversation.presentation', { content }, { fallback: content })
 }

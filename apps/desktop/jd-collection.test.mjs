@@ -24,6 +24,8 @@ test('platform grouping includes known sibling subdomains without guessing unkno
   assert.equal(jdSourceURL(url + '#share'), url)
   assert.throws(() => jdSourceURL('https://user:password@jobs.51job.com/1'))
   assert.throws(() => jdSourceURL('file:///private'))
+  for (const unsafe of ['http://www.zhaopin.com/jobdetail/1', 'javascript:alert(1)', 'data:text/html,岗位职责', 'ftp://jobs.example/1']) assert.throws(() => jdSourceURL(unsafe))
+  assert.equal(jdSourceURL('http://127.0.0.1:4000/job#share'), 'http://127.0.0.1:4000/job')
   assert.equal(jdChallengeURL('https://www.zhipin.com/web/common/security-check.html'), true)
 })
 

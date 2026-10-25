@@ -120,7 +120,7 @@ export function monitorJdSecurity(document, readPage, throttleMs, key, ready, ge
 /**
  * Own all capture windows until explicit close or application shutdown.
  * @param options - Electron constructors, private desktop data directory, and capture limits.
- * @returns Rendered collection, reusable login windows, explicit verification/resume, platform status and PDF operations. Security challenges persistently stop automatic network access. No cookie or arbitrary script API is exposed.
+ * @returns Rendered collection, reusable login windows, explicit verification/resume and platform status. Invalid candidate URLs fail independently and consume their batch position. Security challenges persistently stop automatic network access. No cookie or arbitrary script API is exposed.
  */
 export function createJdBrowser({ BrowserWindow, maxCaptureChars, loadTimeoutMs, dataDirectory, onPending }) {
   const captures = new Map()
@@ -405,28 +405,35 @@ export function createJdBrowser({ BrowserWindow, maxCaptureChars, loadTimeoutMs,
     async collect(input) {
       validateId(input.id)
       if (!Array.isArray(input.sources) || input.sources.length > 100) throw new Error('候选来源数量无效或超过 100 条请求上限')
-      const sources = input.sources.map(source => ({ url: safeURL(source.url), title: typeof source.title === 'string' ? source.title : '' }))
+      const sources = input.sources.map(source => ({ url: typeof source?.url === 'string' ? source.url : '', title: typeof source?.title === 'string' ? source.title : '' }))
       const items = []
-      for (const source of sources.slice(0, policy().settings.max_sources_per_batch)) items.push(await policy().run(source.url, async () => {
-        const cached = policy().cached(source.url)
-        if (cached) {
-          if (cached.state === 'captured' && persistDelivery(input.id, source.url, cached)) notifyPending()
-          return cached
+      for (const source of sources.slice(0, policy().settings.max_sources_per_batch)) {
+        try { source.url = safeURL(source.url) }
+        catch {
+          items.push({ state: 'failed', ...source, message: '该岗位链接无效或不支持安全访问，已跳过该来源；请更换链接，其他来源可继续采集。' })
+          continue
         }
-        if (policy().blocked(source.url)) return blockedItem(source.url)
-        const existing = platformWindows.get(jdPlatform(source.url))
-        if (existing?.verification || policy().statuses().find(item => item.platform === jdPlatform(source.url))?.login_required) return { state: 'login_required', url: source.url, message: '该平台正在等待你完成登录或验证，已暂停自动打开其他岗位。' }
-        const state = getState(input.id, source.url)
-        const binding = state.bindingGeneration
-        state.autoCapture = false
-        const item = await navigate(state, source.url)
-        if (item.state === 'captured' && state.bindingGeneration === binding && persistDelivery(input.id, source.url, item)) notifyPending()
-        if (item.state === 'login_required') {
-          state.autoCapture = true
-          for (const capture of state.windows) startMonitor(capture, state)
-        }
-        return item
-      }))
+        items.push(await policy().run(source.url, async () => {
+          const cached = policy().cached(source.url)
+          if (cached) {
+            if (cached.state === 'captured' && persistDelivery(input.id, source.url, cached)) notifyPending()
+            return cached
+          }
+          if (policy().blocked(source.url)) return blockedItem(source.url)
+          const existing = platformWindows.get(jdPlatform(source.url))
+          if (existing?.verification || policy().statuses().find(item => item.platform === jdPlatform(source.url))?.login_required) return { state: 'login_required', url: source.url, message: '该平台正在等待你完成登录或验证，已暂停自动打开其他岗位。' }
+          const state = getState(input.id, source.url)
+          const binding = state.bindingGeneration
+          state.autoCapture = false
+          const item = await navigate(state, source.url)
+          if (item.state === 'captured' && state.bindingGeneration === binding && persistDelivery(input.id, source.url, item)) notifyPending()
+          if (item.state === 'login_required') {
+            state.autoCapture = true
+            for (const capture of state.windows) startMonitor(capture, state)
+          }
+          return item
+        }))
+      }
       for (const source of sources.slice(policy().settings.max_sources_per_batch)) items.push({ state: 'failed', ...source, message: `本批最多采集 ${policy().settings.max_sources_per_batch} 条；该来源保留待采集，请分批继续。` })
       return { items, platforms: policy().statuses() }
     },

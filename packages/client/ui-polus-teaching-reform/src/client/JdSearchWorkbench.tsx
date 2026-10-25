@@ -7,6 +7,7 @@ import { analysisSources, frequency, graphNodes, sourceUrl } from '../jd/documen
 import { collectJdBrowser, exportJdHtml, hasJdBrowser, jdBrowserPlatforms, jdBrowserStatus, jdHash,
   openJdBrowser, readJdBrowser, resumeJdBrowser, verifyJdBrowser } from './jdNative.ts'
 import { flushJdResearch, jdResearchController, notifyJdResearch } from './jdProjectState.ts'
+import { jdCandidateUrl } from './jdSearchResult.ts'
 
 const STEPS = ['搜索目标', '平台与范围', 'JD 原文', '能力图谱']
 const PLATFORMS = ['公开网页', '58 同城', 'BOSS 直聘', '智联招聘', '前程无忧 51job', '鱼泡直聘', '四川高校人才网']
@@ -112,6 +113,9 @@ function platformForUrl(url: string, platforms: JdPlatformState[]): JdPlatformSt
 }
 function isUnavailableSource(reason: string): boolean {
   return /您查看的内容不存在|(?:岗位|职位|招聘信息|页面|链接|来源|内容)(?:已(?:被)?)?(?:不存在|下线|下架|删除|失效|关闭|过期|停止招聘)/u.test(reason)
+}
+function isUnsupportedSource(reason: string, url: string): boolean {
+  return /不支持安全访问|采集地址须使用 HTTPS/u.test(reason) && jdCandidateUrl(url) === url
 }
 
 /** Restore a separate workbench instance for each owning Host search session.
@@ -319,15 +323,24 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
   const collectCandidates = async (sources: { url: string; title: string; reason?: string }[]): Promise<void> => {
     const value = requireProject()
     const candidates: { url: string; title: string }[] = []
+    let normalized = false
     for (const source of sources) {
-      if (isUnavailableSource(source.reason ?? '')) continue
-      const platform = platformForUrl(source.url, controller.platforms.current)
+      if (isUnavailableSource(source.reason ?? '') || isUnsupportedSource(source.reason ?? '', source.url)) continue
+      const url = jdCandidateUrl(source.url)
+      if (url !== source.url) {
+        change(item => ({ ...item,
+          pending_sources: item.pending_sources.map(candidate => candidate.url === source.url ? { ...candidate, url } : candidate),
+        }))
+        normalized = true
+      }
+      const platform = platformForUrl(url, controller.platforms.current)
       if (platform?.blocked) {
-        await retainOutcome({ state: 'blocked', url: source.url, ...platform.reason ? { message: platform.reason } : {} }, source.url)
+        await retainOutcome({ state: 'blocked', url, ...platform.reason ? { message: platform.reason } : {} }, url)
         continue
       }
-      candidates.push(source)
+      candidates.push({ ...source, url })
     }
+    if (normalized) await flush()
     // The native request limit is 100 candidates; its configured batch limit decides which pages may be visited.
     const request = candidates.slice(0, 100)
     if (request.length) {
@@ -477,6 +490,7 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
     ...savedBrowserSources.map(source => platformForUrl(source.source_url, platforms)?.platform ?? new URL(source.source_url).hostname)])]
   const capturePlatform = platformForUrl(capture.url, platforms)
   const hasCollectableSource = project.pending_sources.some(item => !isUnavailableSource(item.reason)
+    && !isUnsupportedSource(item.reason, item.url)
     && !platformForUrl(item.url, platforms)?.blocked)
   const blockedPlatforms = platforms.filter(item => item.blocked
     && project.pending_sources.some(source => platformForUrl(source.url, platforms)?.platform === item.platform)).length
@@ -520,12 +534,12 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
       </>}
       {state.step === 2 && <>
         <Header title="选择平台与搜索范围" text="选择要搜索的平台、地区和岗位数量。" />
-        <div className={css.platformGrid}>{PLATFORMS.map(platform => <button className={project.platforms.includes(platform) ? css.platformActive : css.platform} type="button" key={platform}
-          aria-pressed={project.platforms.includes(platform)} disabled={targetLocked} onClick={() => { change(value => ({ ...value,
+        <div className={css.platformGrid}>{PLATFORMS.map((platform, index) => <button className={project.platforms.includes(platform) ? css.platformActive : css.platform} type="button" key={platform}
+          aria-label={platform} aria-describedby={`jd-platform-hint-${index}`} aria-pressed={project.platforms.includes(platform)} disabled={targetLocked} onClick={() => { change(value => ({ ...value,
             platforms: value.platforms.includes(platform)
               ? value.platforms.filter(item => item !== platform)
               : [...value.platforms, platform] }))
-          }}><b>{platform}</b></button>)}</div>
+          }}><b>{platform}</b><small id={`jd-platform-hint-${index}`}>{platform === '公开网页' ? '通常无需登录' : '可能需要登录'}</small></button>)}</div>
         <div className={css.card}>
           <label className={css.label}>区域范围<select className={css.input} value={project.region} disabled={targetLocked}
             onChange={(event) => {
@@ -616,14 +630,16 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
           {project.pending_sources.map((item) => {
             const platform = platformForUrl(item.url, platforms)
             const unavailable = isUnavailableSource(item.reason)
+            const unsupported = isUnsupportedSource(item.reason, item.url)
             return <article key={item.url} className={css.card}><strong>{item.title}</strong><p>{item.reason}</p>
               {unavailable && <p>岗位页面已失效，登录不能恢复该岗位。请换用其他有效来源；若已有合法取得的原文，可手动导入并注明来源。</p>}
+              {unsupported && <p>请更换为有效的 HTTPS 岗位链接，或手动导入已取得的完整原文。</p>}
               <div className={css.captureActions}>{platform?.blocked ? <>
                 <button type="button" className={css.primaryButton} disabled={busy} onClick={() => { verifyPlatform(item) }}>手动处理验证</button>
                 <button type="button" className={css.infoButton} disabled={busy || !browserOpen}
                   onClick={() => { resumePlatform(item.url) }}>已完成验证，恢复采集</button>
-              </> : <button type="button" className={css.primaryButton} disabled={busy}
-                onClick={() => { beginCapture(item) }}>{unavailable ? '查看失效页面' : platform?.login_required ? '打开登录' : '浏览器读取此岗位'}</button>}</div>
+              </> : <button type="button" className={css.primaryButton} disabled={busy || unsupported}
+                onClick={() => { beginCapture(item) }}>{unsupported ? '链接不可采集' : unavailable ? '查看失效页面' : platform?.login_required ? '打开登录' : '浏览器读取此岗位'}</button>}</div>
               <p className={css.muted}>{item.url}</p></article>
           })}</details>}
         <details className={css.disclosure}><summary>手动导入原文</summary>

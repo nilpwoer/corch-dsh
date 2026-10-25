@@ -121,7 +121,7 @@ async function singleJdView() {
   assert.equal(await page.locator('section[aria-label="JD 研究工作台"]').count(), 1)
   assert.equal(await page.locator('nav[aria-label="研究步骤"]').count(), 1)
   assert.equal(await page.getByRole('button', { name: '关闭详情', exact: true }).count(), 0, 'JD navigation must not leave an empty Details column')
-  assert.equal(await page.locator('p:visible').filter({ hasText: /^\{"pending":/u }).count(), 0)
+  assert.equal(await page.locator('[aria-label="岗位研究工作台区域"] p:visible').filter({ hasText: /^\{"pending":/u }).count(), 0)
 }
 async function compactDefaults() {
   for (const text of await page.locator('[data-jd-project-id]').allTextContents()) assert.ok(!/修订\s*\d/u.test(text), 'History must keep technical revisions out of its default labels')
@@ -132,6 +132,38 @@ async function compactDefaults() {
   assert.equal(await page.getByLabel('读取原文文件', { exact: true }).isVisible(), false)
   assert.equal(await page.getByRole('button', { name: '查看失效页面', exact: true }).isVisible(), false)
   assert.equal(await page.getByRole('region', { name: '平台采集状态', exact: true }).isVisible(), false)
+}
+async function responsiveConversation() {
+  const window = await desktop.browserWindow(page)
+  const bounds = await window.evaluate(window => window.getBounds())
+  const workbench = page.locator('[aria-label="岗位研究工作台区域"]')
+  const conversation = page.getByRole('region', { name: '岗位研究对话', exact: true })
+  const draft = conversation.locator('textarea').first()
+  try {
+    await window.evaluate(window => window.setContentSize(1500, 900))
+    await page.waitForFunction(() => innerWidth === 1500)
+    await draft.waitFor({ state: 'visible' })
+    const left = await workbench.boundingBox(), right = await conversation.boundingBox()
+    assert.ok(left && right && left.x + left.width <= right.x + 1, 'Wide layout must show non-overlapping workbench and native conversation')
+    await draft.fill('保留这份对话草稿，不发送')
+    await page.screenshot({ path: join(out, 'conversation-wide.png') })
+    await window.evaluate(window => window.setContentSize(1024, 900))
+    await page.waitForFunction(() => innerWidth === 1024)
+    const tabs = page.getByRole('tablist', { name: '岗位研究视图', exact: true })
+    await tabs.getByRole('tab', { name: '对话', exact: true }).click()
+    assert.equal(await workbench.isVisible(), false)
+    assert.equal(await draft.isVisible(), true)
+    assert.equal(await draft.inputValue(), '保留这份对话草稿，不发送')
+    await page.screenshot({ path: join(out, 'conversation-narrow.png') })
+    await tabs.getByRole('tab', { name: '工作台', exact: true }).click()
+    assert.equal(await workbench.isVisible(), true)
+    assert.equal(await conversation.isVisible(), false)
+    await tabs.getByRole('tab', { name: '对话', exact: true }).click()
+    assert.equal(await draft.inputValue(), '保留这份对话草稿，不发送')
+    await draft.fill('')
+    await tabs.getByRole('tab', { name: '工作台', exact: true }).click()
+    presentation.responsive_conversation = { wide_side_by_side: true, narrow_tabs: true, native_composer_draft_preserved: true }
+  } finally { await window.evaluate((window, bounds) => window.setBounds(bounds), bounds) }
 }
 async function compactFirstScreen(sourceTitle, count) {
   const window = await desktop.browserWindow(page)
@@ -314,6 +346,7 @@ try {
   await selectedProject(first.id)
   await page.getByRole('heading', { name: '从学科专业推理实际岗位' }).waitFor()
   await rpc('/api', 'session.selectModel', { sessionId: first.session_id, provider: 'jd-fixture', model: 'jd-fixture-model' })
+  await responsiveConversation()
   await page.getByRole('textbox', { name: '学科 / 专业', exact: true }).fill('计算机应用技术')
   await page.getByRole('textbox', { name: '专业方向（可选）', exact: true }).fill('后端服务与数据库')
   await page.getByRole('textbox', { name: '岗位名称（可手动修改，使用顿号分隔）', exact: true }).fill('后端开发、数据库开发')
@@ -347,6 +380,9 @@ try {
   assert.equal(await page.getByRole('textbox', { name: '学科 / 专业', exact: true }).inputValue(), '智慧养老护理')
   await selectProject(first.id)
   await page.getByRole('heading', { name: '选择平台与搜索范围' }).waitFor()
+  assert.equal(await page.getByRole('button', { name: 'BOSS 直聘', exact: true }).getAttribute('aria-describedby') !== null, true)
+  assert.ok(await page.getByText('可能需要登录', { exact: true }).count() > 0)
+  await page.getByText('通常无需登录', { exact: true }).waitFor()
   assert.equal(await page.getByRole('combobox', { name: '区域范围', exact: true }).inputValue(), '成渝经济圈')
   assert.equal(await page.getByRole('button', { name: /鱼泡直聘/u }).getAttribute('aria-pressed'), 'true')
   const captureOpened = desktop.waitForEvent('window')
@@ -354,16 +390,19 @@ try {
   const capture = await captureOpened
   await capture.getByRole('button', { name: '登录合成站点', exact: true }).waitFor()
   const rawModelJson = page.locator('p:visible').filter({ hasText: /^\{"pending":/u })
-  assert.equal(await rawModelJson.count(), 0, 'Raw model JSON must be hidden in the default JD workbench')
+  assert.equal(await page.locator('[aria-label="岗位研究工作台区域"] p:visible').filter({ hasText: /^\{"pending":/u }).count(), 0, 'Structured research must not render model JSON')
+  const searchedProject = await savedProject(first.id, project => project.pending_sources.some(source => source.url === 'http://insecure-recruitment.invalid/job' && /不支持安全访问/u.test(source.reason)), 'unsupported candidate recorded independently')
+  assert.equal(searchedProject.workspace.search_status, 'completed', 'One unsupported HTTP candidate must not fail discovery or later collection')
+  assert.ok(searchedProject.pending_sources.some(source => source.url === 'http://insecure-recruitment.invalid/job' && /不支持安全访问/u.test(source.reason)))
   await page.getByRole('button', { name: 'JD 搜索', exact: true }).click()
   await page.getByRole('button', { name: 'JD 搜索', exact: true }).click()
   await singleJdView()
-  await page.getByRole('button', { name: '查看运行记录', exact: true }).click()
+  await page.getByRole('button', { name: '仅显示对话', exact: true }).click()
   await page.getByRole('button', { name: '返回JD工作台', exact: true }).waitFor()
   await rawModelJson.first().waitFor()
   await page.getByRole('button', { name: '返回JD工作台', exact: true }).click()
   await page.getByRole('navigation', { name: '研究步骤', exact: true }).waitFor()
-  assert.equal(await rawModelJson.count(), 0)
+  assert.equal(await page.locator('[aria-label="岗位研究工作台区域"] p:visible').filter({ hasText: /^\{"pending":/u }).count(), 0)
   await singleJdView()
   await disclosure(/^待处理来源（/u)
   const pendingOpen = page.getByRole('button', { name: '打开登录', exact: true })
@@ -718,8 +757,8 @@ try {
   await openResearch()
   await selectProject(feedback.id)
   await compactDefaults()
-  assert.equal(await page.locator('p:visible').filter({ hasText: /^\{"pending":/u }).count(), 0)
-  await page.getByRole('button', { name: '查看运行记录', exact: true }).waitFor()
+  assert.equal(await page.locator('[aria-label="岗位研究工作台区域"] p:visible').filter({ hasText: /^\{"pending":/u }).count(), 0)
+  await page.getByRole('button', { name: '仅显示对话', exact: true }).waitFor()
   await compactFirstScreen('合成长批次首条岗位', 2)
   const firstSavedCard = page.getByRole('region', { name: '已保存原文', exact: true }).locator('article').first()
   const evidenceSummary = firstSavedCard.locator('summary').filter({ hasText: /^查看完整原文$/u })
@@ -744,10 +783,12 @@ try {
   assert.equal(fixture.siteRequests.filter(request => request.path === '/unavailable-job').length, unavailableVisits)
   assert.equal((await rpc('/jd', 'read', { id: feedback.id })).sources.length, 2)
   checks.push('a complete source commits and shows clear saved feedback while the remaining batch HTTP response is unfinished; expired pages with recommended duties stay excluded and do not invite login or automatic retries after reload')
-  checks.push('the JD workbench hides model JSON by default and restores after restart; optional records and disclosures remain usable; saved originals and generation stay visible without horizontal overflow at 1360 and 1024 content pixels')
+  checks.push('wide windows pair the workbench and native editable conversation; narrow tabs preserve composer drafts; platform cards explain login and unsupported candidates cannot block later sources; structured panels omit protocol JSON')
   const actual = {
     levels: graphProject.graphs[0].nodes.map(node => ({ kind: node.kind, title: node.title, basis: node.basis, quotes: node.evidence.map(entry => entry.quote) })),
     tools: fixture.toolCalls, original_saved: saved.sources[0].body.includes(fixtureBody), acquisition: saved.sources[0].acquisition,
+    responsive_conversation: presentation.responsive_conversation,
+    discovery_recovery: { platform_login_hints: true, invalid_candidate_isolation: true },
     search_sessions: { archived_before_search: true, independent_sessions: true, repeat_search_creates_archive: true, target_restored: true, filters_restored: true, capture_draft_restored: true, step_and_version_restored_after_restart: true },
     capture: { browser_first: true, continue_requires_window: true, login_rejected: true, security_challenge_rejected: true, popup_survives_parent_close: true },
     collection_policy: { fetch_and_shell_denied_by_executor: true, browser_requests_only: true, cross_project_platform_stop: true,
@@ -761,7 +802,7 @@ try {
       no_automatic_expired_retry_after_reload: true },
     compact_workbench: { saved_source_and_generation_first_screen: true, content_widths_checked: [1360, 1024], no_horizontal_overflow: true,
       human_readable_hierarchy_and_dates: true, internal_ids_and_hashes_not_rendered: true,
-      optional_disclosures_closed_by_default: true, disclosures_preserve_capture_and_import: true, raw_json_hidden_by_default: true,
+      optional_disclosures_closed_by_default: true, disclosures_preserve_capture_and_import: true, structured_panel_omits_raw_json: true,
       model_records_available_on_demand: true, return_to_workbench: true, repeated_jd_navigation_single_instance: true,
       no_empty_details_column: true, workbench_restored_after_restart: true },
     confirmation: { host_persisted: true, discoverable_for_curriculum: true, export_denied_before_confirmation: true, each_version_requires_confirmation: true, confirmed_versions: allConfirmed.confirmations.map(item => item.version) },

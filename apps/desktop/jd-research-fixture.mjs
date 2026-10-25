@@ -28,7 +28,8 @@ export async function startJdFixture() {
     { url: origin + '/batch-fast', title: '合成长批次首条岗位' },
     { url: origin + '/batch-slow', title: '合成长批次延迟岗位' },
     { url: origin + '/unavailable-job', title: '合成失效岗位' },
-  ] : [{ url: origin + (searchRuns > 2 ? '/auto-job' : '/job'), title: searchRuns > 2 ? '合成自动存档岗位' : '合成后端开发岗位' }]
+  ] : [...(searchRuns === 1 ? [{ url: 'http://insecure-recruitment.invalid/job', title: '合成非安全来源' }] : []),
+    { url: origin + (searchRuns > 2 ? '/auto-job' : '/job'), title: searchRuns > 2 ? '合成自动存档岗位' : '合成后端开发岗位' }]
   const server = createServer(async (request, response) => {
     const requestURL = new URL(request.url, 'http://fixture')
     const path = requestURL.pathname
