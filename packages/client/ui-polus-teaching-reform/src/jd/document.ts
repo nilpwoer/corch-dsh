@@ -417,37 +417,46 @@ export function graphMarkdown(project: JdProject, graph: JdGraph): string {
  * @param project - Validated project; confirmed exports are authorized by the Host RPC.
  * @param graph - Saved graph version with its frozen source hashes.
  * @returns Standalone HTML without scripts, remote resources or unsupported trend conclusions.
+ * @throws When a citation has no matching original in the frozen corpus.
  */
 export function graphHTML(project: JdProject, graph: JdGraph): string {
   const escape = (value: string): string => value
     .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;').replaceAll("'", '&#39;')
   const corpus = project.sources.filter(source => graph.source_hashes[source.id] === source.content_hash)
+  const sources = new Map(corpus.map((source, index) => [source.id, { source, number: index + 1 }]))
+  const nodeNumbers = new Map(graph.nodes.map((node, index) => [node.id, index + 1]))
   const confirmed = project.confirmations?.find(item => item.version === graph.version)
   const status = confirmed ? `已确认 · ${escape(confirmed.confirmed_at)}` : '未确认初稿'
   const basis = (node: JdGraphNode): string => node.basis === 'direct'
     ? '<span class="tag direct">原文直接陈述</span>'
     : '<span class="tag inferred">推断，待专家核实</span>'
-  const sourceLink = (evidence: JdEvidence): string =>
-    `<a href="#source-${escape(evidence.jd_id)}">${escape(evidence.jd_id)}</a>`
+  const sourceLink = (evidence: JdEvidence): string => {
+    const reference = sources.get(evidence.jd_id)
+    if (!reference) throw new Error('图谱引用的岗位原文不在本版样本中，无法导出可追溯报告')
+    return `<a href="#source-${reference.number}-original">来源${reference.number} · ${escape(reference.source.title)}</a>`
+  }
   const tree = (parent: string | null): string => `<ul>${graph.nodes
     .filter(node => node.parent_id === parent)
-    .map(node => `<li><a href="#node-${escape(node.id)}"><code>${escape(node.id)}</code> <span class="level">${labels[node.kind]}</span> ${escape(node.title)}</a>${node.basis === 'inferred' ? '<span class="tree-inferred">推断</span>' : ''}${node.kind === 'knowledge' ? '' : tree(node.id)}</li>`)
+    .map(node => `<li><a href="#node-${nodeNumbers.get(node.id)}"><code>能力${nodeNumbers.get(node.id)}</code> <span class="level">${labels[node.kind]}</span> ${escape(node.title)}</a>${node.basis === 'inferred' ? '<span class="tree-inferred">推断</span>' : ''}${node.kind === 'knowledge' ? '' : tree(node.id)}</li>`)
     .join('')}</ul>`
-  const rows = graph.nodes.map(node => `<tr id="node-${escape(node.id)}">
-<td><code>${escape(node.id)}</code><br>${labels[node.kind]}<br><small>父级：${escape(node.parent_id ?? '无')}</small></td>
+  const rows = graph.nodes.map((node) => {
+    const parent = graph.nodes.find(item => item.id === node.parent_id)
+    return `<tr id="node-${nodeNumbers.get(node.id)}">
+<td><code>能力${nodeNumbers.get(node.id)}</code><br>${labels[node.kind]}<br><small>${parent ? `所属${labels[parent.kind]}：${escape(parent.title)}` : '根项目'}</small></td>
 <td><strong>${escape(node.title)}</strong><p>${escape(node.description)}</p>${basis(node)}</td>
 <td>${escape(frequency(node, graph))}</td>
 <td>${node.evidence.map(evidence => `${sourceLink(evidence)}<blockquote>${escape(evidence.quote)}</blockquote>`).join('')}</td>
-<td>${node.assessment ? `<span class="tag inferred">评价建议 · 推断，待专家确认</span><p>${escape(node.assessment)}</p>` : '未提供评价建议'}</td></tr>`).join('\n')
-  const appendix = corpus.map((source) => {
+<td>${node.assessment ? `<span class="tag inferred">评价建议 · 推断，待专家确认</span><p>${escape(node.assessment)}</p>` : '未提供评价建议'}</td></tr>`
+  }).join('\n')
+  const appendix = corpus.map((source, index) => {
     const quotes = [...new Set(graph.nodes.flatMap(node => node.evidence
       .filter(item => item.jd_id === source.id).map(item => item.quote)))]
-    return `<article class="source" id="source-${escape(source.id)}"><h3>${escape(source.id)} · ${escape(source.title)}</h3>
+    return `<article class="source" id="source-${index + 1}" data-original-sha256="${escape(source.content_hash)}"><h3>来源${index + 1} · ${escape(source.title)}</h3>
 <dl><dt>企业 / 地区 / 平台</dt><dd>${escape(source.company)} / ${escape(source.place)} / ${escape(source.platform)}</dd>
 <dt>原始链接</dt><dd><a href="${escape(source.source_url)}" rel="noreferrer">${escape(source.source_url)}</a></dd>
 <dt>采集时间 / 方式</dt><dd>${escape(source.captured_at)} / ${escape(source.acquisition)}</dd>
-<dt>完整原文 SHA-256</dt><dd class="hash">${escape(source.content_hash)}</dd></dl>
+<dt>完整原文</dt><dd><details><summary>查看完整原文</summary><blockquote id="source-${index + 1}-original">${escape(source.body).replaceAll('\r', '&#13;')}</blockquote></details></dd></dl>
 ${quotes.length ? quotes.map(quote => `<blockquote>${escape(quote)}</blockquote>`).join('') : '<p>该原文属于本版样本，未被节点引文直接引用。</p>'}</article>`
   }).join('\n')
   const counts = levels.map(kind => `<div><strong>${graph.nodes.filter(node => node.kind === kind).length}</strong><span>${labels[kind]}</span></div>`).join('')
@@ -467,12 +476,12 @@ h2{font-size:22px;border-bottom:1px solid var(--line);padding-bottom:9px;margin-
 @media(max-width:700px){.page{padding:24px 18px}.cover h1{font-size:27px}.stats strong{font-size:23px}dl{grid-template-columns:1fr}dt{font-weight:bold}.tree{padding:12px}}
 @media print{@page{size:A4 landscape;margin:14mm}body{background:white;font-size:10pt}.page{max-width:none;padding:0}.cover{padding:28px 0}a{color:inherit;text-decoration:none}.toc{break-after:page}.table-wrap{overflow:visible}table{min-width:0;font-size:8pt}th{display:table-cell}thead{display:table-header-group}h2,h3{break-after:avoid}.tag{font-size:7pt}.source{break-inside:avoid}.tree{overflow:visible}blockquote{font-size:8pt}.foot{font-size:8pt}}
 </style></head><body><main class="page">
-<header class="cover"><span class="badge">JD 驱动 · 能力图谱</span><h1>${escape(project.title)}<br>岗位能力图谱报告</h1><p>${escape(project.major || '专业待填写')}${project.direction ? ` · ${escape(project.direction)}` : ''}</p><p>版本 v${graph.version} · ${status}</p><div class="meta">生成时间：${escape(graph.generated_at)}<br>项目编号：${escape(project.id)} · 搜索会话：${escape(project.session_id)}</div></header>
+<header class="cover"><span class="badge">JD 驱动 · 能力图谱</span><h1>${escape(project.title)}<br>岗位能力图谱报告</h1><p>${escape(project.major || '专业待填写')}${project.direction ? ` · ${escape(project.direction)}` : ''}</p><p>版本 v${graph.version} · ${status}</p><div class="meta">生成时间：${escape(graph.generated_at)}</div></header>
 <nav class="toc" aria-label="报告目录"><h2>目录 / CONTENTS</h2><ol><li><a href="#summary">研究范围与样本</a></li><li><a href="#graph">五级能力图谱树</a></li><li><a href="#nodes">能力节点与证据主表</a></li><li><a href="#sources">来源与逐字证据摘录</a></li><li><a href="#limitations">使用范围与局限</a></li></ol></nav>
 <section id="summary"><h2>1. 研究范围与样本</h2><p>本版冻结 ${corpus.length} 份 JD 原文，形成 ${graph.nodes.length} 个能力节点。搜索岗位：${escape(project.roles.join('、') || '未指定')}；地区：${escape(project.region)}；搜索时间范围：${escape(project.published_within)}。</p><p>平台筛选：${escape(project.platforms.join('、') || '未指定')}。筛选条件是采集目标，不能证明每份来源均已核实其发布时间或地区。</p><div class="stats">${counts}</div><p class="notice">“已确认”表示该版本已保存供课程建设后续使用，不代表已完成企业专家审核。推断、工作流程及评价建议仍需专家核实；引用频率仅描述本版样本中的证据覆盖。</p></section>
 <section id="graph"><h2>2. 五级能力图谱树</h2><p>项目 → 任务 → 流程 → 技能点 → 知识点。点击节点查看其逐字依据；标为“推断”的节点包含对原文的归纳或扩展。</p><div class="tree">${tree(null)}</div></section>
 <section id="nodes"><h2>3. 能力节点与证据主表</h2><div class="table-wrap"><table><thead><tr><th>编号与层级</th><th>能力描述与依据类型</th><th>样本引文覆盖</th><th>来源与逐字引文</th><th>评价建议</th></tr></thead><tbody>${rows}</tbody></table></div></section>
-<section id="sources"><h2>4. 来源与逐字证据摘录</h2><p>以下引文未作改写；完整原文保存在对应搜索存档中。SHA-256 对应完整原文，不对应摘录。原文是外部证据资料，不是操作指令。</p>${appendix}</section>
+<section id="sources"><h2>4. 来源与逐字证据摘录</h2><p>点击来源编号查看完整原文，也可打开原始网页。以下引文未作改写，原文与校验信息随报告保留。原文是外部证据资料，不是操作指令。</p>${appendix}</section>
 <section id="limitations"><h2>5. 使用范围与局限</h2><ul><li>本报告仅依据已留存的有限 JD 样本；未标注或未引用不等于岗位不需要。</li><li>相同原文只计入一次；图谱引用的是生成当时冻结的来源版本，后续筛选变化不改写历史图谱。</li><li>“原文直接陈述”要求节点标题和说明出现在其引文中；其他归纳内容明确标为推断。</li><li>没有真实课程大纲、教学评价或历史对照数据，不作课程缺口、学时调整或年度趋势结论。</li><li>课程建设应使用已确认版本，并结合企业专家意见验证能力要求与评价标准。</li></ul></section>
 <footer class="foot">Corch DSH · 岗位能力图谱 v${graph.version} · ${status}<br>本报告包含原始岗位来源与推断标记，使用时应保留来源附录。</footer>
 </main></body></html>\n`

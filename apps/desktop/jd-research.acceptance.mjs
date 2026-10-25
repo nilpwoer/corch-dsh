@@ -191,7 +191,8 @@ async function exportHtml(version, project) {
   const html = await readFile(path, 'utf8')
   const source = project.sources[0]
   assert.ok(html.includes(source.content_hash) && html.includes(source.source_url), 'HTML must include original hash and URL')
-  assert.ok(html.includes(source.id) && html.includes(fixtureBody), 'HTML must retain exact source quotes and identity')
+  assert.ok(html.includes('来源1 · ' + source.title) && html.includes(fixtureBody), 'HTML must retain readable source names and exact originals')
+  assert.ok(!html.includes(source.id) && !html.includes(project.id) && !html.includes(project.session_id), 'Reports must omit internal source, project and session identifiers')
   assert.ok(html.includes('推断') && html.includes('待专家核实'), 'HTML must identify inference')
   assert.match(html, /Content-Security-Policy/u)
   await copyFile(path, join(out, `jd-graph-v${version}.html`))
@@ -514,6 +515,13 @@ try {
     await globalThis.jdAcceptanceReport.loadURL(url)
   }, firstHtml.url)])
   await reportPage.getByText('交付后端服务', { exact: false }).first().waitFor()
+  await reportPage.locator('#nodes a[href="#source-1-original"]').first().click()
+  const original = reportPage.locator('#source-1-original')
+  await original.waitFor({ state: 'visible' })
+  assert.equal(await original.textContent(), confirmed.sources[0].body, 'A numbered citation reveals the exact offline original without scripts')
+  assert.equal(await reportPage.locator('#source-1').getAttribute('data-original-sha256'), confirmed.sources[0].content_hash)
+  assert.equal(await reportPage.locator('#source-1 a').getAttribute('href'), confirmed.sources[0].source_url)
+  assert.equal(await reportPage.locator('a[href^="#"]').evaluateAll(links => links.every(link => document.getElementById(link.getAttribute('href').slice(1)))), true, 'Every report navigation link must resolve')
   await reportPage.screenshot({ path: join(out, 'html-report.png'), fullPage: true })
   await desktop.evaluate(() => globalThis.jdAcceptanceReport.destroy())
   await page.getByRole('button', { name: '生成新版本', exact: true }).click()
@@ -733,7 +741,8 @@ try {
       model_records_available_on_demand: true, return_to_workbench: true, repeated_jd_navigation_single_instance: true,
       no_empty_details_column: true, workbench_restored_after_restart: true },
     confirmation: { host_persisted: true, discoverable_for_curriculum: true, export_denied_before_confirmation: true, each_version_requires_confirmation: true, confirmed_versions: allConfirmed.confirmations.map(item => item.version) },
-    html_export: { saved_in_client_data: true, system_browser_requested: true, exact_source_quotes: true, hashes_and_urls: true, inference_marked: true, source_text_immutable: true },
+    html_export: { saved_in_client_data: true, system_browser_requested: true, exact_source_quotes: true, hashes_and_urls: true, inference_marked: true, source_text_immutable: true,
+      readable_numbered_sources: true, offline_original_navigation_without_scripts: true, internal_ids_not_rendered: true },
     file_import: { txt_loaded: true, md_loaded: true, keyboard_same_file_reselection: true, filename_feedback: true, unsaved_draft_restored: true },
     graph_actions: { shared_dimensions_and_typography: true, four_distinct_steps: true, no_md_pdf_buttons: true, narrow_controls_fit: true },
   }

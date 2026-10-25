@@ -166,7 +166,7 @@ test('dotted graph hierarchy identifiers remain separate from file-safe project 
   expect(() => parseProject({ ...projectFixture(), id: '../project' })).toThrow('编号')
 })
 
-test('the reading report cites excerpts while the AI document includes the complete original', () => {
+test('the reading report preserves complete originals as escaped text behind readable source links', () => {
   const project = projectFixture()
   const first = project.sources[0]!
   first.body += '\n![导航图片](data:image/png;base64,unrelated-page-payload)'
@@ -179,8 +179,32 @@ test('the reading report cites excerpts while the AI document includes the compl
   expect(html).toContain('来源与逐字证据摘录')
   expect(html).toContain(first.content_hash)
   expect(html).toContain(graph.nodes[0]!.evidence[0]!.quote)
-  expect(html).not.toContain('unrelated-page-payload')
+  expect(html).toContain('unrelated-page-payload')
+  expect(html).not.toContain('<img')
+  expect(html).toContain('href="#source-1-original">来源1 · 合成后端开发</a>')
   expect(graphMarkdown(project, graph)).toContain('unrelated-page-payload')
+})
+
+test('report source numbering follows the frozen corpus and distinguishes identical job names', () => {
+  const project = projectFixture()
+  const first = project.sources[0]!
+  first.title = '同名 <岗位>'
+  const second = { ...first, id: 'JD-second-private-id', title: '同名 <岗位>', body: '岗位职责：交付第二份岗位工作。', excluded: true,
+    content_hash: createHash('sha256').update('岗位职责：交付第二份岗位工作。').digest('hex') }
+  project.sources.push(second, { ...first, id: 'JD-newer-private-id', title: '未纳入本版的新岗位' })
+  const nodes = graphFixture()
+  nodes[0]!.evidence.push({ jd_id: second.id, quote: second.body })
+  const graph = { version: 1, generated_at: project.updated_at, nodes,
+    source_hashes: { [first.id]: first.content_hash, [second.id]: second.content_hash } }
+  const before = structuredClone({ project, graph })
+  const html = graphHTML(project, graph)
+  expect(html).toContain('href="#source-1-original">来源1 · 同名 &lt;岗位&gt;</a>')
+  expect(html).toContain('href="#source-2-original">来源2 · 同名 &lt;岗位&gt;</a>')
+  expect(html).toContain('id="source-2-original">' + second.body)
+  expect(html).not.toContain('未纳入本版的新岗位')
+  expect(html).not.toContain('source-3')
+  expect(html).not.toContain(second.id)
+  expect({ project, graph }).toEqual(before)
 })
 
 test('concurrent writers cannot overwrite projects or change captured originals', async () => {
@@ -365,13 +389,16 @@ test('only host confirmation appends approval and confirmed evidence remains imm
   expect(excluded.confirmations).toEqual(confirmed.confirmations)
   expect(excluded.graphs).toEqual([graph])
   const html = graphHTML(confirmed, graph)
-  for (const expected of ['已确认', '报告目录', '五级能力图谱树', '能力节点与证据主表', '来源与逐字证据摘录', 'SHA-256', source.content_hash, '推断，待专家核实', '评价建议 · 推断', '不作课程缺口'])
+  for (const expected of ['已确认', '报告目录', '五级能力图谱树', '能力节点与证据主表', '来源与逐字证据摘录', source.content_hash, '推断，待专家核实', '评价建议 · 推断', '不作课程缺口'])
     expect(html).toContain(expected)
-  for (const node of graph.nodes) {
-    expect(html).toContain(`id="node-${node.id}"`)
+  for (const [index, node] of graph.nodes.entries()) {
+    expect(html).toContain(`id="node-${index + 1}"`)
+    expect(html).not.toContain(node.id)
     for (const evidence of node.evidence) expect(html).toContain(evidence.quote)
   }
-  expect(html).toContain(`id="source-${source.id}"`)
+  expect(html).toContain('id="source-1"')
+  for (const internal of [source.id, confirmed.id, confirmed.session_id, '父级：', '完整原文 SHA-256']) expect(html).not.toContain(internal)
+  expect(() => graphHTML({ ...confirmed, sources: [] }, graph)).toThrow('不在本版样本中')
   const injected = graphHTML({ ...confirmed, title: '</title><script>alert(1)</script>', roles: ['<iframe src="https://evil.test">'] }, graph)
   expect(injected).not.toContain('<script>')
   expect(injected).not.toContain('<iframe')

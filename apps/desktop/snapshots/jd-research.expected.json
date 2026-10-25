@@ -131,7 +131,10 @@
     "exact_source_quotes": true,
     "hashes_and_urls": true,
     "inference_marked": true,
-    "source_text_immutable": true
+    "source_text_immutable": true,
+    "readable_numbered_sources": true,
+    "offline_original_navigation_without_scripts": true,
+    "internal_ids_not_rendered": true
   },
   "file_import": {
     "txt_loaded": true,
