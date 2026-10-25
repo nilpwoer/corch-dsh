@@ -197,18 +197,22 @@ test('unavailable-source cache contains no recommended original and expires norm
   assert.equal(policy.cached(url), undefined)
 })
 
-test('old Zhaopin whole-page cache is retained but requires a scoped fresh extraction', t => {
+test('older Zhaopin and 58 extractions stay on disk but cannot replace a fresh scoped capture', t => {
   const dataDirectory = directory(t)
   const policy = createJdCollection({ dataDirectory })
-  const url = 'https://www.zhaopin.com/jobdetail/example.htm'
-  const item = { ...captured(), url }
-  const file = join(dataDirectory, 'jd-collection', createHash('sha256').update(url).digest('hex') + '.json')
-  writeFileSync(file, JSON.stringify(item))
-  assert.equal(policy.cached(url), undefined)
-  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), item)
-  policy.cache(url, item)
-  assert.deepEqual(policy.cached(url), { ...item, cached: true })
-  assert.equal(Object.hasOwn(policy.cached(url), 'extraction_version'), false)
+  for (const url of ['https://www.zhaopin.com/jobdetail/example.htm', 'https://cd.58.com/tech/123x.shtml']) {
+    const item = { ...captured(), url }
+    const file = join(dataDirectory, 'jd-collection', createHash('sha256').update(url).digest('hex') + '.json')
+    for (const version of [undefined, 1]) {
+      const previous = { ...item, ...version === undefined ? {} : { extraction_version: version } }
+      writeFileSync(file, JSON.stringify(previous))
+      assert.equal(policy.cached(url), undefined)
+      assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), previous)
+    }
+    policy.cache(url, item)
+    assert.deepEqual(policy.cached(url), { ...item, cached: true })
+    assert.equal(Object.hasOwn(policy.cached(url), 'extraction_version'), false)
+  }
 })
 
 test('replacing positive and unavailable caches updates the positive-original count symmetrically', t => {

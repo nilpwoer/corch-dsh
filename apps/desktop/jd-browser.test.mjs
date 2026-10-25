@@ -111,6 +111,33 @@ test('Zhaopin reads the observed description card without account navigation or 
   assert.equal(read('<nav>账号姓名</nav><main><h2>推荐岗位</h2>岗位职责：推广保险。</main>', 'https://www.zhaopin.com/jobdetail/unknown.htm').body, '')
 })
 
+test('Zhaopin rejects a visible offline-status image even when its original duties remain readable', () => {
+  const offline = '<div class="job-summary"><div class="summary-planes__other"><img class="summary-planes__invalid-text" src="ic-offline.png"></div></div>'
+  const url = 'https://www.zhaopin.com/jobdetail/offline.htm'
+  const page = read(offline + zhaopinDetail, url)
+  assert.equal(page.body, '')
+  assert.equal(page.login, false)
+  assert.match(page.unavailable_reason, /已失效/u)
+  assert.equal(read('<aside>' + offline.replace('job-summary', 'recommendations') + '</aside>' + zhaopinDetail, url).unavailable_reason, '')
+  assert.equal(read('<div style="display:none">' + offline + '</div>' + zhaopinDetail, url).unavailable_reason, '')
+})
+
+test('58 reads the selected job title and description without account navigation, company prose or recommendations', () => {
+  const description = '岗位职责：开发后端接口，编写单元测试。任职要求：掌握 Java 和 MySQL。'
+  const html = '<nav>已登录账号 测试用户 退出 个人中心</nav><h1>世纪城互联网/通信招聘</h1>'
+    + '<div class="pos_info"><div>其他软件研发</div><span class="pos_name">后端开发工程师</span><button>申请职位</button></div>'
+    + '<div class="item_con"><div class="pos_description"><h2 class="title">职位描述</h2><div class="posDes">' + description + '</div><div class="lookMore">查看更多</div></div>'
+    + '<div class="comp_intro">公司介绍：其他公司的 RFID 产品。</div></div><aside class="job-description">您可能感兴趣的职位\n岗位职责：销售保险。</aside><footer>联系我们</footer>'
+  const page = read(html, 'https://cd.58.com/tech/68101043524285x.shtml')
+  assert.equal(page.title, '后端开发工程师')
+  assert.equal(page.body, '职位描述\n' + description)
+  assert.equal(page.unavailable_reason, '')
+  assert.equal(page.login, false)
+  assert.doesNotMatch(page.body, /测试用户|个人中心|RFID|销售保险|联系我们|查看更多|申请职位/u)
+  assert.equal(read(html.replace('pos_description', 'unknown_description'), 'https://cd.58.com/tech/68101043524285x.shtml').body, '')
+  assert.equal(read(html.replace('pos_name', 'unknown_name'), 'https://cd.58.com/tech/68101043524285x.shtml').body, '')
+})
+
 const expiredPage = '<title>软件开发工程师</title><div class="error-render zhaopin-detail-error-render error"><img class="error-render-prompt-image" alt=""><p>对不起，您查看的内容已不存在</p></div><a>登录</a><section class="post_card job-description"><h2>类似职位</h2>岗位职责：开发后端接口。任职要求：掌握数据库。</section>'
 
 test('an unavailable source cannot turn recommendations or a login control into the requested JD', () => {
@@ -521,7 +548,57 @@ test('ordinary open with an existing login saves immediately and pending deliver
   assert.equal(restarted.browser.pending().deliveries.length, 0)
 })
 
-test('a security block and its explicit verification window never auto-deliver a ready page', async t => {
+test('only a persisted delivery acknowledgement closes its current capture and child windows', async t => {
+  const fixture = durableFixture(t, url => read(detail, url))
+  await fixture.browser.open({ id: 'project-1', url: firstSource })
+  const delivery = fixture.browser.pending().deliveries[0]
+  const popup = new fixture.windows[0].constructor()
+  popup.url = firstSource
+  fixture.windows[0].webContents.emit('did-create-window', popup)
+  assert.ok(fixture.windows.every(window => !window.isDestroyed()))
+  assert.throws(() => fixture.browser.ack({ ids: ['invalid'] }), /确认标识无效/u)
+  assert.ok(fixture.windows.every(window => !window.isDestroyed()))
+  fixture.browser.ack({ ids: [delivery.id] })
+  assert.ok(fixture.windows.every(window => window.isDestroyed()))
+  assert.deepEqual(fixture.browser.status({ id: 'project-1' }), { state: 'closed' })
+  fixture.browser.ack({ ids: [delivery.id] })
+})
+
+test('a previous delivery cannot close another project or a newer target on the shared platform', async t => {
+  for (const nextOwner of ['project-1', 'project-2']) {
+    const fixture = durableFixture(t, url => read(detail, url))
+    await fixture.browser.open({ id: 'project-1', url: firstSource })
+    const first = fixture.browser.pending().deliveries[0]
+    await fixture.browser.open({ id: nextOwner, url: secondSource })
+    const next = fixture.browser.pending().deliveries.find(delivery => delivery.id !== first.id)
+    fixture.browser.ack({ ids: [first.id] })
+    assert.equal(fixture.windows[0].isDestroyed(), false)
+    fixture.browser.ack({ ids: [next.id] })
+    assert.equal(fixture.windows[0].isDestroyed(), true)
+  }
+})
+
+test('acknowledging a saved platform leaves another platform waiting for login open', async t => {
+  const waitingURL = 'https://www.zhaopin.com/jobdetail/waiting.htm'
+  const fixture = durableFixture(t, url => url === waitingURL ? read('<main>短信登录<input type="password"></main>', url) : read(detail, url))
+  await fixture.browser.open({ id: 'project-1', url: firstSource })
+  const delivery = fixture.browser.pending().deliveries[0]
+  await fixture.browser.open({ id: 'project-1', url: waitingURL })
+  fixture.browser.ack({ ids: [delivery.id] })
+  assert.equal(fixture.windows[0].isDestroyed(), true)
+  assert.equal(fixture.windows[1].isDestroyed(), false)
+})
+
+test('a user navigation begun before acknowledgement keeps the capture window open', async t => {
+  const fixture = durableFixture(t, url => read(detail, url))
+  await fixture.browser.open({ id: 'project-1', url: firstSource })
+  const delivery = fixture.browser.pending().deliveries[0]
+  fixture.windows[0].webContents.emit('did-start-navigation', {}, secondSource, false, true)
+  fixture.browser.ack({ ids: [delivery.id] })
+  assert.equal(fixture.windows[0].isDestroyed(), false)
+})
+
+test('security verification stays open until explicit recovery is saved and acknowledged', async t => {
   const dom = renderedDOM('<main>岗位职责：开发后端接口。登录查看完整内容<input type="password"></main>', firstSource, { runScripts: 'outside-only' })
   t.after(() => { dom.window.dispatchEvent(new dom.window.Event('pagehide')); dom.window.close() })
   const fixture = durableFixture(t, undefined, { executeJavaScript: script => dom.window.eval(script), onLoad(window) { window.webContents.emit('dom-ready') } })
@@ -535,7 +612,10 @@ test('a security block and its explicit verification window never auto-deliver a
   assert.equal(fixture.browser.pending().deliveries.length, 0)
   assert.equal(fixture.browser.platforms()[0].blocked, true)
   assert.equal((await fixture.browser.resume({ id: 'project-1', url: firstSource })).item.state, 'captured')
-  assert.equal(fixture.browser.pending().deliveries.length, 0)
+  const delivery = fixture.browser.pending().deliveries[0]
+  assert.equal(fixture.windows[0].isDestroyed(), false)
+  fixture.browser.ack({ ids: [delivery.id] })
+  assert.equal(fixture.windows[0].isDestroyed(), true)
 })
 
 test('late automatic DOM results cannot deliver into a newly selected search project', async t => {

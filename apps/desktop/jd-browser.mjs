@@ -7,6 +7,7 @@ const CAPTURE_WINDOW_TITLE = 'JD 采集 · 完整岗位正文可读后自动保�
 const safeURL = jdSourceURL
 
 /** Read rendered duties and identify the displayed job without reading browser credentials.
+ * Zhaopin and 58 require their visible description cards; visible Zhaopin offline-status imagery also rejects a source.
  * @param document - Current page DOM, evaluated inside the isolated capture window.
  * @param unavailableReason - Unavailable-source classifier included when the reader is serialized into a renderer.
  * @returns Visible duties sections, login and security-challenge flags, and the job's unambiguous source URL, or null when a list selection cannot be identified.
@@ -16,16 +17,20 @@ export function readJdPage(document, unavailableReason = jdUnavailableReason) {
   const duties = element => /(?:岗位职责|工作职责|职位描述|任职要求|职位要求|工作内容|职责描述|job description|responsibilit)[\s:：]*\S/iu.test(element.innerText || '')
   const pageURL = new URL(document.location.href)
   const zhaopin = pageURL.hostname === 'zhaopin.com' || pageURL.hostname.endsWith('.zhaopin.com')
+  const wuba = pageURL.hostname === '58.com' || pageURL.hostname.endsWith('.58.com')
   const zhaopinCard = [...document.querySelectorAll('.describtion-card')].find(element => visible(element) && duties(element) && element.querySelector('.seo-card__content'))
+  const wubaTitle = wuba && [...document.querySelectorAll('.pos_info .pos_name')].find(element => visible(element) && element.innerText.trim())
+  const wubaCard = wubaTitle && [...document.querySelectorAll('.pos_description')].find(element => visible(element) && duties(element) && element.querySelector('.posDes'))
+  const card = zhaopinCard || wubaCard
   const details = [...document.querySelectorAll('[class*="job-detail"], [class*="job_detail"], [class*="jobDetail"]')].filter(visible)
   const detail = details.find(duties)
   const section = [...document.querySelectorAll('[class*="job-description"], [class*="job-sec"], main, article')].find(element => visible(element) && duties(element))
-  const root = zhaopinCard || (zhaopin ? undefined : detail || section || document.body)
+  const root = card || (zhaopin || wuba ? undefined : detail || section || document.body)
   const descriptionSelector = '[class*="job-sec-text"], [class*="job-description"]'
   const descriptions = [...(root?.matches(descriptionSelector) ? [root] : []), ...(root?.querySelectorAll(descriptionSelector) || [])].filter(element => visible(element) && duties(element))
   const descriptionRoots = descriptions.filter(element => !descriptions.some(other => other !== element && other.contains(element)))
-  const body = zhaopinCard
-    ? [zhaopinCard.querySelector('.seo-card__title')?.innerText, zhaopinCard.querySelector('.seo-card__content').innerText].filter(Boolean).join('\n')
+  const body = card
+    ? [card.querySelector(zhaopinCard ? '.seo-card__title' : 'h2.title')?.innerText, card.querySelector(zhaopinCard ? '.seo-card__content' : '.posDes').innerText].filter(Boolean).join('\n')
     : descriptionRoots.length ? descriptionRoots.map(element => element.innerText).join('\n\n') : root?.innerText || ''
   const heading = [...(root?.querySelectorAll('h1, [class*="job-title"], [class*="job-name"]') || [])].find(visible)
   const pageHeading = [...document.querySelectorAll('h1')].find(visible)
@@ -33,7 +38,7 @@ export function readJdPage(document, unavailableReason = jdUnavailableReason) {
   const detailTitle = detail && firstLine(detail)
   const boss = pageURL.hostname === 'zhipin.com' || pageURL.hostname.endsWith('.zhipin.com')
   const directBoss = boss && /^\/job_detail\/[^/]+\.html$/u.test(pageURL.pathname)
-  const title = ((directBoss && pageHeading?.innerText) || heading?.innerText || (detailTitle && !/^(?:岗位职责|工作职责|职位描述|任职要求|职位要求|工作内容|职责描述|job description|responsibilit)/iu.test(detailTitle) && detailTitle) || pageHeading?.innerText || document.title).trim()
+  const title = ((wubaCard && wubaTitle.innerText) || (directBoss && pageHeading?.innerText) || heading?.innerText || (detailTitle && !/^(?:岗位职责|工作职责|职位描述|任职要求|职位要求|工作内容|职责描述|job description|responsibilit)/iu.test(detailTitle) && detailTitle) || pageHeading?.innerText || document.title).trim()
   const pageText = (document.body?.innerText || '').replace(/\s+/gu, ' ')
   const blocked = /请完成安全验证|(?:访问|操作|请求)(?:行为)?(?:过于)?频繁|(?:访问行为|访问环境|网络环境|IP)(?:存在)?异常|(?:访问|请求)已被限制|请解除限制后访问|请拖动(?:滑块|下方)|滑动(?:滑块|验证)|verify you are human|access denied|unusual traffic|cookies support required|系统检测到.{0,30}(?:机器人|异常)|人机身份验证|正在验证.{0,12}浏览器/iu.test(pageText)
     || /^(?:安全验证|访问验证|人机验证|security verification|access denied)$/iu.test(document.title.trim())
@@ -54,7 +59,8 @@ export function readJdPage(document, unavailableReason = jdUnavailableReason) {
   const hasDuties = /岗位职责|工作职责|职位描述|任职要求|职位要求|工作内容|职责描述|job description|responsibilit/iu.test(body)
   const login = [...document.querySelectorAll('input[type=password],input[autocomplete=one-time-code]')].some(visible)
     || !hasDuties && (/^passport\./iu.test(pageURL.hostname) || /\/(?:login|signin|passport)(?:[./_-]|$)/iu.test(pageURL.pathname) || /扫码登录|短信登录|手机验证码登录/u.test(pageText))
-  const unavailable = unavailableReason(pageText)
+  const offlineImage = zhaopin && [...document.querySelectorAll('.job-summary .summary-planes__invalid-text')].some(visible)
+  const unavailable = unavailableReason(pageText) || (offlineImage ? unavailableReason('该职位已失效') : '')
   return { title, body: unavailable ? '' : body, url: sourceURL, blocked, login: unavailable ? false : login, unavailable_reason: unavailable }
 }
 
@@ -204,7 +210,10 @@ export function createJdBrowser({ BrowserWindow, maxCaptureChars, loadTimeoutMs,
     })
     window.webContents.on('will-attach-webview', event => event.preventDefault())
     window.webContents.on('did-start-navigation', (_event, _url, inPlace, isMainFrame) => {
-      if (isMainFrame && !inPlace) window.jdMonitorEpoch = (window.jdMonitorEpoch || 0) + 1
+      if (isMainFrame && !inPlace) {
+        window.jdMonitorEpoch = (window.jdMonitorEpoch || 0) + 1
+        window.jdNavigationEpoch = (window.jdNavigationEpoch || 0) + 1
+      }
     })
     window.webContents.on('dom-ready', () => startMonitor(window, state))
     window.webContents.on('did-stop-loading', () => startMonitor(window, state))
@@ -313,6 +322,7 @@ export function createJdBrowser({ BrowserWindow, maxCaptureChars, loadTimeoutMs,
     const sourceURL = safeURL(result.url)
     if (jdPlatform(sourceURL) !== state.platform) return { state: 'not_a_jd', url: state.sourceURL, message: '当前页面属于其他平台，请从对应来源重新打开采集。' }
     const item = { state: 'captured', url: sourceURL, title: result.title, body, captured_at: new Date().toISOString(), content_hash: createHash('sha256').update(body).digest('hex'), cached: false }
+    state.lastCapture = { url: sourceURL, hash: item.content_hash, binding, contentsId: window.webContents.id, navigation: window.jdNavigationEpoch || 0 }
     if (allowResume) policy().resume(state.sourceURL)
     const wasVerification = state.verification
     state.verification = false
@@ -425,7 +435,21 @@ export function createJdBrowser({ BrowserWindow, maxCaptureChars, loadTimeoutMs,
       if (automaticError) throw new Error('自动采集未保存：' + automaticError.message)
       return policy().pending()
     },
-    ack(input) { return policy().ack(input) },
+    ack(input) {
+      const pending = policy().pending().deliveries
+      policy().ack(input)
+      for (const delivery of pending.filter(item => input.ids.includes(item.id))) {
+        const state = platformWindows.get(jdPlatform(delivery.requested_url))
+        if (!state || state.ownerId !== delivery.project_id || state.requestedURL !== delivery.requested_url
+          || state.autoCapture || state.verification || state.suspended || policy().blocked(state.sourceURL)
+          || state.lastCapture?.binding !== state.bindingGeneration || state.lastCapture.url !== delivery.item.url
+          || state.lastCapture.hash !== delivery.item.content_hash) continue
+        const window = activeWindow(state)
+        if (!window || window.webContents.isLoadingMainFrame() || safeURL(window.webContents.getURL()) !== delivery.item.url) continue
+        if (window.webContents.id === state.lastCapture.contentsId && (window.jdNavigationEpoch || 0) !== state.lastCapture.navigation) continue
+        for (const capture of [...state.windows]) if (!capture.isDestroyed()) capture.destroy()
+      }
+    },
     async verify(input) {
       validateId(input.id)
       const url = safeURL(input.url)
@@ -446,7 +470,10 @@ export function createJdBrowser({ BrowserWindow, maxCaptureChars, loadTimeoutMs,
       if (state?.ownerId !== input.id) return { item: { state: 'failed', url: input.url || '', message: '采集窗口已切换到其他搜索，请重新打开当前来源。' }, platforms: policy().statuses() }
       if (!state?.verification) return { item: { state: 'failed', url: input.url || '', message: '请先打开“处理平台验证”，完成平台提示后再恢复采集。' }, platforms: policy().statuses() }
       const item = await inspect(state, { allowResume: true })
-      if (item.state === 'captured') state.autoCapture = false
+      if (item.state === 'captured') {
+        state.autoCapture = false
+        if (persistDelivery(input.id, state.requestedURL, item)) notifyPending()
+      }
       return { item, platforms: policy().statuses() }
     },
     status(input) {
@@ -460,6 +487,7 @@ export function createJdBrowser({ BrowserWindow, maxCaptureChars, loadTimeoutMs,
       const item = await inspect(state)
       if (item.state === 'captured') {
         state.autoCapture = false
+        if (persistDelivery(input.id, state.requestedURL, item)) notifyPending()
         for (const capture of state.windows) startMonitor(capture, state)
       }
       return item

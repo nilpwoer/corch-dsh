@@ -128,7 +128,9 @@ export function createJdCollection({ dataDirectory } = {}) {
       return { state: 'login_required', url: item.url, message: '已有记录包含“登录查看完整内容”等提示，属于部分公开正文，未作为完整 JD 使用。请登录后重新采集完整岗位。' }
     }
     if (!jdHasDuties(item.body)) return undefined
-    if (jdPlatform(url) === 'zhaopin.com' && item.extraction_version !== 1) return undefined
+    const hostname = new URL(url).hostname
+    const scoped = jdPlatform(url) === 'zhaopin.com' || hostname === '58.com' || hostname.endsWith('.58.com')
+    if (scoped && item.extraction_version !== 2) return undefined
     const age = Date.now() - Date.parse(item.captured_at)
     if (age < 0 || age > settings.cache_ttl_ms) return undefined
     const { extraction_version: _version, ...captured } = item
@@ -165,7 +167,7 @@ export function createJdCollection({ dataDirectory } = {}) {
       if (jdLoginWall(item.body)) throw new Error('包含登录墙的部分 JD 不能保存为完整原文缓存')
       if (!jdHasDuties(item.body)) throw new Error('未取得实质岗位职责或任职要求，不能保存为完整原文缓存')
       if (jdUnavailableReason(item.body)) throw new Error('已失效来源不能保存推荐职位为原文缓存')
-      const value = { state: 'captured', url: item.url, title: item.title, body: item.body, captured_at: item.captured_at, content_hash: item.content_hash, cached: false, extraction_version: 1 }
+      const value = { state: 'captured', url: item.url, title: item.title, body: item.body, captured_at: item.captured_at, content_hash: item.content_hash, cached: false, extraction_version: 2 }
       const key = cacheKey(url)
       const wasCaptured = storedCache(key)?.state === 'captured'
       if (directory) atomic(join(directory, key + '.json'), value)

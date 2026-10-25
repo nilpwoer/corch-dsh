@@ -77,6 +77,18 @@ async function run() {
       const opened = await native('open', { id: project.id, url: target.url })
       console.log(JSON.stringify({ phase: 'source_opened', platform: target.id, state: opened.state }))
       assert.equal(opened.state, 'opened')
+      if (target.expect === 'not_a_jd') {
+        const outcome = await native('read', { id: project.id, url: target.url })
+        assert.equal(outcome.state, 'not_a_jd')
+        assert.match(outcome.message, /已失效|不存在/u)
+        assert.equal(Object.hasOwn(outcome, 'body'), false)
+        assert.equal((await rpc('read', { id: project.id })).sources.length, 0)
+        assert.ok(!(await native('pending')).deliveries.some(item => item.project_id === project.id))
+        results.push({ platform: target.id, project_id: project.id, state: 'not_a_jd', source_url: target.url, no_original_saved: true })
+        await native('close', { id: project.id })
+        await save(false)
+        continue
+      }
       const saved = await until(async () => {
         const current = await rpc('read', { id: project.id })
         return current.sources.length ? current : undefined
@@ -85,9 +97,14 @@ async function run() {
       assert.equal(source.acquisition, 'browser')
       assert.equal(saved.session_id, project.session_id)
       assert.ok(source.body.length > 0)
+      if (target.title) assert.equal(source.title, target.title)
+      for (const required of target.includes ?? []) assert.ok(source.body.includes(required), 'Missing selected-job text: ' + required)
+      for (const excluded of target.excludes ?? []) assert.ok(!source.body.includes(excluded), 'Unrelated page text was stored: ' + excluded)
       await until(async () => !(await native('pending')).deliveries.some(item => item.project_id === project.id), 'acknowledged durable delivery')
+      await until(async () => (await native('status', { id: project.id })).state === 'closed', 'capture window closed after Host save')
       results.push({ platform: target.id, project_id: project.id, state: 'saved', source_url: source.source_url,
-        body_chars: source.body.length, content_hash: source.content_hash, captured_at: source.captured_at, acknowledged: true })
+        title: source.title, body_chars: source.body.length, content_hash: source.content_hash, captured_at: source.captured_at,
+        acknowledged: true, closed_after_save: true, content_filters_checked: (target.includes?.length ?? 0) + (target.excludes?.length ?? 0) })
       await save(false)
       await native('close', { id: project.id })
     }

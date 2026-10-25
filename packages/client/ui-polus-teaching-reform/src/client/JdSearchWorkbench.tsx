@@ -439,7 +439,7 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
         controller.saved.current = saved
         publish(saved)
         window.dispatchEvent(new Event('jd-projects-changed'))
-        if (mounted.current) setNotice(`已确认 v${selected.version} 能力图谱，已保存供后续课程建设使用。`)
+        if (mounted.current) setNotice('能力图谱已确认并保存。')
       })
       controller.serial.current = task.catch(() => undefined)
       await task
@@ -666,7 +666,7 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
         <div className={css.actionBar}><div className={css.actionGroup}>
           <button className={css.infoButton} type="button" disabled={busy} onClick={() => { go(3) }}>补充或筛选原文</button>
           <button className={css.infoButton} type="button" disabled={busy || !retained.length} onClick={generate}>生成新版本</button></div>
-        <div className={css.actionGroup}>{confirmed ? <><span className={css.confirmed}>已确认 v{graph.version} · 已保存供课程建设使用</span>
+        <div className={css.actionGroup}>{confirmed ? <><span className={css.confirmed}>已确认</span>
           <button className={css.primaryButton} type="button" disabled={busy} onClick={exportGraph}>导出 HTML</button></> :
           <button className={css.primaryButton} type="button" disabled={busy} onClick={confirm}>确认能力图谱</button>}</div></div>
         {graph.nodes.map(node => <article className={css.card} key={node.id} data-basis={node.basis} style={{ marginInlineStart: ['project', 'task', 'process', 'skill', 'knowledge'].indexOf(node.kind) * 10 }}>

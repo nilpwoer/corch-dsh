@@ -78,6 +78,8 @@
     "login_without_continue_or_read": true,
     "partial_login_original_rejected": true,
     "verification_requires_explicit_resume": true,
+    "windows_close_after_host_ack": true,
+    "interrupted_save_keeps_window": true,
     "origin_project_saved_while_other_selected": true,
     "workbench_hidden": true,
     "other_project_unchanged": true,

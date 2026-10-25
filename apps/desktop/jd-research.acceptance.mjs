@@ -472,7 +472,8 @@ try {
   assert.equal(cached.items[0].captured_at, saved.sources[0].captured_at)
   assert.equal(cached.items[0].content_hash, saved.sources[0].content_hash)
   assert.equal(fixture.siteRequests.length, cacheCount, 'Another project must reuse a cached original without navigation')
-  await detail.close()
+  if (!detail.isClosed()) await detail.waitForEvent('close')
+  assert.equal((await native('status', { id: first.id })).state, 'closed', 'Acknowledged verification recovery closes its capture window')
   await page.reload()
   await page.getByRole('button', { name: 'JD 搜索', exact: true }).waitFor()
   await openResearch(); await selectProject(first.id)
@@ -584,8 +585,8 @@ try {
   assert.equal(await page.locator('nav[aria-label="研究步骤"]').count(), 0, 'The originating workbench must be unmounted before automatic login capture completes')
   await autoCapture.getByLabel('自动采集合成账号', { exact: true }).fill('synthetic-auto-user')
   await autoCapture.getByLabel('自动采集合成密码', { exact: true }).fill('synthetic-auto-password')
+  const automaticClosed = autoCapture.waitForEvent('close')
   await autoCapture.getByRole('button', { name: '登录自动采集合成站点', exact: true }).click()
-  await autoCapture.getByRole('heading', { name: '合成自动存档岗位', exact: true }).waitFor()
   const autoSaved = await savedProject(automatic.id, project => project.sources.some(source => source.body.includes(autoFixtureBody)), 'automatic save after login while another project is selected and Details is closed')
   assert.equal(autoSaved.sources.length, 1)
   assert.equal(autoSaved.sources[0].acquisition, 'browser')
@@ -595,6 +596,8 @@ try {
   assert.deepEqual((await rpc('/jd', 'read', { id: second.id })).sources, secondBeforeAutomatic.sources)
   assert.deepEqual((await rpc('/jd', 'read', { id: second.id })).workspace, secondBeforeAutomatic.workspace)
   await pendingDeliveries(deliveries => deliveries.every(delivery => delivery.project_id !== automatic.id), 'saved delivery acknowledged')
+  await automaticClosed
+  assert.equal((await native('status', { id: automatic.id })).state, 'closed')
 
   const replayUrl = fixture.origin + '/auto-job?replay=1'
   let committedBeforeReload
@@ -615,6 +618,7 @@ try {
   const committedProject = await rpc('/jd', 'read', { id: automatic.id })
   assert.equal(committedProject.sources.filter(source => source.body.includes(autoReplayBody)).length, 1)
   const unacknowledged = await pendingDeliveries(deliveries => deliveries.some(delivery => delivery.project_id === automatic.id && delivery.item.body.includes(autoReplayBody)), 'committed delivery remains unacknowledged before renderer reload')
+  assert.equal((await native('status', { id: automatic.id })).state, 'opened', 'An unanswered save must not close the capture window')
   const replayDeliveryIds = unacknowledged.filter(delivery => delivery.project_id === automatic.id).map(delivery => delivery.id)
   await page.unroute('**/jd/save', interruptSaveResponse)
   await page.reload()
@@ -626,7 +630,7 @@ try {
   assert.equal(replayed.workspace.capture.body, autoDraftText)
   assert.equal(replayed.workspace.capture.company, '自动采集前的用户草稿企业')
   assert.deepEqual((await rpc('/jd', 'read', { id: second.id })).workspace, secondBeforeAutomatic.workspace)
-  await autoCapture.close()
+  assert.equal((await native('status', { id: automatic.id })).state, 'closed', 'Replay acknowledgement closes the recovered capture window')
   checks.push('login alone automatically archives complete originals in the originating project outside its view; partial walls and security verification do not auto-save; drafts survive and an interrupted commit response replays exactly once after reload')
 
   await openResearch()
@@ -709,6 +713,7 @@ try {
     collection_policy: { fetch_and_shell_denied_by_executor: true, browser_requests_only: true, cross_project_platform_stop: true,
       explicit_verified_resume: true, cache_without_navigation: true, persisted_cache_after_restart: true, original_capture_time_preserved: true },
     automatic_capture: { login_without_continue_or_read: true, partial_login_original_rejected: true, verification_requires_explicit_resume: true,
+      windows_close_after_host_ack: true, interrupted_save_keeps_window: true,
       origin_project_saved_while_other_selected: true, workbench_hidden: true, other_project_unchanged: true, user_draft_preserved: true,
       committed_delivery_unacknowledged_before_reload: true, reload_replay_idempotent: true, acknowledgement_after_save: true },
     batch_feedback: { source_saved_before_batch_end: true, visible_saved_count_before_batch_end: true, busy_state_explains_remaining_sources: true,
