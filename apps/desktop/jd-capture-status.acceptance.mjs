@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { fileURLToPath } from 'node:url'
 import { backendEnvironment } from './policy.mjs'
+import { isolateAcceptanceWindows } from './acceptance-windows.mjs'
 
 const entry = fileURLToPath(import.meta.url)
 
@@ -61,7 +62,7 @@ if (process.versions.electron) {
 } else {
   const require = createRequire(import.meta.url)
   const { _electron: electron } = require('playwright')
-  const { values } = parseArgs({ options: { exe: { type: 'string' }, data: { type: 'string' }, out: { type: 'string' } } })
+  const { values } = parseArgs({ options: { exe: { type: 'string' }, data: { type: 'string' }, out: { type: 'string' }, 'show-windows': { type: 'boolean' } } })
   assert.ok(values.exe && values.data && values.out, 'Supply --exe, --data and --out')
   const data = resolve(values.data), out = resolve(values.out)
   await mkdir(data, { recursive: true })
@@ -108,6 +109,7 @@ if (process.versions.electron) {
   try {
     desktop = await electron.launch({ executablePath: resolve(values.exe), args: [entry, '--probe-data', data],
       env: backendEnvironment(process.env, join(data, 'unused')), timeout: 45000 })
+    await isolateAcceptanceWindows(desktop, Boolean(values['show-windows']))
     await start('delayed')
     snapshots.loading = await waitFor(value => value?.visible && value.status_visible && value.status_html.includes('正在打开岗位页面'), 'readable loading view')
     snapshots.empty_loaded_document = await waitFor(value => value?.url === input.url && !value.loading_main_frame && value.status_visible && !value.result, 'empty document after load remains covered until late-rendered text')
@@ -167,7 +169,7 @@ if (process.versions.electron) {
     throw error
   } finally {
     await writeFile(join(out, 'verification.json'), JSON.stringify({ passed, checks, failure, snapshots,
-      actual_electron: true, local_external_pages: true, model_requests: 0 }, null, 2) + '\n')
+      actual_electron: true, local_external_pages: true, test_windows_visible: Boolean(values['show-windows']), model_requests: 0 }, null, 2) + '\n')
     if (desktop) {
       await desktop.evaluate(() => globalThis.jdStatusProbe.stop()).catch(() => {})
       await desktop.close()

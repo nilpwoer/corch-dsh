@@ -101,6 +101,7 @@
     "source_saved_before_batch_end": true,
     "visible_saved_count_before_batch_end": true,
     "busy_state_explains_remaining_sources": true,
+    "automatic_sources_stay_hidden": true,
     "scoped_zhaopin_duties_only": true,
     "expired_recommendations_rejected": true,
     "expired_link_not_a_login_request": true,
@@ -175,6 +176,7 @@
     "shared_dimensions_and_typography": true,
     "four_distinct_steps": true,
     "no_md_pdf_buttons": true,
-    "narrow_controls_fit": true
+    "narrow_controls_fit": true,
+    "source_confirmation_label": "生成图谱"
   }
 }

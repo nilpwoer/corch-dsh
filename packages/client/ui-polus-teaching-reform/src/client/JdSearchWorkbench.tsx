@@ -576,7 +576,7 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
         <Header title="JD 原文与来源" text="先查看并筛选已保存原文，再生成能力图谱。待处理来源不计入样本。" />
         <div className={css.primaryToolbar} aria-label="原文下一步">
           <span>已保留 <strong>{retained.length}</strong> 份原文</span>
-          <button className={css.primaryButton} type="button" disabled={busy || !retained.length} onClick={generate}>{busy ? '正在处理…' : `使用 ${retained.length} 份原文生成五级图谱`}</button>
+          <button className={css.primaryButton} type="button" disabled={busy || !retained.length} onClick={generate}>{busy ? '正在处理…' : '生成图谱'}</button>
         </div>
         {blockedPlatforms > 0 && <div className={css.loginNotice} role="status">
           {blockedPlatforms} 个平台已暂停自动访问。

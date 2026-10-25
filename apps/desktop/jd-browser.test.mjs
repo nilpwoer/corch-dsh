@@ -209,9 +209,10 @@ function browserFixture(result, options = {}) {
       this.webContents.emit('did-stop-loading')
     }
     isDestroyed() { return this.destroyed === true }
-    show() {}
+    isVisible() { return this.visible === true }
+    show() { this.visible = true; this.shows = (this.shows || 0) + 1 }
     restore() {}
-    focus() { this.emit('focus') }
+    focus() { this.focuses = (this.focuses || 0) + 1; this.emit('focus') }
     destroy() { this.destroyed = true; this.emit('closed') }
   }
   return { browser: createJdBrowser({ BrowserWindow: Window, WebContentsView: StatusView, maxCaptureChars: 250000, loadTimeoutMs: 10000, ...options }), windows, navigations, requests }
@@ -360,6 +361,10 @@ test('browser-rendered collection reuses one platform window and durable cache a
   const first = await fixture.browser.collect({ id: 'project-1', sources: [{ url: firstSource }, { url: secondSource }] })
   assert.deepEqual(first.items.map(item => item.state), ['captured', 'captured'])
   assert.equal(fixture.windows.length, 1)
+  assert.equal(fixture.windows[0].isVisible(), false)
+  assert.equal(fixture.windows[0].shows || 0, 0)
+  assert.equal(fixture.windows[0].focuses || 0, 0)
+  assert.equal(fixture.windows[0].options.webPreferences.backgroundThrottling, false)
   assert.ok(fixture.navigations[1].time - fixture.navigations[0].time >= 90)
   const cached = await fixture.browser.collect({ id: 'project-2', sources: [{ url: firstSource }] })
   assert.equal(cached.items[0].cached, true)
@@ -377,6 +382,7 @@ test('security page blocks queued URLs, background requests, redirects and popup
   const fixture = durableFixture(t, url => read(challenge ? '<title>安全验证</title><main>请完成安全验证</main>' : detail, url))
   const result = await fixture.browser.collect({ id: 'project-1', sources: [{ url: firstSource }, { url: secondSource }] })
   assert.deepEqual(result.items.map(item => item.state), ['blocked', 'blocked'])
+  assert.equal(fixture.windows[0].isVisible(), false, 'Automatic security stops must wait for explicit verification in the workbench')
   assert.equal(fixture.navigations.length, 1)
   const contents = fixture.windows[0].webContents
   const request = details => new Promise(resolve => fixture.requests.before({ webContentsId: contents.id, resourceType: 'xhr', url: firstSource, ...details }, resolve))
@@ -424,6 +430,8 @@ test('login-required platform pauses other candidates and reuses the same persis
   const batch = await fixture.browser.collect({ id: 'project-1', sources: [{ url: firstSource }, { url: secondSource }] })
   assert.deepEqual(batch.items.map(item => item.state), ['login_required', 'login_required'])
   assert.equal(fixture.navigations.length, 1)
+  assert.equal(fixture.windows[0].isVisible(), true)
+  assert.equal(fixture.windows[0].shows, 1, 'Only the first login-required source can present the shared platform window')
   loggedIn = true
   assert.equal((await fixture.browser.read({ id: 'project-1', url: firstSource })).state, 'captured')
   assert.equal(fixture.browser.platforms()[0].login_required, false)
@@ -433,6 +441,23 @@ test('login-required platform pauses other candidates and reuses the same persis
   assert.equal(fixture.browser.status({ id: 'project-1' }).state, 'closed')
   fixture.browser.close({ id: 'project-1' })
   assert.equal(fixture.browser.status({ id: 'project-2' }).state, 'opened')
+})
+
+test('automatic child windows stay hidden while an explicitly opened source remains visible', async t => {
+  const fixture = durableFixture(t, url => read(detail, url))
+  try {
+    await fixture.browser.collect({ id: 'background-project', sources: [{ url: firstSource }] })
+    const parent = fixture.windows[0]
+    const popupOptions = parent.webContents.windowOpenHandler({ url: secondSource }).overrideBrowserWindowOptions
+    const popup = new parent.constructor(popupOptions)
+    parent.webContents.emit('did-create-window', popup)
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(parent.isVisible(), false)
+    assert.equal(popup.isVisible(), false)
+    assert.equal(popup.focuses || 0, 0)
+    await fixture.browser.open({ id: 'background-project', url: firstSource })
+    assert.equal(popup.isVisible(), true, 'The explicit open action may foreground its current platform window')
+  } finally { fixture.browser.dispose() }
 })
 
 test('batch limits retain an explicit pending outcome for every excess source', async t => {
@@ -531,6 +556,7 @@ test('render timeout is bounded and cancels late background navigation instead o
   const batch = await pending
   assert.equal(batch.items[0].state, 'failed')
   assert.match(batch.items[0].message, /渲染超时/u)
+  assert.equal(fixture.windows[0].isVisible(), false)
   assert.equal(fixture.navigations.length, 1)
   const background = await new Promise(resolve => fixture.requests.before({ webContentsId: fixture.windows[0].webContents.id, resourceType: 'xhr', url: firstSource }, resolve))
   assert.equal(background.cancel, true)

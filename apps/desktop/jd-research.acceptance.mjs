@@ -7,11 +7,12 @@ import { resolve, join, sep } from 'node:path'
 import { parseArgs } from 'node:util'
 import { pathToFileURL } from 'node:url'
 import { backendEnvironment } from './policy.mjs'
+import { isolateAcceptanceWindows } from './acceptance-windows.mjs'
 import { autoFixtureBody, autoReplayBody, delayedFixtureBody, feedbackFixtureBody, fixtureBody, startJdFixture } from './jd-research-fixture.mjs'
 
 const require = createRequire(import.meta.url)
 const { _electron: electron } = require('playwright')
-const { values } = parseArgs({ options: { exe: { type: 'string' }, data: { type: 'string' }, out: { type: 'string' }, source: { type: 'boolean' }, update: { type: 'boolean' }, 'live-shell': { type: 'boolean' } } })
+const { values } = parseArgs({ options: { exe: { type: 'string' }, data: { type: 'string' }, out: { type: 'string' }, source: { type: 'boolean' }, update: { type: 'boolean' }, 'live-shell': { type: 'boolean' }, 'show-windows': { type: 'boolean' } } })
 assert.ok(values.exe && values.data && values.out, 'Supply --exe, --data and --out')
 const data = resolve(values.data), out = resolve(values.out)
 await mkdir(out, { recursive: true })
@@ -31,21 +32,30 @@ const graphSaveRequests = []
 const presentation = {}
 async function saveVerification() {
   await writeFile(join(out, 'verification.json'), JSON.stringify({ passed, checks, errors, failure, presentation,
-    actual_desktop: true, actual_loader: true, synthetic_external_systems: true, native_shell_real: Boolean(values['live-shell']), paid_model_calls: 0 }, null, 2) + '\n')
+    actual_desktop: true, actual_loader: true, synthetic_external_systems: true, native_shell_real: Boolean(values['live-shell']), test_windows_visible: Boolean(values['show-windows']), paid_model_calls: 0 }, null, 2) + '\n')
 }
 async function launch() {
   desktop = await electron.launch({ executablePath: resolve(values.exe), args: [...(values.source ? [resolve('apps/desktop/main.mjs')] : []), '--data-dir', data, '--lang=zh-CN'],
     env: backendEnvironment(process.env, join(data, 'unused')), timeout: 45000 })
+  await isolateAcceptanceWindows(desktop, Boolean(values['show-windows']))
   desktop.process().stderr?.on('data', (chunk) => {
     void appendFile(join(out, 'electron-stderr.log'), chunk).catch(error => console.error('Could not save Electron diagnostics:', error.message))
   })
   page = await desktop.firstWindow({ timeout: 60000 })
-  await desktop.evaluate(({ shell }, live) => {
+  if (!values['show-windows']) assert.ok(await desktop.evaluate(({ BrowserWindow }) =>
+    BrowserWindow.getAllWindows().every(window => window.getOpacity() === 0 && !window.isFocusable())), 'Isolated acceptance must not display windows or acquire keyboard focus')
+  await desktop.evaluate(({ app, shell }, live) => {
     const openPath = shell.openPath.bind(shell), showItemInFolder = shell.showItemInFolder.bind(shell)
     globalThis.jdAcceptanceOpened = []
     globalThis.jdAcceptanceShown = []
     globalThis.jdAcceptanceShellActions = []
     globalThis.jdAcceptanceLaunchError = ''
+    globalThis.jdAcceptanceCapturePresentations = []
+    app.on('browser-window-created', (_event, window) => {
+      window.on('show', () => {
+        if (window.getTitle().startsWith('JD 采集')) globalThis.jdAcceptanceCapturePresentations.push(window.webContents.id)
+      })
+    })
     shell.openPath = async path => {
       const injected = Boolean(globalThis.jdAcceptanceLaunchError)
       const error = injected ? globalThis.jdAcceptanceLaunchError : live ? await openPath(path) : ''
@@ -204,13 +214,15 @@ async function compactFirstScreen(sourceTitle, count) {
           }
           return { visible, left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom }
         }
-        const generate = [...main.querySelectorAll('button')].find(element => element.textContent.trim() === `使用 ${count} 份原文生成五级图谱`)
+        const next = main.querySelector('[aria-label="原文下一步"]')
+        const generate = [...(next?.querySelectorAll('button') || [])].find(element => element.textContent.trim() === '生成图谱')
         const source = [...main.querySelectorAll('h3')].find(element => element.textContent.includes(sourceTitle))
         return { width: innerWidth, height: innerHeight, client_width: main.clientWidth, scroll_width: main.scrollWidth,
-          generate: generate && describe(generate), source: source && describe(source) }
+          generate: generate && describe(generate), retained_count: next?.textContent.replace(/\s+/gu, ' ').includes(`已保留 ${count} 份原文`), source: source && describe(source) }
       }, { sourceTitle, count })
       assert.ok(result.scroll_width <= result.client_width + 1, 'Compact workbench must not overflow horizontally')
       assert.equal(result.generate?.visible, true, 'Next-step action must be visible on the first screen')
+      assert.equal(result.retained_count, true, 'Next-step action must retain the saved-original count')
       assert.equal(result.source?.visible, true, 'A saved original must be visible on the first screen')
       await page.screenshot({ path: join(out, `compact-first-screen-${width}.png`), fullPage: false })
       measurements.push(result)
@@ -408,6 +420,8 @@ try {
   await page.getByRole('button', { name: '开始检索', exact: true }).click()
   const capture = await captureOpened
   await capture.getByRole('button', { name: '登录合成站点', exact: true }).waitFor()
+  for (let attempt = 0; attempt < 100 && !await desktop.evaluate(() => globalThis.jdAcceptanceCapturePresentations.length); attempt++) await new Promise(resolve => setTimeout(resolve, 100))
+  assert.ok(await desktop.evaluate(() => globalThis.jdAcceptanceCapturePresentations.length > 0), 'The hidden test harness must still observe a native login-window show event')
   const rawModelJson = page.locator('p:visible').filter({ hasText: /^\{"pending":/u })
   assert.equal(await page.locator('[aria-label="岗位研究工作台区域"] p:visible').filter({ hasText: /^\{"pending":/u }).count(), 0, 'Structured research must not render model JSON')
   const searchedProject = await savedProject(first.id, project => project.pending_sources.some(source => source.url === 'http://insecure-recruitment.invalid/job' && /不支持安全访问/u.test(source.reason)), 'unsupported candidate recorded independently')
@@ -555,7 +569,7 @@ try {
   await page.getByRole('heading', { name: 'JD 原文与来源' }).waitFor()
   assert.equal(await continueCapture.isVisible(), false, 'Closed capture cannot remain actionable after reload')
   checks.push('search-only executor rejects fetch and shell; browser-first login and challenge pages remain unverified; a platform circuit blocks other projects until explicit verification reads a real JD; cache hits do not navigate')
-  await page.getByRole('button', { name: '使用 1 份原文生成五级图谱', exact: true }).click()
+  await page.locator('[aria-label="原文下一步"]').getByRole('button', { name: '生成图谱', exact: true }).click()
   await page.getByRole('status').filter({ hasText: '图谱未通过校验，正在重新生成（4/4）…' }).waitFor()
   await page.getByRole('heading', { name: '五级岗位能力图谱', exact: true }).waitFor({ timeout: 60000 })
   const graphProject = await rpc('/jd', 'read', { id: first.id })
@@ -777,6 +791,7 @@ try {
   await page.getByRole('textbox', { name: '岗位名称（可手动修改，使用顿号分隔）', exact: true }).fill('数据接口维护员')
   await rpc('/api', 'session.selectModel', { sessionId: feedback.session_id, provider: 'jd-fixture', model: 'jd-fixture-model' })
   await page.getByRole('button', { name: '确认岗位并继续', exact: true }).click()
+  const presentationsBeforeBatch = await desktop.evaluate(() => globalThis.jdAcceptanceCapturePresentations.length)
   await page.getByRole('button', { name: '开始检索', exact: true }).click()
   for (let attempt = 0; attempt < 300 && fixture.pendingSlowJobs() === 0; attempt++) await new Promise(resolve => setTimeout(resolve, 100))
   assert.equal(fixture.pendingSlowJobs(), 1, 'The batch must still be waiting on its unfinished second HTTP page')
@@ -800,6 +815,7 @@ try {
   assert.ok(feedbackSaved.sources.some(source => source.body.includes(delayedFixtureBody)))
   assert.ok(feedbackSaved.sources.every(source => !source.source_url.endsWith('/unavailable-job') && !source.body.includes('推荐照护岗位')))
   assert.equal(feedbackSaved.pending_sources.length, 1)
+  assert.equal(await desktop.evaluate(() => globalThis.jdAcceptanceCapturePresentations.length), presentationsBeforeBatch, 'Readable sources and unavailable pages must not present automatic capture windows')
   assert.match(feedbackSaved.pending_sources[0].reason, /失效|不存在/u)
   await page.waitForFunction(() => document.querySelector('[data-jd-save-complete]')?.textContent.includes('已保存 2 份浏览器 JD'))
   const unavailableVisits = fixture.siteRequests.filter(request => request.path === '/unavailable-job').length
@@ -851,7 +867,7 @@ try {
       windows_close_after_host_ack: true, interrupted_save_keeps_window: true,
       origin_project_saved_while_other_selected: true, workbench_hidden: true, other_project_unchanged: true, user_draft_preserved: true,
       committed_delivery_unacknowledged_before_reload: true, reload_replay_idempotent: true, acknowledgement_after_save: true },
-    batch_feedback: { source_saved_before_batch_end: true, visible_saved_count_before_batch_end: true, busy_state_explains_remaining_sources: true,
+    batch_feedback: { source_saved_before_batch_end: true, visible_saved_count_before_batch_end: true, busy_state_explains_remaining_sources: true, automatic_sources_stay_hidden: true,
       scoped_zhaopin_duties_only: true, expired_recommendations_rejected: true, expired_link_not_a_login_request: true,
       no_automatic_expired_retry_after_reload: true },
     compact_workbench: { saved_source_and_generation_first_screen: true, content_widths_checked: [1360, 1024], no_horizontal_overflow: true,
@@ -867,7 +883,7 @@ try {
       readable_numbered_sources: true, offline_original_navigation_without_scripts: true, internal_ids_not_rendered: true,
       native_file_association: true, resolved_launch_error_reveals_saved_report: true },
     file_import: { txt_loaded: true, md_loaded: true, keyboard_same_file_reselection: true, filename_feedback: true, unsaved_draft_restored: true },
-    graph_actions: { shared_dimensions_and_typography: true, four_distinct_steps: true, no_md_pdf_buttons: true, narrow_controls_fit: true },
+    graph_actions: { shared_dimensions_and_typography: true, four_distinct_steps: true, no_md_pdf_buttons: true, narrow_controls_fit: true, source_confirmation_label: '生成图谱' },
   }
   const expectedPath = new URL('./snapshots/jd-research.expected.json', import.meta.url)
   if (values.update) await writeFile(expectedPath, JSON.stringify(actual, null, 2) + '\n')

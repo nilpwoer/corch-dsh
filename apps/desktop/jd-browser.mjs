@@ -170,13 +170,17 @@ export function createJdBrowser({ BrowserWindow, WebContentsView, maxCaptureChar
   let disposed = false
   let automaticError
   const policy = () => collection ||= createJdCollection({ dataDirectory })
-  const preferences = { nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true }
+  const preferences = { nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true, backgroundThrottling: false }
   const blockedItem = url => ({ state: 'blocked', url, message: '平台触发了安全验证或访问限制，已停止重复采集及后台访问。请点击“处理平台验证”，亲自验证后恢复；也可导入已获授权的原文。' })
   const validateId = id => {
     if (typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/u.test(id)) throw new Error('采集项目标识无效')
     if (disposed) throw new Error('JD 采集服务已关闭')
   }
   const activeWindow = state => state && (state.activeWindow && !state.activeWindow.isDestroyed() ? state.activeWindow : [...state.windows].find(window => !window.isDestroyed()))
+  const presentWindow = window => {
+    if (disposed || window.isDestroyed()) return
+    window.show(); window.restore(); window.focus()
+  }
   const showStatus = (window, state, kind) => presentations.get(window)?.show(kind, state.platform) || Promise.resolve()
   const showStatusLater = (window, state, kind) => {
     void showStatus(window, state, kind).catch(() => {
@@ -313,10 +317,15 @@ export function createJdBrowser({ BrowserWindow, WebContentsView, maxCaptureChar
       return { action: 'allow', outlivesOpener: true, overrideBrowserWindowOptions: { show: false, width: 1360, height: 860, useContentSize: true, webPreferences: { ...preferences, session: window.webContents.session } } }
     })
     window.webContents.on('did-create-window', popup => {
+      const interactive = !window.isDestroyed() && window.isVisible()
       protect(popup, state)
       popup.jdLoadTimer = setTimeout(() => failWindow(popup, state, 'timeout', '页面加载超时，请重新打开来源；未自动重试。'), loadTimeoutMs)
       void showStatus(popup, state, 'loading').then(() => {
-        if (!popup.isDestroyed()) { popup.show(); popup.focus(); revealContent(popup, state); startMonitor(popup, state) }
+        if (!popup.isDestroyed()) {
+          if (interactive) presentWindow(popup)
+          revealContent(popup, state)
+          startMonitor(popup, state)
+        }
       }).catch(() => { /* The local status view preserves a readable native title when its own document fails. */ })
     })
     const browserSession = window.webContents.session
@@ -436,7 +445,7 @@ export function createJdBrowser({ BrowserWindow, WebContentsView, maxCaptureChar
     policy().cache(sourceURL, item)
     return item
   }
-  const navigate = async (state, url) => {
+  const navigate = async (state, url, { interactive = false } = {}) => {
     const permission = await policy().reserve(url)
     if (disposed) throw new Error('JD 采集服务已关闭')
     if (permission === 'blocked' || permission === 'rate_limited') {
@@ -460,7 +469,7 @@ export function createJdBrowser({ BrowserWindow, WebContentsView, maxCaptureChar
     try {
       await showStatus(window, state, 'loading')
       if (window.isDestroyed()) throw new Error('采集窗口已关闭')
-      window.show(); window.restore(); window.focus()
+      if (interactive) presentWindow(window)
       const operation = async () => {
         try { await window.loadURL(url) }
         catch (error) {
@@ -514,7 +523,7 @@ export function createJdBrowser({ BrowserWindow, WebContentsView, maxCaptureChar
       }
       return policy().run(url, async () => {
         if (state.bindingGeneration !== binding) return { state: 'failed', url, message: '采集来源已切换，此次打开已停止。' }
-        const item = await navigate(state, url)
+        const item = await navigate(state, url, { interactive: true })
         if (item.state === 'captured' && state.bindingGeneration === binding) deliver(state, item)
         return ['blocked', 'rate_limited', 'failed'].includes(item.state) ? item : { id: input.id, state: 'opened' }
       })
@@ -546,6 +555,8 @@ export function createJdBrowser({ BrowserWindow, WebContentsView, maxCaptureChar
           if (item.state === 'captured' && state.bindingGeneration === binding && persistDelivery(input.id, source.url, item)) notifyPending()
           if (item.state === 'login_required') {
             state.autoCapture = true
+            const loginWindow = activeWindow(state)
+            if (loginWindow && state.bindingGeneration === binding) presentWindow(loginWindow)
             for (const capture of state.windows) startMonitor(capture, state)
           }
           return item

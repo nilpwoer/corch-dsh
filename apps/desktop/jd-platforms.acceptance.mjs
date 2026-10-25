@@ -17,13 +17,14 @@ app.setPath('userData', join(data, 'electron'))
 app.setPath('sessionData', join(data, 'electron'))
 const targets = JSON.parse(readFileSync(resolve(values.targets), 'utf8'))
 assert.ok(Array.isArray(targets) && targets.length > 0 && targets.length <= 20)
-const windows = new Set(), navigations = [], requests = [], results = [], commands = []
+const windows = new Set(), navigations = [], requests = [], results = [], commands = [], presentations = []
 const observedSessions = new Set()
 const redact = value => { try { const url = new URL(value); return url.origin + url.pathname } catch { return 'invalid-url' } }
 class ObservedWindow extends BrowserWindow {
   constructor(options) {
     super(options)
     windows.add(this)
+    this.on('show', () => presentations.push({ at: new Date().toISOString(), url: redact(this.webContents.getURL()) }))
     this.once('closed', () => windows.delete(this))
     if (!observedSessions.has(this.webContents.session)) {
       observedSessions.add(this.webContents.session)
@@ -43,9 +44,9 @@ const compact = item => {
 }
 async function save() {
   const snapshot = { recorded_at: new Date().toISOString(), actual_platforms: true, remote_debugging: false,
-    results, navigations, requests, commands, platforms: await broker.platforms(),
+    results, navigations, requests, commands, presentations, platforms: await broker.platforms(),
     windows: [...windows].filter(window => !window.isDestroyed()).map(window => ({
-      url: redact(window.webContents.getURL()), content_size: window.getContentSize(), size: window.getSize(), minimum_size: window.getMinimumSize(),
+      url: redact(window.webContents.getURL()), visible: window.isVisible(), content_size: window.getContentSize(), size: window.getSize(), minimum_size: window.getMinimumSize(),
     })) }
   await writeFile(join(out, 'live-results.json'), JSON.stringify(snapshot, null, 2) + '\n', { mode: 0o600 })
 }

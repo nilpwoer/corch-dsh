@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { JdSearchSidebar, JdSearchWorkbench } from '../src/client/JdSearchWorkbench.tsx'
 import type { JdBrowserDelivery, TeachingReformProps } from '../src/client/types.ts'
@@ -113,7 +113,7 @@ test('saved originals and the next action precede collapsed failure and import s
     next_navigation_at: '2999-01-01T00:00:00.000Z',
   })))
   render(<JdSearchWorkbench {...input} />)
-  const next = await screen.findByRole('button', { name: '使用 3 份原文生成五级图谱' })
+  const next = within(await screen.findByLabelText('原文下一步')).getByRole('button', { name: '生成图谱' })
   const saved = screen.getByRole('region', { name: '已保存原文' })
   const pending = disclosure('待处理来源（9）')
   expect(next.compareDocumentPosition(saved) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
@@ -367,7 +367,7 @@ test('empty search results explain import and keep graph generation disabled', a
   render(<JdSearchWorkbench {...input} />)
   await enterSearch()
   expect(await screen.findByText('尚无已保存原文，可调整搜索范围、登录采集或导入正文。')).toBeTruthy()
-  expect(screen.getByRole<HTMLButtonElement>('button', { name: '使用 0 份原文生成五级图谱' }).disabled).toBe(true)
+  expect(within(screen.getByLabelText('原文下一步')).getByRole<HTMLButtonElement>('button', { name: '生成图谱' }).disabled).toBe(true)
 })
 test('archived search targets and range are read-only until an independent search is created', async () => {
   const value = { ...draft(), major: '养老护理', roles: ['护理员'] }
@@ -688,13 +688,13 @@ test('a restored partial original blocks new model analysis until it is excluded
   value.workspace = { ...draft().workspace!, step: 3 }
   const { input, records } = fixture([value])
   render(<JdSearchWorkbench {...input} />)
-  fireEvent.click(await screen.findByRole('button', { name: '使用 1 份原文生成五级图谱' }))
+  fireEvent.click(within(await screen.findByLabelText('原文下一步')).getByRole('button', { name: '生成图谱' }))
   await screen.findByText(/以下 JD 存在完整内容登录限制/)
   expect(input.generateJdGraph).not.toHaveBeenCalled()
   expect(records.get(value.id)?.sources[0]?.body).toBe(value.sources[0]!.body)
   expect(records.get(value.id)?.graphs).toEqual([])
   fireEvent.click(screen.getByRole('button', { name: '剔除原文' }))
-  await waitFor(() => { expect(screen.getByRole<HTMLButtonElement>('button', { name: '使用 0 份原文生成五级图谱' }).disabled).toBe(true) })
+  await waitFor(() => { expect(within(screen.getByLabelText('原文下一步')).getByRole<HTMLButtonElement>('button', { name: '生成图谱' }).disabled).toBe(true) })
 })
 test('confirmation is durable and HTML export is available only for the selected confirmed version', async () => {
   const value = projectFixture()
