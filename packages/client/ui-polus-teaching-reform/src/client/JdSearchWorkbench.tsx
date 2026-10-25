@@ -10,6 +10,10 @@ import { flushJdResearch, jdResearchController, notifyJdResearch } from './jdPro
 
 const STEPS = ['搜索目标', '平台与范围', 'JD 原文', '能力图谱']
 const PLATFORMS = ['公开网页', '58 同城', 'BOSS 直聘', '智联招聘', '前程无忧 51job', '鱼泡直聘', '四川高校人才网']
+const LEVEL_NAMES = { project: '项目', task: '任务', process: '流程', skill: '技能点', knowledge: '知识点' } as const
+function displayTime(value: string): string {
+  return new Date(value).toLocaleString('zh-CN', { hour12: false })
+}
 type FlushRequest = { waits: Promise<void>[] }
 async function flushWorkbench(): Promise<void> {
   const detail: FlushRequest = { waits: [] }
@@ -98,8 +102,8 @@ function workspace(project: JdProject): JdWorkspace {
     error: '',
   }
 }
-function Header({ step, title, text }: { step: number; title: string; text: string }): ReactNode {
-  return <div className={css.sectionIntro}><span className={css.eyebrow}>STEP 0{step}</span><h2>{title}</h2><p>{text}</p></div>
+function Header({ title, text }: { title: string; text: string }): ReactNode {
+  return <div className={css.sectionIntro}><h2>{title}</h2><p>{text}</p></div>
 }
 function platformForUrl(url: string, platforms: JdPlatformState[]): JdPlatformState | undefined {
   let hostname: string
@@ -478,14 +482,13 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
     && project.pending_sources.some(source => platformForUrl(source.url, platforms)?.platform === item.platform)).length
   const savedNotice = /JD 原文和来源已保存|该 JD 原文已保存|已复用浏览器采集缓存/u.test(notice)
   return <div className={css.workbench}>
-    <header className={css.header}><div><span className={css.kicker}>岗位研究工作台</span><h1>JD 搜索与岗位能力图谱</h1>
-      <p>搜索与原文自动保存，确认图谱后用于课程建设。</p></div></header>
+    <header className={css.header}><h1>JD 搜索与岗位能力图谱</h1></header>
     <main className={css.content}>
       <div className={css.saveStatus}>{(saving || state.step !== 3 || !latestBrowserSource)
         && <span className={css.muted} role="status">{saving ? '正在保存…' : '已自动保存'}</span>}
       <details className={css.recordDetails}><summary>搜索记录详情</summary>
-        <p>修订 {project.revision} · {project.sources.length} 份原文 · {project.graphs.length} 个图谱版本</p>
-        <p>更新时间：{project.updated_at}</p>
+        <p>{project.sources.length} 份原文 · {project.graphs.length} 个图谱版本</p>
+        <p>更新时间：{displayTime(project.updated_at)}</p>
       </details>
       </div>
       {error && <div className={css.loginNotice} role="alert">{error}{saveError && <button className={css.infoButton} type="button" disabled={busy} onClick={() => { run(async () => {
@@ -498,7 +501,7 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
         <button type="button" key={label} disabled={busy || (index === 3 && !graph)} className={state.step === index + 1 ? css.progressActive : css.progressButton}
           onClick={() => { go((index + 1) as JdWorkspace['step']) }}>{index + 1} {label}</button>)}</nav>
       {state.step === 1 && <>
-        <Header step={1} title="从学科专业推理实际岗位" text="填写专业和岗位名称后自动保存，也可以由模型推理岗位建议。搜索目标与后续原文保存在本次独立会话。" />
+        <Header title="从学科专业推理实际岗位" text="填写专业和岗位名称，也可自动获取岗位建议。" />
         <div className={css.card}>
           <label className={css.label}>学科 / 专业<input className={css.input} value={project.major} disabled={targetLocked}
             onChange={(event) => {
@@ -516,7 +519,7 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
           <button className={css.primaryButton} type="button" disabled={busy || !project.roles.length} onClick={() => { go(2) }}>确认岗位并继续</button></div>
       </>}
       {state.step === 2 && <>
-        <Header step={2} title="选择平台与搜索范围" text="选择要搜索的平台、地区和岗位数量。" />
+        <Header title="选择平台与搜索范围" text="选择要搜索的平台、地区和岗位数量。" />
         <div className={css.platformGrid}>{PLATFORMS.map(platform => <button className={project.platforms.includes(platform) ? css.platformActive : css.platform} type="button" key={platform}
           aria-pressed={project.platforms.includes(platform)} disabled={targetLocked} onClick={() => { change(value => ({ ...value,
             platforms: value.platforms.includes(platform)
@@ -548,7 +551,7 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
           {busy ? '正在检索…' : state.search_status === 'draft' ? '开始检索' : '以此范围新建搜索'}</button></div>
       </>}
       {state.step === 3 && <>
-        <Header step={3} title="JD 原文与来源" text="先查看并筛选已保存原文，再生成能力图谱。待处理来源不计入样本。" />
+        <Header title="JD 原文与来源" text="先查看并筛选已保存原文，再生成能力图谱。待处理来源不计入样本。" />
         <div className={css.primaryToolbar} aria-label="原文下一步">
           <span>已保留 <strong>{retained.length}</strong> 份原文</span>
           <button className={css.primaryButton} type="button" disabled={busy || !retained.length} onClick={generate}>{busy ? '正在处理…' : `使用 ${retained.length} 份原文生成五级图谱`}</button>
@@ -565,7 +568,7 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
         <section aria-label="已保存原文" className={css.sourceList}>
           {project.sources.length === 0 && <div className={css.notice}>尚无已保存原文，可调整搜索范围、登录采集或导入正文。</div>}
           {project.sources.map(source => <article className={css.card} key={source.id}><h3>{source.title} {source.excluded ? '（已剔除）' : ''}</h3>
-            <p>{source.company} · {source.platform} · {source.acquisition === 'manual' ? '用户提供，未独立联网核验' : source.acquisition === 'browser' ? '浏览器已读取' : '公开 HTTP 已读取'}</p>
+            <p>{source.company} · {source.platform} · {source.acquisition === 'manual' ? '手动导入，来源未核验' : '网页采集'}</p>
             <div className={css.sourceActions}><a href={source.source_url} target="_blank" rel="noopener noreferrer">原始来源</a>
               <button type="button" className={css.infoButton} disabled={busy} onClick={() => { run(async () => {
                 change(value => ({ ...value, sources: value.sources.map(item => item.id === source.id
@@ -574,9 +577,9 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
                 await flush()
               }) }}>{source.excluded ? '恢复原文' : '剔除原文'}</button>
             </div>
-            <details className={css.evidenceDetails}><summary>查看完整原文和证据编号</summary>
-              <p>{source.id}</p><p className={css.muted}>采集时间：{source.captured_at}</p>
-              <p className={css.muted}>SHA-256：{source.content_hash}</p><pre className={css.sourceBody}>{source.body}</pre>
+            <details className={css.evidenceDetails}><summary>查看完整原文</summary>
+              <p className={css.muted}>采集时间：{displayTime(source.captured_at)}</p>
+              <pre className={css.sourceBody}>{source.body}</pre>
             </details>
           </article>)}
         </section>
@@ -655,29 +658,32 @@ function ResearchSession(props: TeachingReformProps): ReactNode {
         <div className={css.footer}><button className={css.infoButton} type="button" disabled={busy} onClick={() => { go(2) }}>调整搜索范围</button></div>
       </>}
       {state.step === 4 && graph && <>
-        <Header step={4} title="五级岗位能力图谱" text="原文直接陈述与推断分开标记；样本引用频率不代表市场总体需求。确认后保存所选版本供课程建设使用，新版本需重新确认。" />
+        <Header title="五级岗位能力图谱" text="推断内容需专家核实；引用频率仅代表本次样本。" />
         <label className={css.label}>图谱版本<select className={css.input} value={graph.version} disabled={busy}
           onChange={(event) => {
             const graph_version = Number(event.target.value)
             run(async () => { changeWorkspace({ graph_version }); await flush() })
           }}>
           {project.graphs.map(item => <option key={item.version} value={item.version}>
-            v{item.version} · {item.generated_at}</option>)}</select></label>
+            v{item.version} · {displayTime(item.generated_at)}</option>)}</select></label>
         <div className={css.actionBar}><div className={css.actionGroup}>
           <button className={css.infoButton} type="button" disabled={busy} onClick={() => { go(3) }}>补充或筛选原文</button>
           <button className={css.infoButton} type="button" disabled={busy || !retained.length} onClick={generate}>生成新版本</button></div>
         <div className={css.actionGroup}>{confirmed ? <><span className={css.confirmed}>已确认</span>
           <button className={css.primaryButton} type="button" disabled={busy} onClick={exportGraph}>导出 HTML</button></> :
           <button className={css.primaryButton} type="button" disabled={busy} onClick={confirm}>确认能力图谱</button>}</div></div>
-        {graph.nodes.map(node => <article className={css.card} key={node.id} data-basis={node.basis} style={{ marginInlineStart: ['project', 'task', 'process', 'skill', 'knowledge'].indexOf(node.kind) * 10 }}>
-          <p className={css.muted}>{node.id} · 父节点 {node.parent_id ?? '无'} · {({ project: '项目', task: '任务', process: '流程', skill: '技能点', knowledge: '知识点' } as const)[node.kind]}</p>
-          <h3>{node.title} <span className={css.pill}>{node.basis === 'direct' ? '原文直接陈述' : '推断 · 待专家核实'}</span></h3>
-          <p>{node.description}</p><small>{frequency(node, graph)}</small>{node.assessment && <p>评价建议（推断）：{node.assessment}</p>}
-          {node.evidence.map((entry, index) => {
-            const source = project.sources.find(item => item.id === entry.jd_id)
-            return <details key={index}>
-              <summary>原文依据 · {source?.title ?? entry.jd_id}</summary><blockquote>{entry.quote}</blockquote><p>{entry.jd_id}</p><a href={source?.source_url} target="_blank" rel="noopener noreferrer">查看来源</a></details> })}
-        </article>)}
+        {graph.nodes.map((node) => {
+          const parent = graph.nodes.find(item => item.id === node.parent_id)
+          return <article className={css.card} key={node.id} data-basis={node.basis} style={{ marginInlineStart: ['project', 'task', 'process', 'skill', 'knowledge'].indexOf(node.kind) * 10 }}>
+            <p className={css.muted}>{LEVEL_NAMES[node.kind]}{parent ? ` · 所属${LEVEL_NAMES[parent.kind]}：${parent.title}` : ''}</p>
+            <h3>{node.title} <span className={css.pill}>{node.basis === 'direct' ? '原文直接陈述' : '推断 · 待专家核实'}</span></h3>
+            {node.description.trim() !== node.title.trim() && <p>{node.description}</p>}
+            <small>{frequency(node, graph)}</small>{node.assessment && <p>评价建议（推断）：{node.assessment}</p>}
+            {node.evidence.map((entry, index) => {
+              const source = project.sources.find(item => item.id === entry.jd_id)
+              return <details key={index}>
+                <summary>原文依据 · {source?.title ?? '岗位原文'}</summary><blockquote>{entry.quote}</blockquote>{source && <a href={source.source_url} target="_blank" rel="noopener noreferrer">查看来源</a>}</details> })}
+          </article> })}
       </>}
     </main>
   </div>

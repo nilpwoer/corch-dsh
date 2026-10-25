@@ -104,6 +104,8 @@
       1024
     ],
     "no_horizontal_overflow": true,
+    "human_readable_hierarchy_and_dates": true,
+    "internal_ids_and_hashes_not_rendered": true,
     "optional_disclosures_closed_by_default": true,
     "disclosures_preserve_capture_and_import": true,
     "raw_json_hidden_by_default": true,

@@ -484,6 +484,14 @@ try {
   await page.getByRole('heading', { name: '五级岗位能力图谱', exact: true }).waitFor({ timeout: 60000 })
   const graphProject = await rpc('/jd', 'read', { id: first.id })
   assert.equal(graphProject.graphs.length, 1)
+  const graphText = await page.locator('section[aria-label="JD 研究工作台"] main').innerText()
+  assert.ok(!/父节点|SHA-256|JD-[A-Za-z0-9-]+|STEP 0/u.test(graphText), 'Graph UI must describe capabilities without internal identifiers')
+  assert.ok(graphText.includes('所属项目：'))
+  assert.equal(await page.locator('article[data-basis]').evaluateAll(cards => cards.some((card) => {
+    const heading = card.querySelector('h3')?.firstChild?.textContent.trim()
+    return [...card.querySelectorAll(':scope > p')].some(paragraph => paragraph.textContent.trim() === heading)
+  })), false, 'Identical capability titles and descriptions appear once')
+  assert.ok(!graphText.includes(graphProject.graphs[0].generated_at), 'Graph versions use a readable local date')
   assert.equal(await page.getByRole('navigation', { name: '研究步骤', exact: true }).getByRole('button').count(), 4)
   for (const name of ['下载 AI 版 MD', '导出阅读版 PDF', '导出 HTML']) assert.equal(await page.getByRole('button', { name, exact: true }).count(), 0)
   await assert.rejects(rpc('/jd', 'export', { id: first.id, version: 1 }), /确认/u)
@@ -682,11 +690,11 @@ try {
   await page.getByRole('button', { name: '查看运行记录', exact: true }).waitFor()
   await compactFirstScreen('合成长批次首条岗位', 2)
   const firstSavedCard = page.getByRole('region', { name: '已保存原文', exact: true }).locator('article').first()
-  const evidenceSummary = firstSavedCard.locator('summary').filter({ hasText: /^查看完整原文和证据编号$/u })
+  const evidenceSummary = firstSavedCard.locator('summary').filter({ hasText: /^查看完整原文$/u })
   assert.equal(await evidenceSummary.evaluate(element => element.parentElement.open), false)
-  assert.equal(await firstSavedCard.getByText(/^SHA-256：/u).isVisible(), false)
+  assert.ok(!/SHA-256：|JD-[A-Za-z0-9-]+/u.test(await firstSavedCard.textContent()))
   await evidenceSummary.click()
-  assert.equal(await firstSavedCard.getByText(/^SHA-256：/u).isVisible(), true)
+  assert.ok(!/SHA-256：|JD-[A-Za-z0-9-]+/u.test(await firstSavedCard.textContent()))
   assert.ok((await firstSavedCard.locator('pre').textContent()).includes(feedbackFixtureBody))
   await evidenceSummary.click()
   await disclosure(/^平台状态（/u)
@@ -720,6 +728,7 @@ try {
       scoped_zhaopin_duties_only: true, expired_recommendations_rejected: true, expired_link_not_a_login_request: true,
       no_automatic_expired_retry_after_reload: true },
     compact_workbench: { saved_source_and_generation_first_screen: true, content_widths_checked: [1360, 1024], no_horizontal_overflow: true,
+      human_readable_hierarchy_and_dates: true, internal_ids_and_hashes_not_rendered: true,
       optional_disclosures_closed_by_default: true, disclosures_preserve_capture_and_import: true, raw_json_hidden_by_default: true,
       model_records_available_on_demand: true, return_to_workbench: true, repeated_jd_navigation_single_instance: true,
       no_empty_details_column: true, workbench_restored_after_restart: true },
