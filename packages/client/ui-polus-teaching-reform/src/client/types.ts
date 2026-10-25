@@ -1,27 +1,11 @@
 import type { SessionId } from '@deepseek-ai/dsh-client-runtime/client'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type { GlobalReferenceDocument } from './InterviewSettings.tsx'
+import type { GlobalReferenceDocument } from './interviewTypes.ts'
 
-export type InterviewProfile = {
-  name: string
-  industry: string
-  role: string
-  years: string
-  stage: string
-  experience: string
-  materials?: readonly ExpertMaterial[]
-}
+export type { InterviewProfile, ExpertMaterial } from './interviewTypes.ts'
+import type { InterviewProfile, ExpertMaterial } from './interviewTypes.ts'
 
-export type ExpertMaterial = {
-  id: string
-  name: string
-  sourceType: 'pdf' | 'word' | 'excel' | 'markdown' | 'text' | 'other'
-  markdown: string
-  status: 'ready' | 'processing' | 'failed'
-  uploadedAt: string
-  error?: string
-}
-
+/** Session-scoped interview generation, command observation, and document preview inputs. */
 export type TeachingReformProps = PropsRuntime<'conversation.details.context'> & {
   sessionId: SessionId
   generateInterview: (id: SessionId, profile: InterviewProfile) => Promise<string>

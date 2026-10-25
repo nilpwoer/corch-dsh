@@ -270,12 +270,12 @@ export function virtualManifest(virtual: string, name: string): VirtualManifest 
   return undefined
 }
 
-/** Resolve one installed external package manifest from either pnpm store. */
+/** Resolve one installed external package manifest from the supported workspace stores. */
 function installedManifest(name: string): VirtualManifest | undefined {
   let manifest: (Manifest & { license?: string; repository?: string | { url?: string }; homepage?: string }) | undefined
   // Workspace-local link farms can expose a dependency that is not linked at
   // the repository root; both are backed by the root workspace's lockfile.
-  for (const store of ['node_modules', 'native/landlock-run/node_modules']) {
+  for (const store of ['node_modules', 'apps/desktop/node_modules', 'native/landlock-run/node_modules']) {
     const direct = resolve(root, store, name, 'package.json')
     if (existsSync(direct)) {
       manifest = JSON.parse(readFileSync(direct, 'utf8')) as typeof manifest

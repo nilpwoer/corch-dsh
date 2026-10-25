@@ -5,6 +5,12 @@
 </style><style>.auth-card{margin:70px auto;padding:30px;width:min(440px,100%);text-align:left}.auth-card h2{margin:0 0 8px;font-size:20px}.auth-card p{margin:0 0 18px;color:var(--muted);font-size:13px}.auth-card label{display:block;margin-bottom:7px;font-size:13px;font-weight:600}.auth-card input{width:100%;padding:13px 14px;border:1px solid var(--border);border-radius:8px;letter-spacing:.22em;font-size:20px;outline:0}.auth-card input:focus{border-color:var(--accent);box-shadow:0 0 0 2px #d9534f1f}.auth-card .btn{width:100%;margin-top:14px}.auth-error{margin-top:10px;color:var(--accent);font-size:12px}</style></head><body><div class="app" id="app"></div>
 <script>
 (() => {
+  if (new URLSearchParams(location.search).get('worker') === '1' || window.__TEACHING_PORTAL__ === true) {
+    import('./practice-expert-worker.js').then(({ mountWorkerInterview }) => mountWorkerInterview(document.querySelector('#app'))).catch(() => {
+      document.querySelector('#app').textContent = '无法连接访谈服务，请确认服务可用后刷新。'
+    })
+    return
+  }
   const publicFieldnoteId = new URLSearchParams(location.search).get('fieldnoteId') || 'FN-DRAFT'
   const storeKey = `practice-expert-interview:${publicFieldnoteId}`
   const demoPack = {
@@ -69,9 +75,24 @@
   const setup = () => {
     if (!data) return
     document.title = `实践专家访谈 · ${data.fieldnoteId || fieldnoteId}`
-    data.questions.forEach(q => { answers[q.id] ||= { text: '', selected: '', options: [] } })
+    let saved
+    try { saved = JSON.parse(localStorage.getItem(storeKey) || 'null') } catch { saved = null }
+    const sameQuestions = saved?.fieldnoteId === data.fieldnoteId && JSON.stringify(saved.questions) === JSON.stringify(data.questions)
+    data.questions.forEach(q => {
+      const draft = sameQuestions ? saved.answers?.[q.id] : undefined
+      answers[q.id] ||= draft && typeof draft.text === 'string' && typeof draft.selected === 'string' && Array.isArray(draft.options) && draft.options.every(Number.isSafeInteger)
+        ? { ...draft, options: [...draft.options] } : { text: '', selected: '', options: [] }
+    })
   }
   const groups = ['阶段 1：经历确认', '阶段 2：核心职责', '阶段 3：真实案例', '阶段 4：回看确认']
+  const retiredOption = (option) => {
+    const label = option.trim()
+    return /^(?:暂不使用|暂不适用|不适用|以上均不适用)(?:$|[\s（(：:，,。；;／/])/.test(label)
+      || label === '不适用或需与单位确认'
+      || /^(?:不确定|说不准|无法回答|不便回答|不愿回答|暂不回答|请补充|请说明)$/.test(label)
+      || /^(?:其他|其它)(?:或补充)?(?:$|[\s（(：:，,。；;／/])/.test(label)
+      || /^other(?:$|[:：(（]|\s+(?:[:：(（]|please\b|specify\b))/i.test(label)
+  }
   const esc = (value) => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
   const stage = i => i < 2 ? 0 : i < 5 ? 1 : i < data.questions.length - 1 ? 2 : 3
   const persist = () => localStorage.setItem(storeKey, JSON.stringify({ ...data, answers }))
@@ -115,7 +136,7 @@
     }).join('')
     const options = Array.isArray(q.options) ? q.options : []
     const radio = q.type === '单项选择' || q.type === '授权确认'
-    app.innerHTML = `<header class="topbar"><div class="topbar-inner"><div><span class="brand">实践专家访谈工作台</span><span class="id">Fieldnote ID: FN-${Date.now().toString().slice(-8)}</span></div><div class="expert-meta"><span>受访专家：</span><strong>${esc(data.profile?.name || '待确认')}</strong><span class="role">${esc(data.profile?.role || data.profile?.industry || '实践专家')} / ${esc(data.profile?.years || '')}</span><span class="saved">✓ 草稿已实时暂存</span></div></div></header><main class="main"><div class="intro"><div><h1>请从您熟悉的地方，慢慢讲起。</h1><p>这不是考试，也没有标准答案。您可以用文字或语音回答，提交前始终可以修改。</p></div><div class="intro-count">全套节点进度<strong>${index + 1} / ${data.questions.length}</strong></div></div><div class="layout"><aside class="panel outline">${groupsHtml}</aside><section class="panel question-card"><div><div class="stage-row"><span>阶段：<strong>${groups[stage(index)]}</strong></span><span>${percent}%</span></div><div class="bar"><i style="width:${percent}%"></i></div><div class="question-head"><h2>${esc(q.id || `Q${index + 1}`)} · ${esc(q.title || '问题')}</h2><p>${esc(q.question)}</p></div><div class="question-body">${options.length ? `<div class="option-list">${options.map((option, i) => `<label class="option"><input type="${radio ? 'radio' : 'checkbox'}" name="answer-options" data-option="${i}" ${answer.options.includes(i) || answer.selected === option ? 'checked' : ''}><span>${esc(option)}</span></label>`).join('')}</div>` : ''}${q.helper ? `<div class="helper">辅助提示：${esc(q.helper)}</div>` : ''}<label class="label">${radio ? '补充说明（可选）：' : '您的回答或案例描述：'}</label><textarea id="answer" class="answer" placeholder="请根据您的实际经验详细描述……">${esc(answer.text)}</textarea></div></div><div class="controls"><div class="voice-row"><button class="voice" id="voice">♩ 按住或点击开启语音转写</button><span class="voice-status" id="voice-status"></span></div><div class="action-row"><button class="btn" id="prev" ${index === 0 ? 'disabled' : ''}>上一步</button><div class="actions"><button class="btn" id="save">暂存退出</button><button class="btn primary" id="next">${index === data.questions.length - 1 ? '确认并提交最终访谈' : '保存并继续'}</button></div></div></div></section><aside class="tips"><div class="panel tip"><h3>ⓘ 主持人即时提示</h3><p>${esc(q.followUp || '请根据您的真实从业经验作答，无标准答案。')}</p></div><div class="panel tip"><h3>旅途记录卡</h3><p>不需要一次说完。您的回答已开启本地自动保存，可随时中断并在下次访问时恢复。</p></div><div class="panel tip"><h3>当前回答摘要</h3><div class="summary"><h4>访谈原话与已录入内容</h4><div class="summary-item"><b>${esc(q.title || q.id)}</b><p>${esc(answer.text || '未填写')}</p></div></div></div></aside></div></main><footer class="footer"><div class="footer-inner">Fieldnote Expert Interview System © 2026 · 专家访谈工作台</div></footer>`
+    app.innerHTML = `<header class="topbar"><div class="topbar-inner"><div><span class="brand">实践专家访谈工作台</span><span class="id">Fieldnote ID: FN-${Date.now().toString().slice(-8)}</span></div><div class="expert-meta"><span>受访专家：</span><strong>${esc(data.profile?.name || '待确认')}</strong><span class="role">${esc(data.profile?.role || data.profile?.industry || '实践专家')} / ${esc(data.profile?.years || '')}</span><span class="saved">✓ 草稿已实时暂存</span></div></div></header><main class="main"><div class="intro"><div><h1>请从您熟悉的地方，慢慢讲起。</h1><p>这不是考试，也没有标准答案。您可以用文字或语音回答，提交前始终可以修改。</p></div><div class="intro-count">全套节点进度<strong>${index + 1} / ${data.questions.length}</strong></div></div><div class="layout"><aside class="panel outline">${groupsHtml}</aside><section class="panel question-card"><div><div class="stage-row"><span>阶段：<strong>${groups[stage(index)]}</strong></span><span>${percent}%</span></div><div class="bar"><i style="width:${percent}%"></i></div><div class="question-head"><h2>${esc(q.id || `Q${index + 1}`)} · ${esc(q.title || '问题')}</h2><p>${esc(q.question)}</p></div><div class="question-body">${options.length ? `<div class="option-list">${options.map((option, i) => retiredOption(option) ? '' : `<label class="option"><input type="${radio ? 'radio' : 'checkbox'}" name="answer-options" data-option="${i}" ${answer.options.includes(i) || answer.selected === option ? 'checked' : ''}><span>${esc(option)}</span></label>`).join('')}</div>` : ''}${q.helper ? `<div class="helper">辅助提示：${esc(q.helper)}</div>` : ''}<label class="label">${radio ? '补充说明（可选）：' : '您的回答或案例描述：'}</label><textarea id="answer" class="answer" placeholder="请根据您的实际经验详细描述……">${esc(answer.text)}</textarea></div></div><div class="controls"><div class="voice-row"><button class="voice" id="voice">♩ 按住或点击开启语音转写</button><span class="voice-status" id="voice-status"></span></div><div class="action-row"><button class="btn" id="prev" ${index === 0 ? 'disabled' : ''}>上一步</button><div class="actions"><button class="btn" id="save">暂存退出</button><button class="btn primary" id="next">${index === data.questions.length - 1 ? '确认并提交最终访谈' : '保存并继续'}</button></div></div></div></section><aside class="tips"><div class="panel tip"><h3>ⓘ 主持人即时提示</h3><p>${esc(q.followUp || '请根据您的真实从业经验作答，无标准答案。')}</p></div><div class="panel tip"><h3>旅途记录卡</h3><p>不需要一次说完。您的回答已开启本地自动保存，可随时中断并在下次访问时恢复。</p></div><div class="panel tip"><h3>当前回答摘要</h3><div class="summary"><h4>访谈原话与已录入内容</h4><div class="summary-item"><b>${esc(q.title || q.id)}</b><p>${esc(answer.text || '未填写')}</p></div></div></div></aside></div></main><footer class="footer"><div class="footer-inner">Fieldnote Expert Interview System © 2026 · 专家访谈工作台</div></footer>`
     const idBadge = document.querySelector('.id'); if (idBadge) idBadge.textContent = `Fieldnote ID: ${fieldnoteId}${data.questionPackMeta?.version ? ` · 问题包 v${data.questionPackMeta.version}` : ''}`
     document.querySelectorAll('[data-go]').forEach(button => { button.onclick = () => { index = Number(button.dataset.go); render() } })
     const textarea = document.querySelector('#answer'); textarea.oninput = () => { answer.text = textarea.value; persist() }

@@ -58,3 +58,5 @@ No direct invalidation from `boot()`; a consumer that calls `addHarnessSourceSec
 - **Snapshot replay swapping is basename-specific** — only a config ending in `cordis.yml` or `cordis.yaml` maps to the sibling `cordis.snapshot.yml`; custom config names require caller-managed selection.
 - **Environment discovery is launch-scoped** — `loadLayeredEnv` reads only the invocation directory and Harness home once; it does not search parents or follow a workspace selected later. `loadEnv` remains the one-directory helper for non-product bins.
 - **A user patch replaces the whole matched config** — an id-targeted patch does not deep-merge, so a profile override restates the bundle fields it keeps.
+
+When an embedded runtime resolver already resolves a package manifest to the canonical installation, `healProfilesModuleFallback` omits its filesystem alias.

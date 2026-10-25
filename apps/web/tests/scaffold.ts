@@ -80,8 +80,8 @@ export const WELCOME_NOTICE_ACK_FIELD = 'welcomeNoticeVersion'
 export const WELCOME_NOTICE_VERSION = '2026-08-13.1'
 export const WELCOME_NOTICE_COPY = {
   zh: {
-    title: '内测声明',
-    body: 'DeepSeek Harness 目前的 0.1 版本仍处在面向 Harness 开发者进行测试的阶段，还有许多地方需要持续改进和打磨，希望听取广大开发者的反馈建议。预计 DeepSeek Harness 的核心插件以及基础 API 都会在接下来的一段时间内快速迭代、持续演化。\n\n我们期待与全球开发者一起，在开源、开放、可复用、可组合的基础设施之上，共同探索智能上限。欢迎全球 Harness 开发者加入 DSH 插件生态。',
+    title: '欢迎使用 Corch DSH',
+    body: '准备专家信息，生成并校阅问题包，再发布给专家完成访谈。\n\n首次发布前，请在访谈设置中填写 Worker 地址和发布 API Key。生成问题包还需单独配置模型。',
     continueLabel: '继续',
   },
 } as const

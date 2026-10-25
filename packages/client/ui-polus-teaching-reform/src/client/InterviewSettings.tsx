@@ -1,27 +1,17 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import css from './InterviewSettings.module.css'
-import { hydrateCorpusDocuments, seedCorpusDocuments, type ReferenceTier } from './globalReferenceCorpus.ts'
+import { normalizeWorkerOrigin, readWorkerOrigin, saveWorkerOrigin, readPublisherStatus, savePublisherKey } from './workerPublishing.ts'
+import { hydrateCorpusDocuments, seedCorpusDocuments, resolveCorpusDocument } from './globalReferenceCorpus.ts'
 import { buildInterviewPromptTemplate, INTERVIEW_SYSTEM_PROMPT_STORAGE_KEY } from './interviewPrompt.ts'
 
 /** The reusable methodology/reference layer shared by all interviews. */
 export const GLOBAL_REFERENCE_STORAGE_KEY = 'dsh.practice-expert-global-reference-pool.v1'
 
-export type GlobalReferenceDocument = {
-  id: string
-  title: string
-  markdown: string
-  version: number
-  updatedAt: string
-  enabled: boolean
-  archivedAt?: string
-  tier?: ReferenceTier
-  sourceFile?: string
-  origin?: 'bundled-corpus' | 'user'
-  summary?: string
-}
+export type { GlobalReferenceDocument } from './interviewTypes.ts'
+import type { GlobalReferenceDocument } from './interviewTypes.ts'
 
-export type InterviewSettingsProps = { onClose?: () => void; onPreviewDocument?: (document: GlobalReferenceDocument) => void }
-type SettingsTab = 'references' | 'prompt' | 'followUp'
+export type InterviewSettingsProps = { initialTab?: 'worker'; onClose?: () => void; onPreviewDocument?: (document: GlobalReferenceDocument) => void }
+type SettingsTab = 'references' | 'prompt' | 'worker'
 
 const UPDATED_EVENT = 'interview-global-reference-pool-updated'
 
@@ -51,7 +41,7 @@ export function readGlobalReferenceDocuments(): GlobalReferenceDocument[] {
 
 /** Return active, non-archived documents in a stable order for generation. */
 export function getEnabledGlobalReferenceDocuments(): GlobalReferenceDocument[] {
-  return readGlobalReferenceDocuments().filter(item => item.enabled && item.archivedAt === undefined)
+  return readGlobalReferenceDocuments().filter(item => item.enabled && item.archivedAt === undefined).map(resolveCorpusDocument)
 }
 
 function writeGlobalReferenceDocuments(documents: readonly GlobalReferenceDocument[]): void {
@@ -68,10 +58,22 @@ export async function loadGlobalReferenceDocumentsForGeneration(): Promise<Globa
   return await hydrateCorpusDocuments(getEnabledGlobalReferenceDocuments())
 }
 
-export function InterviewSettings({ onClose, onPreviewDocument }: InterviewSettingsProps): ReactNode {
+export function InterviewSettings({ onClose, onPreviewDocument, initialTab }: InterviewSettingsProps): ReactNode {
   const [documents, setDocuments] = useState<GlobalReferenceDocument[]>(() => readGlobalReferenceDocuments())
-  const [activeTab, setActiveTab] = useState<SettingsTab>('references')
+  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab ?? 'references')
+  const [workerOrigin, setWorkerOrigin] = useState(readWorkerOrigin)
+  const [workerMessage, setWorkerMessage] = useState('')
+  const [publisherKey, setPublisherKey] = useState('')
+  const [publisherStatus, setPublisherStatus] = useState('尚未配置发布 API Key')
+  const [publisherSaving, setPublisherSaving] = useState(false)
+  useEffect(() => {
+    if (activeTab !== 'worker') return
+    let current = true
+    void readPublisherStatus().then((value) => { if (current) setPublisherStatus(value.configured ? `已保存 ${value.prefix}… · ${value.origin}` : '尚未配置发布 API Key') }).catch((reason: unknown) => { if (current) setPublisherStatus(reason instanceof Error ? reason.message : '无法读取发布授权') })
+    return () => { current = false }
+  }, [activeTab])
   const [showArchived, setShowArchived] = useState(false)
+  const [referenceSearch, setReferenceSearch] = useState('')
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draft, setDraft] = useState<Pick<GlobalReferenceDocument, 'title' | 'markdown'> | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -115,9 +117,9 @@ export function InterviewSettings({ onClose, onPreviewDocument }: InterviewSetti
     setPromptSaved(false)
   }
 
-  const visibleDocuments = useMemo(() => documents.filter(item => showArchived || item.archivedAt === undefined), [documents, showArchived])
+  const visibleDocuments = useMemo(() => documents.filter(item => (showArchived || item.archivedAt === undefined) && (!referenceSearch.trim() || `${item.id}\n${item.title}\n${resolveCorpusDocument(item).markdown}`.toLocaleLowerCase().includes(referenceSearch.trim().toLocaleLowerCase()))), [documents, showArchived, referenceSearch])
   const activeCount = documents.filter(item => item.enabled && item.archivedAt === undefined).length
-  const groupedDocuments = useMemo(() => (['S', 'A', 'B'] as const).map(tier => ({ tier, documents: visibleDocuments.filter(item => item.tier === tier) })), [visibleDocuments])
+  const groupedDocuments = useMemo(() => (['S', 'A', 'B', undefined] as const).map(tier => ({ tier: tier ?? '未分级', documents: visibleDocuments.filter(item => item.tier === tier) })), [visibleDocuments])
   const editingDocument = editingId === null ? undefined : documents.find(item => item.id === editingId)
 
   const startEdit = (document: GlobalReferenceDocument): void => {
@@ -156,14 +158,16 @@ export function InterviewSettings({ onClose, onPreviewDocument }: InterviewSetti
     const now = new Date().toISOString()
     const next = editingDocument === undefined
       ? [{ id: createId(), title, markdown, version: 1, updatedAt: now, enabled: true }, ...documents]
-      : documents.map(item => item.id === editingDocument.id ? { ...item, title, markdown, version: item.version + 1, updatedAt: now } : item)
+      : documents.map(item => item.id === editingDocument.id
+        ? { ...item, title, markdown, version: item.version + 1, updatedAt: now } : item)
     setDocuments(next)
     writeGlobalReferenceDocuments(next)
     cancelEdit()
   }
 
   const toggleDocument = (document: GlobalReferenceDocument): void => {
-    const next = documents.map(item => item.id === document.id ? { ...item, enabled: !item.enabled, updatedAt: new Date().toISOString() } : item)
+    const next = documents.map(item => item.id === document.id
+      ? { ...item, enabled: !item.enabled, updatedAt: new Date().toISOString() } : item)
     setDocuments(next)
     writeGlobalReferenceDocuments(next)
   }
@@ -196,23 +200,23 @@ export function InterviewSettings({ onClose, onPreviewDocument }: InterviewSetti
 
   return <div className={css.settingsPage}>
     <header className={css.header}>
-      <div><span className={css.eyebrow}>INTERVIEW SETTINGS</span><h1>访谈设置</h1><p>管理所有实践专家访谈共用的全局基础文献池。专家项目内上传的补充材料不会自动加入这里。</p></div>
+      <div><span className={css.eyebrow}>INTERVIEW SETTINGS</span><h1>访谈设置</h1><p>{activeTab === 'worker' ? '配置发布服务地址和发布 API Key。保存后可直接发布并打开访谈。' : activeTab === 'prompt' ? '设置生成问题包时采用的系统提示词。' : '管理所有实践专家访谈共用的基础文献。专家补充材料在各自项目内生效。'}</p></div>
       {onClose !== undefined && <button type="button" className={css.ghostButton} onClick={onClose}>返回访谈</button>}
     </header>
     <main className={css.content}>
-      <nav className={css.settingsTabs} aria-label="访谈设置分类">{([['references', '全局基础文献池'], ['prompt', '系统提示词'], ['followUp', '追问逻辑']] as const).map(([id, label]) => <button type="button" key={id} className={activeTab === id ? css.settingsTabActive : css.settingsTab} onClick={() => { setActiveTab(id) }}>{label}</button>)}</nav>
+      <nav className={css.settingsTabs} aria-label="访谈设置分类">{([['references', '全局基础文献池'], ['prompt', '系统提示词'], ['worker', 'Worker 发布']] as const).map(([id, label]) => <button type="button" key={id} className={activeTab === id ? css.settingsTabActive : css.settingsTab} onClick={() => { setActiveTab(id) }}>{label}</button>)}</nav>
       {activeTab === 'references' && <section className={css.section}>
         <div className={css.sectionHeader}><div><h2>全局基础文献池</h2><p>当前有 {activeCount} 份启用文献。生成问题包时将读取启用且未归档的文献，并记录版本快照。</p></div><div className={css.actions}><button type="button" className={css.ghostButton} onClick={() => { setShowArchived(value => !value) }}>{showArchived ? '隐藏已归档' : '显示已归档'}</button></div></div>
         <div className={css.notice}><strong>作用范围</strong><span>这里的文献规定访谈方法、问题框架和来源标准；每个项目的专家信息与上传资料仍单独生效。</span></div>
-        {visibleDocuments.length === 0 && <div className={css.empty}><strong>{showArchived ? '暂无文献' : '基础文献池为空'}</strong><span>当前版本只接入内置 v1.0 文献池，暂不支持在这里上传或编辑文献。</span></div>}
-        <div className={css.documentGroups}>{groupedDocuments.map(group => <section className={css.documentGroup} key={group.tier}><div className={css.groupHeader}><strong>{group.tier} 级文献</strong><span>{group.tier === 'S' ? '核心方法论 · 必引底座' : group.tier === 'A' ? '专题方法 · 按需引用' : '实证案例 · 补充参考'}</span></div><div className={css.documentList}>{group.documents.map(document => <article className={`${css.documentCard} ${document.archivedAt !== undefined ? css.archived : ''}`} key={document.id}>
-          <div className={css.documentMain}><div className={css.documentTitle}><span className={css.documentId}>{document.id}</span><strong>{document.title}</strong>{document.archivedAt !== undefined && <span className={css.archiveBadge}>已归档</span>}{document.enabled && document.archivedAt === undefined && <span className={css.enabledBadge}>启用中</span>}</div><div className={css.documentMeta}>v{document.version} · {document.sourceFile ?? '用户文献'} · {document.markdown.length.toLocaleString()} 字</div></div>
+        {visibleDocuments.length === 0 && <div className={css.empty}><strong>{showArchived ? '暂无文献' : '基础文献池为空'}</strong><span>未找到匹配文献。请调整检索条件或显示已归档文献。</span></div>}
+        <label className={css.field}><span>检索文献全文或章节</span><input aria-label="检索文献全文或章节" value={referenceSearch} onChange={(event) => { setReferenceSearch(event.currentTarget.value) }} placeholder="输入文献名、章节或正文关键词" /></label><div className={css.documentGroups}>{groupedDocuments.map(group => <section className={css.documentGroup} key={group.tier}><div className={css.groupHeader}><strong>{group.tier === '未分级' ? '未分级文献' : `${group.tier} 级文献`}</strong><span>{group.tier === 'S' ? '核心方法论 · 必引底座' : group.tier === 'A' ? '专题方法 · 按需引用' : group.tier === 'B' ? '实证案例 · 补充参考' : '用户提供 · 尚未指定方法优先级'}</span></div><div className={css.documentList}>{group.documents.map(document => <article className={`${css.documentCard} ${document.archivedAt !== undefined ? css.archived : ''}`} key={document.id}>
+          <div className={css.documentMain}><div className={css.documentTitle}><span className={css.documentId}>{document.id}</span><strong>{document.title}</strong>{document.archivedAt !== undefined && <span className={css.archiveBadge}>已归档</span>}{document.enabled && document.archivedAt === undefined && <span className={css.enabledBadge}>启用中</span>}</div><div className={css.documentMeta}>v{document.version} · {resolveCorpusDocument(document).sourceFile ?? '用户文献'} · {resolveCorpusDocument(document).markdown.length.toLocaleString()} 字</div></div>
           <div className={css.documentActions}>{onPreviewDocument !== undefined && <button type="button" className={css.ghostButton} onClick={() => { onPreviewDocument(document) }}>预览</button>}{document.archivedAt === undefined && document.origin !== 'bundled-corpus' && <><button type="button" className={css.ghostButton} onClick={() => { startEdit(document) }}>编辑</button><button type="button" className={document.enabled ? css.toggleOn : css.toggleOff} onClick={() => { toggleDocument(document) }}>{document.enabled ? '停用' : '启用'}</button><button type="button" className={css.dangerButton} onClick={() => { archiveDocument(document) }}>归档</button></>}{document.archivedAt === undefined && document.origin === 'bundled-corpus' && <button type="button" className={document.enabled ? css.toggleOn : css.toggleOff} onClick={() => { toggleDocument(document) }}>{document.enabled ? '停用' : '启用'}</button>}{document.archivedAt !== undefined && <><button type="button" className={css.ghostButton} onClick={() => { restoreDocument(document) }}>恢复</button><button type="button" className={css.dangerButton} onClick={() => { deleteDocument(document) }}>永久删除</button></>}</div>
         </article>)}</div></section>)}</div>
       </section>}
       {activeTab === 'references' && draft !== null && <section className={css.editor} aria-label={editingDocument === undefined ? '添加文献' : '编辑文献'}><div className={css.sectionHeader}><div><h2>{editingDocument === undefined ? '添加基础文献' : '编辑基础文献'}</h2><p>{editingDocument === undefined ? '保存后将以 v1 加入全局文献池。' : `保存后生成 v${(editingDocument.version ?? 0) + 1}，旧版本不会影响已生成的问题包。`}</p></div><div className={css.actions}><label className={css.ghostButton}>导入 Markdown 文件<input className={css.hiddenInput} type="file" accept=".md,.markdown,.txt,text/markdown,text/plain" onChange={(event) => { void importMarkdownFile(event.currentTarget.files?.[0]); event.currentTarget.value = '' }} /></label><button type="button" className={css.ghostButton} onClick={cancelEdit}>取消</button></div></div>{error !== null && <div className={css.error} role="alert">{error}</div>}<label className={css.field}><span>文献名称</span><input value={draft.title} placeholder="例如：实践专家访谈法与任务分析框架" onChange={(event) => { setDraft({ ...draft, title: event.currentTarget.value }); setError(null) }} /></label><label className={css.field}><span>Markdown 内容</span><textarea value={draft.markdown} placeholder="# 文献标题\n\n请输入或粘贴已确认的基础文献内容……" onChange={(event) => { setDraft({ ...draft, markdown: event.currentTarget.value }); setError(null) }} /></label><div className={css.editorFooter}><span>仅 Markdown 内容会进入问题包生成上下文。</span><button type="button" className={css.primaryButton} onClick={saveDraft}>保存文献</button></div></section>}
       {activeTab === 'prompt' && <section className={css.configPanel}><div className={css.sectionHeader}><div><h2>系统提示词</h2><p>这是全局问题包生成模板。修改并保存后，下一次生成问题包时会自动应用；专家信息、专家补充资料和全局基础文献池仍由系统运行时注入。</p></div></div><div className={css.promptContext}>变量说明：<code>{'{{expert.*}}'}</code> 为当前专家字段，<code>{'{{expert.materials}}'}</code> 为专家补充资料，<code>{'{{global_reference_pool}}'}</code> 为全局基础文献池。请保留这些变量，否则对应内容无法注入。</div><label className={css.field}><span>{promptLoading ? '正在加载模板…' : `全局模板 · ${promptPreview.length.toLocaleString()} 字符`}</span><textarea className={css.promptEditor} value={promptPreview} onChange={(event) => { setPromptPreview(event.currentTarget.value); setPromptSaved(false) }} aria-label="全局问题包生成系统提示词模板" /></label><div className={css.editorFooter}><span>保存后仅影响后续新生成的问题包，不会改写已经生成的问题包。</span><div className={css.actions}><button type="button" className={css.ghostButton} onClick={resetPrompt}>恢复默认</button><button type="button" className={css.primaryButton} disabled={promptLoading || promptPreview.trim() === ''} onClick={savePrompt}>{promptSaved ? '已保存' : '保存并应用'}</button></div></div></section>}
-      {activeTab === 'followUp' && <section className={css.configPanel}><div className={css.sectionHeader}><div><h2>追问逻辑</h2><p>配置回答不完整时的补充提问策略。本轮仅展示 UI，尚未改变现有追问行为。</p></div><span className={css.readonlyBadge}>预览模式</span></div><div className={css.configGrid}><label className={css.field}><span>最多连续追问次数</span><select defaultValue="2"><option value="1">1 次</option><option value="2">2 次（默认）</option><option value="3">3 次</option></select></label><label className={css.field}><span>回答过短阈值</span><select defaultValue="short"><option value="short">少于 20 字</option><option value="medium">少于 50 字</option><option value="off">不按字数判断</option></select></label></div><div className={css.ruleList}>{['没有具体案例 → 请求一个真实案例', '只有结论没有过程 → 追问关键步骤与判断', '没有结果或质量标准 → 追问如何确认完成', '任务边界不清 → 追问触发条件与责任边界'].map(rule => <label className={css.ruleRow} key={rule}><input type="checkbox" defaultChecked disabled /><span>{rule}</span></label>)}</div><div className={css.editorFooter}><span>追问策略保存与 Agent 通信将在后续版本接入。</span><button type="button" className={css.primaryButton} disabled>保存设置</button></div></section>}
+      {activeTab === 'worker' && <section className={css.configPanel}><div className={css.sectionHeader}><div><h2>Worker 发布目标</h2><p>请先在 Worker 管理端的「发布 API Key」页面创建 Key，再粘贴到这里。Key 只授权上传题包，与专家访问口令分开。</p></div></div><label className={css.field}><span>Worker 服务地址</span><input value={workerOrigin} placeholder="https://worker.example.com" onChange={(event) => { setWorkerOrigin(event.currentTarget.value); setWorkerMessage('') }} /></label><div className={css.editorFooter}><span>追问次数和访谈提示词在 Worker 管理端设置。</span><button type="button" className={css.primaryButton} onClick={() => { try { setWorkerOrigin(saveWorkerOrigin(workerOrigin)); setWorkerMessage('已保存 Worker 发布地址') } catch (error) { setWorkerMessage(error instanceof Error ? error.message : '地址无效') } }}>保存地址</button></div><label className={css.field}><span>发布 API Key</span><input type="password" value={publisherKey} autoComplete="off" spellCheck={false} placeholder="dsh_pub_…" onChange={(event) => { setPublisherKey(event.currentTarget.value); setWorkerMessage('') }} /></label><p>{publisherStatus}</p><div className={css.editorFooter}><span>使用当前 Windows 账户加密保存，不加入分享链接。</span><button type="button" className={css.primaryButton} disabled={publisherSaving || !publisherKey.trim()} onClick={() => { if (publisherSaving) return; setPublisherSaving(true); void (async () => { try { const origin = normalizeWorkerOrigin(workerOrigin); const value = await savePublisherKey(origin, publisherKey); setWorkerOrigin(saveWorkerOrigin(origin)); setPublisherKey(''); setPublisherStatus(`已保存 ${value.prefix}… · ${value.origin}`); setWorkerMessage('发布授权已保存，可返回访谈直接发布') } catch (reason) { setWorkerMessage(reason instanceof Error ? reason.message : '授权保存失败') } finally { setPublisherSaving(false) } })() }}>{publisherSaving ? '正在保存…' : '保存发布授权'}</button></div><p role="status">{workerMessage}</p></section>}
     </main>
   </div>
 }

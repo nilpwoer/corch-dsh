@@ -1,0 +1,80 @@
+import assert from 'node:assert/strict'
+import { createRequire } from 'node:module'
+import { readFile, writeFile, mkdir } from 'node:fs/promises'
+import { join } from 'node:path'
+const require=createRequire(new URL('../../apps/web/package.json',import.meta.url))
+const {chromium}=require('playwright')
+const [fixturePath,outputDir]=process.argv.slice(2)
+const fixture=JSON.parse(await readFile(fixturePath,'utf8'))
+const origin=fixture.origin
+assert.equal(new URL(origin).hostname,'127.0.0.1','Only the disposable loopback fixture is permitted')
+await mkdir(outputDir,{recursive:true})
+const browser=await chromium.launch({executablePath:process.env.PORTAL_TEST_CHROMIUM,headless:true})
+const errors=[];let externalRequests=0
+const bind=async context=>{
+  context.on('page',page=>page.on('pageerror',error=>errors.push(error.message)))
+  await context.route('**/*',route=>{
+    if(new URL(route.request().url()).origin!==origin){externalRequests++;return route.abort()}
+    return route.continue()
+  })
+}
+try{
+  const managerContext=await browser.newContext({acceptDownloads:true,viewport:{width:1200,height:900}});await bind(managerContext)
+  const manager=await managerContext.newPage()
+  await manager.goto(origin+'/admin/')
+  await manager.locator('input[name=password]').fill('synthetic-isolated-report-password')
+  await manager.getByRole('button',{name:'登录',exact:true}).click()
+  await manager.locator('#workspace').waitFor({state:'visible'})
+  assert.equal(await manager.locator(`[data-report="${fixture.failed_task_id}"]`).isDisabled(),true)
+  assert.equal(await manager.locator(`a[href*="${fixture.failed_task_id}/pdf"]`).count(),0)
+  await manager.locator(`[data-report="${fixture.task_id}"]`).click()
+  const adminFrame=manager.frameLocator('#report-frame')
+  await adminFrame.locator('h1').waitFor()
+  await adminFrame.locator('#evidence-E1').waitFor()
+  await adminFrame.locator('#evidence-E2').waitFor()
+  assert.match(await adminFrame.locator('h1').textContent(),/实践专家访谈报告/)
+  assert.equal(await adminFrame.locator('script,img').count(),0)
+  assert.equal(await adminFrame.locator('#evidence-E1').count(),1)
+  await manager.screenshot({path:join(outputDir,'admin-preview.png'),fullPage:true})
+  let event=manager.waitForEvent('download')
+  await manager.locator(`a[href="/admin/api/reports/${fixture.task_id}/pdf"]`).click()
+  const adminDownload=await event
+  assert.ok(adminDownload.suggestedFilename().endsWith('.pdf'))
+  await adminDownload.saveAs(join(outputDir,'admin-report-v3.pdf'))
+  assert.equal((await readFile(join(outputDir,'admin-report-v3.pdf'))).subarray(0,5).toString(),'%PDF-')
+  const stored=await (await manager.request.get(origin+`/admin/api/reports/${fixture.task_id}`)).json()
+  await writeFile(join(outputDir,'expected-report.json'),JSON.stringify(stored.output,null,2)+'\n')
+  const standalone=await managerContext.newPage()
+  await standalone.goto(origin+`/admin/api/reports/${fixture.task_id}/view`)
+  await standalone.locator('h1').waitFor()
+  await standalone.screenshot({path:join(outputDir,'standalone-preview.png'),fullPage:true})
+  await standalone.locator('a.cite').first().click()
+  assert.equal(new URL(standalone.url()).hash,'#evidence-E1')
+  await standalone.setViewportSize({width:360,height:900})
+  assert.ok(await standalone.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1),'Mobile report overflows horizontally')
+  await standalone.screenshot({path:join(outputDir,'mobile-evidence-preview.png')})
+  const ownerContext=await browser.newContext({acceptDownloads:true,viewport:{width:1200,height:900}});await bind(ownerContext)
+  await ownerContext.addCookies([{name:'teaching_interview',value:fixture.participant_cookie,url:origin,httpOnly:true,sameSite:'Strict'}])
+  const participant=await ownerContext.newPage()
+  await participant.goto(origin+'/?fieldnoteId=FN-report-preview-v1')
+  const participantFrame=participant.frameLocator('iframe[title="报告 v3 网页预览"]')
+  await participantFrame.locator('h1').waitFor()
+  assert.equal(await participantFrame.locator('h1').textContent(),await adminFrame.locator('h1').textContent())
+  assert.equal(await participantFrame.locator('script,img').count(),0)
+  await participant.screenshot({path:join(outputDir,'participant-preview.png'),fullPage:true})
+  event=participant.waitForEvent('download')
+  await participant.locator(`a[href="/portal/api/tasks/${fixture.task_id}/pdf"]`).click()
+  const ownerDownload=await event
+  await ownerDownload.saveAs(join(outputDir,'participant-report-v3.pdf'))
+  assert.equal((await readFile(join(outputDir,'participant-report-v3.pdf'))).subarray(0,5).toString(),'%PDF-')
+  assert.ok(ownerDownload.suggestedFilename().endsWith('.pdf'))
+  await manager.route('**/admin/api/reports',route=>route.fulfill({json:[]}))
+  await manager.reload();await manager.getByText('暂无报告',{exact:true}).waitFor()
+  await manager.unroute('**/admin/api/reports')
+  await manager.getByRole('button',{name:'刷新',exact:true}).click()
+  await manager.locator(`[data-report="${fixture.task_id}"]`).waitFor()
+  assert.equal(externalRequests,0)
+  assert.deepEqual(errors,[])
+  const result={passed:true,shared_preview:true,admin_pdf_download:true,participant_pdf_download:true,chinese_long_text:true,evidence_navigation:true,mobile_horizontal_overflow:false,xss_elements_created:0,failed_report_download_hidden:true,empty_report_state:true,external_requests:externalRequests,page_errors:errors,real_model_calls:0,production_data_used:false}
+  await writeFile(join(outputDir,'browser-verification.json'),JSON.stringify(result,null,2)+'\n');console.log(JSON.stringify(result))
+}finally{await browser.close()}

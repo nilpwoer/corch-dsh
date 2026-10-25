@@ -2,27 +2,40 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'rea
 import tinyPinyin from 'tiny-pinyin'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import css from './InterviewWorkbench.module.css'
+import { normalizeQuestionControls } from './questionFollowup.ts'
+import { createPublication, type InterviewPolicy } from './publication.ts'
+import { publishToWorker, readWorkerOrigin, readWorkerReceipt, type WorkerPublicationReceipt } from './workerPublishing.ts'
+import { parseAgentQuestionPack, validateQuestionPack, checksumQuestionPack, createQuestionPackMeta, type InterviewQuestion as MockQuestion, type QuestionSourceRef, type QuestionPackMeta } from './questionPack.ts'
 import { InterviewSettings } from './InterviewSettings.tsx'
 import { getEnabledGlobalReferenceDocuments } from './InterviewSettings.tsx'
-import type { ExpertMaterial, TeachingReformProps } from './types.ts'
+import type { ExpertMaterial, InterviewProfile, TeachingReformProps } from './types.ts'
 
 type InterviewProps = TeachingReformProps
 type InterviewTab = 'overview' | 'profile' | 'questions' | 'spa'
 type InterviewItem = { id: string; fieldnoteId: string; title: string; expert: string; industry: string; status: string; updated: string }
-type InterviewProfile = { name: string; industry: string; role: string; years: string; stage: string; experience: string; materials?: readonly ExpertMaterial[] }
 type GenerationStatus = 'idle' | 'running' | 'done' | 'failed'
-type QuestionPackMeta = { packId: string; version: number; generatedAt: string; sourceSessionId: string; checksum: string; globalReferences?: readonly { id: string; title: string; version: number; contentHash: string }[] }
 type InvitationMeta = { code: string; createdAt: string; status: 'active' | 'revoked' }
-type PersistedInterview = { record: InterviewItem; profile?: InterviewProfile; questions?: readonly MockQuestion[]; questionPackMeta?: QuestionPackMeta; invitation?: InvitationMeta }
+type PublicationSettings = { goal?: string; scope?: '' | InterviewPolicy['scope']; count?: string; legacyVersion?: number; legacyInvitationVersion?: number; worker?: WorkerPublicationReceipt }
+type PersistedInterview = {
+  publication?: PublicationSettings
+  record: InterviewItem
+  profile?: InterviewProfile
+  questions?: readonly MockQuestion[]
+  questionPackMeta?: QuestionPackMeta
+  invitation?: InvitationMeta
+}
+function restorePublication(item: PersistedInterview): PublicationSettings | undefined {
+  if (item.publication === undefined && item.invitation === undefined) return undefined
+  const publication = item.publication ?? {}
+  const legacyVersion = publication.legacyVersion ?? item.questionPackMeta?.version
+  const legacyInvitationVersion = publication.legacyInvitationVersion
+    ?? (item.invitation === undefined ? undefined : item.questionPackMeta?.version)
+  return {
+    ...publication, ...(legacyVersion === undefined ? {} : { legacyVersion }),
+    ...(legacyInvitationVersion === undefined ? {} : { legacyInvitationVersion }),
+  }
+}
 const INTERVIEW_STORAGE_KEY = 'dsh.practice-expert-interviews.v2'
-// Public static SPA origin for the isolated Tencent COS test bucket. Keep this
-// separate from window.location.origin: the host workbench runs on 127.0.0.1,
-// while the link copied to experts must be reachable from the public network.
-// Replace with the custom domain once its COS edge configuration is active.
-// Use the bound custom origin for browser rendering. Tencent COS's default
-// object endpoint forces HTML downloads for newer buckets even when the
-// object is marked `Content-Disposition: inline`.
-const PUBLIC_SPA_BASE_URL = 'http://interview.cschool.ac.cn'
 const REMOVED_MOCK_INTERVIEW_IDS = new Set(['elder-care', 'community', 'live-commerce'])
 const REMOVED_MOCK_INTERVIEW_TITLES = new Set(['养老照护岗位访谈', '社区营造实践访谈', '直播电商中控访谈'])
 
@@ -51,7 +64,8 @@ function readPersistedInterviews(): PersistedInterview[] {
     const value = JSON.parse(window.localStorage.getItem(INTERVIEW_STORAGE_KEY) ?? '[]') as unknown
     if (!Array.isArray(value)) return []
     const rows = value.filter(item => typeof item === 'object' && item !== null && 'record' in item) as PersistedInterview[]
-    const realRows = rows.filter(item => !REMOVED_MOCK_INTERVIEW_IDS.has(item.record.id) && !REMOVED_MOCK_INTERVIEW_TITLES.has(item.record.title))
+    const realRows = rows.filter(item =>
+      !REMOVED_MOCK_INTERVIEW_IDS.has(item.record.id) && !REMOVED_MOCK_INTERVIEW_TITLES.has(item.record.title))
     if (realRows.length !== rows.length) window.localStorage.setItem(INTERVIEW_STORAGE_KEY, JSON.stringify(realRows))
     return realRows
   } catch { return [] }
@@ -71,7 +85,12 @@ function persistInterviews(): void {
     const questions = generatedQuestionPacks.get(record.id)
     const questionPackMeta = generatedQuestionPackMeta.get(record.id)
     const invitation = generatedInvitations.get(record.id)
-    return { record, ...(profile === undefined ? {} : { profile }), ...(questions === undefined ? {} : { questions }), ...(questionPackMeta === undefined ? {} : { questionPackMeta }), ...(invitation === undefined ? {} : { invitation }) }
+    const publication = generatedPublicationSettings.get(record.id)
+    return {
+      record, ...(publication === undefined ? {} : { publication }), ...(profile === undefined ? {} : { profile }),
+      ...(questions === undefined ? {} : { questions }), ...(questionPackMeta === undefined ? {} : { questionPackMeta }),
+      ...(invitation === undefined ? {} : { invitation }),
+    }
   })
   try {
     window.localStorage.setItem(INTERVIEW_STORAGE_KEY, JSON.stringify(rows))
@@ -89,6 +108,8 @@ function hydratePersistedInterviews(): void {
     if (item.questions !== undefined) generatedQuestionPacks.set(item.record.id, ensureQuestionSources(item.questions))
     if (item.questionPackMeta !== undefined) generatedQuestionPackMeta.set(item.record.id, item.questionPackMeta)
     if (item.invitation !== undefined) generatedInvitations.set(item.record.id, item.invitation)
+    const publication = restorePublication(item)
+    if (publication !== undefined) generatedPublicationSettings.set(item.record.id, publication)
   }
 }
 
@@ -119,9 +140,14 @@ export function rebindInterviewSession(previousId: string, nextId: string): void
   const questions = generatedQuestionPacks.get(previousId)
   const meta = generatedQuestionPackMeta.get(previousId)
   const invitation = generatedInvitations.get(previousId)
+  const publication = generatedPublicationSettings.get(previousId)
   if (profile !== undefined) { generatedProfiles.delete(previousId); generatedProfiles.set(nextId, profile) }
   if (questions !== undefined) { generatedQuestionPacks.delete(previousId); generatedQuestionPacks.set(nextId, questions) }
   if (meta !== undefined) { generatedQuestionPackMeta.delete(previousId); generatedQuestionPackMeta.set(nextId, meta) }
+  if (publication !== undefined) {
+    generatedPublicationSettings.delete(previousId)
+    generatedPublicationSettings.set(nextId, publication)
+  }
   if (invitation !== undefined) { generatedInvitations.delete(previousId); generatedInvitations.set(nextId, invitation) }
   interviewRecords = interviewRecords.map(item => item.id === previousId ? { ...item, id: nextId } : item)
   selectedInterviewId = nextId
@@ -130,29 +156,6 @@ export function rebindInterviewSession(previousId: string, nextId: string): void
 }
 
 const EMPTY_PROFILE: InterviewProfile = { name: '', industry: '', role: '', years: '', stage: '', experience: '', materials: [] }
-
-type MockQuestion = {
-  id: string
-  title: string
-  type: string
-  question: string
-  helper?: string
-  followUp?: string
-  options?: readonly string[]
-  sourceRefs?: readonly QuestionSourceRef[]
-  deleted?: boolean
-  deletedAt?: string
-}
-
-type QuestionSourceRef = {
-  sourceType: string
-  title: string
-  locator?: string
-  excerpt?: string
-  rationale?: string
-  confidence?: 'high' | 'medium' | 'low'
-  requiresConfirmation?: boolean
-}
 
 const SOURCE_TYPE_LABELS: Record<string, string> = {
   project_goal: '项目目标',
@@ -164,28 +167,6 @@ const SOURCE_TYPE_LABELS: Record<string, string> = {
   job_description: '岗位样本',
   domain_knowledge: '行业知识补充',
   model_inference: '模型推断',
-}
-
-function normalizeSourceRefs(value: unknown): readonly QuestionSourceRef[] | undefined {
-  if (!Array.isArray(value)) return undefined
-  const refs = value.flatMap((item) => {
-    if (typeof item !== 'object' || item === null) return []
-    const row = item as Record<string, unknown>
-    const title = String(row.title ?? '').trim()
-    if (title === '') return []
-    const sourceType = String(row.sourceType ?? 'model_inference').trim() || 'model_inference'
-    const confidence = row.confidence === 'high' || row.confidence === 'medium' || row.confidence === 'low' ? row.confidence : undefined
-    return [{
-      sourceType,
-      title,
-      ...(row.locator === undefined ? {} : { locator: String(row.locator) }),
-      ...(row.excerpt === undefined ? {} : { excerpt: String(row.excerpt) }),
-      ...(row.rationale === undefined ? {} : { rationale: String(row.rationale) }),
-      ...(confidence === undefined ? {} : { confidence }),
-      ...(row.requiresConfirmation === undefined ? {} : { requiresConfirmation: Boolean(row.requiresConfirmation) }),
-    } satisfies QuestionSourceRef]
-  })
-  return refs.length > 0 ? refs : undefined
 }
 
 function fallbackSourceRefs(): readonly QuestionSourceRef[] {
@@ -204,7 +185,7 @@ function ensureQuestionSources(questions: readonly MockQuestion[]): readonly Moc
 }
 
 function cleanQuestionDraft(input: MockQuestion): MockQuestion {
-  const { helper, followUp, options, deleted: _deleted, deletedAt: _deletedAt, ...base } = input
+  const { helper, followUp, options, deleted: _deleted, deletedAt: _deletedAt, ...base } = normalizeQuestionControls(input)
   const trimmedOptions = options?.map(item => item.trim()).filter(Boolean)
   return {
     ...base,
@@ -236,204 +217,32 @@ const MOCK_QUESTIONS: readonly MockQuestion[] = [
 ]
 void MOCK_QUESTIONS
 
-const generatedProfiles = new Map<string, InterviewProfile>(persistedInterviews.flatMap(item => item.profile === undefined ? [] : [[item.record.id, item.profile] as const]))
-const generatedQuestionPacks = new Map<string, readonly MockQuestion[]>(persistedInterviews.flatMap(item => item.questions === undefined ? [] : [[item.record.id, ensureQuestionSources(item.questions)] as const]))
-const generatedQuestionPackMeta = new Map<string, QuestionPackMeta>(persistedInterviews.flatMap(item => item.questionPackMeta === undefined ? [] : [[item.record.id, item.questionPackMeta] as const]))
-const generatedInvitations = new Map<string, InvitationMeta>(persistedInterviews.flatMap(item => item.invitation === undefined ? [] : [[item.record.id, item.invitation] as const]))
-
-function createInvitationCode(): string {
-  return String(Math.floor(Math.random() * 1_000_000)).padStart(6, '0')
-}
-
-function ensureInvitation(id: string): InvitationMeta {
-  const existing = generatedInvitations.get(id)
-  if (existing !== undefined && existing.status === 'active') return existing
-  const invitation: InvitationMeta = { code: createInvitationCode(), createdAt: new Date().toISOString(), status: 'active' }
-  generatedInvitations.set(id, invitation)
-  persistInterviews()
-  return invitation
-}
-
-type ParsedQuestionPack = { questions: readonly MockQuestion[]; declaredPackId?: string }
-
-function checksumQuestionPack(questions: readonly MockQuestion[]): string {
-  const source = JSON.stringify(questions)
-  let hash = 2166136261
-  for (let index = 0; index < source.length; index += 1) {
-    hash ^= source.charCodeAt(index)
-    hash = Math.imul(hash, 16777619)
-  }
-  return (hash >>> 0).toString(16).padStart(8, '0')
-}
-
-function checksumText(source: string): string {
-  let hash = 2166136261
-  for (let index = 0; index < source.length; index += 1) {
-    hash ^= source.charCodeAt(index)
-    hash = Math.imul(hash, 16777619)
-  }
-  return (hash >>> 0).toString(16).padStart(8, '0')
-}
-
-const ALLOWED_SOURCE_TYPES = new Set(['project_goal', 'expert_profile', 'uploaded_document', 'methodology', 'global_reference', 'official_standard', 'job_description', 'domain_knowledge', 'model_inference'])
-
-function validateQuestionPack(questions: readonly MockQuestion[]): string | null {
-  if (questions.length < 3) return '问题数量不足，至少需要 3 个问题。'
-  const ids = questions.map(item => item.id)
-  const unique = new Set(ids)
-  if (unique.size !== ids.length) return '问题编号存在重复，无法确认对应关系。'
-  for (let index = 0; index < ids.length; index += 1) {
-    const expected = `Q${String(index + 1).padStart(2, '0')}`
-    if (ids[index] !== expected) return `问题编号不连续：第 ${index + 1} 个问题应为 ${expected}，实际为 ${ids[index] ?? '空'}。`
-    const refs = questions[index]?.sourceRefs
-    if (refs === undefined || refs.length === 0) return `${expected} 缺少 sourceRefs，无法确认问题生成依据。请让 Agent 按协议重新生成。`
-    for (const [refIndex, ref] of refs.entries()) {
-      if (!ALLOWED_SOURCE_TYPES.has(ref.sourceType) || ref.title.trim() === '' || !ref.rationale?.trim() || ref.confidence === undefined) {
-        return `${expected} 的 sourceRefs[${refIndex}] 缺少 sourceType、title、rationale 或 confidence。请让 Agent 按协议重新生成。`
-      }
-    }
-  }
-  return null
-}
-
-function normalizeStructuredQuestions(value: unknown): ParsedQuestionPack | null {
-  if (typeof value !== 'object' || value === null || !Array.isArray((value as { questions?: unknown }).questions)) return null
-  const rawQuestions = (value as { questions: unknown[] }).questions
-  const questions = rawQuestions.map((item, index) => {
-    const row = typeof item === 'object' && item !== null ? item as Record<string, unknown> : {}
-    const options = Array.isArray(row.options) ? row.options.map((option) => {
-      if (typeof option === 'object' && option !== null) {
-        const entry = option as Record<string, unknown>
-        const label = String(entry.label ?? '').trim()
-        const description = String(entry.description ?? '').trim()
-        return label === '' ? description : description === '' ? label : `${label}（${description}）`
-      }
-      return String(option)
-    }).filter(Boolean) : undefined
-    const normalizePromptField = (field: unknown): string | undefined => {
-      if (field === undefined || field === null) return undefined
-      if (Array.isArray(field)) {
-        const lines = field.map((entry) => {
-          if (typeof entry === 'object' && entry !== null) {
-            const value = entry as Record<string, unknown>
-            const trigger = String(value.trigger ?? '').trim()
-            const next = String(value.next ?? '').trim()
-            return trigger === '' ? next : next === '' ? trigger : `${trigger} → ${next}`
-          }
-          return String(entry).trim()
-        }).filter(Boolean)
-        return lines.length === 0 ? undefined : lines.join('\n')
-      }
-      const text = String(field).trim()
-      return text === '' ? undefined : text
-    }
-    const sourceRefs = normalizeSourceRefs(row.sourceRefs)
-    const helper = normalizePromptField(row.helper)
-    const followUp = normalizePromptField(row.followUp)
-    return {
-      id: `Q${String(index + 1).padStart(2, '0')}`,
-      title: String(row.title ?? `问题 ${index + 1}`),
-      type: String(row.type ?? '开放式叙述'),
-      question: String(row.question ?? ''),
-      ...(sourceRefs === undefined ? {} : { sourceRefs }),
-      ...(options !== undefined && options.length > 0 ? { options } : {}),
-      ...(helper === undefined ? {} : { helper }),
-      ...(followUp === undefined ? {} : { followUp }),
-    } satisfies MockQuestion
-  })
-  return { questions, ...(typeof (value as { packId?: unknown }).packId === 'string' ? { declaredPackId: (value as { packId: string }).packId } : {}) }
-}
-
-/** Extract every top-level JSON object from a response that may contain prose,
- * model reasoning, markdown fences, or more than one object.  Taking only the
- * first object is unsafe because DSH may put a small diagnostic object before
- * the actual question-pack JSON. */
-function extractJsonObjects(text: string): string[] {
-  const objects: string[] = []
-  let start = -1
-  let depth = 0
-  let inString = false
-  let escaped = false
-  for (let index = 0; index < text.length; index += 1) {
-    const char = text[index]
-    if (inString) {
-      if (escaped) escaped = false
-      else if (char === '\\') escaped = true
-      else if (char === '"') inString = false
-      continue
-    }
-    if (char === '"') { inString = true; continue }
-    if (char === '{') {
-      if (depth === 0) start = index
-      depth += 1
-    } else if (char === '}' && depth > 0) {
-      depth -= 1
-      if (depth === 0 && start >= 0) {
-        objects.push(text.slice(start, index + 1))
-        start = -1
-      }
-    }
-  }
-  return objects
-}
-
-function parseAgentQuestionPack(text: string): ParsedQuestionPack | null {
-  const normalized = text.replaceAll('\r', '').replace(/```(?:markdown)?/gi, '')
-  const jsonBlock = text.match(/```json\s*([\s\S]*?)```/i)?.[1]
-  const embeddedJsons = extractJsonObjects(normalized)
-  // Prefer objects that look like the required contract, while retaining the
-  // full text and fenced block for backwards-compatible markdown responses.
-  const preferredJsons = embeddedJsons.filter(candidate => /["']questions["']\s*:/.test(candidate) && candidate.includes('sourceRefs'))
-  const candidates = [...new Set([
-    ...preferredJsons,
-    jsonBlock,
-    normalized.trim(),
-    ...embeddedJsons,
-  ].filter((candidate): candidate is string => candidate !== undefined && candidate.trim() !== ''))]
-  for (const candidate of candidates) {
-    if (candidate === undefined) continue
-    try {
-      const structured = normalizeStructuredQuestions(JSON.parse(candidate))
-      if (structured !== null && structured.questions.length > 0) return structured
-    } catch { /* fall through to Markdown compatibility parsing */ }
-  }
-  const matches = [...normalized.matchAll(/^\s*(?:#{1,6}\s*)?(?:[-*+]\s*)?(?:\*\*)?Q\s*(\d{1,2})\s*[.．、:：]\s*(?:\*\*)?\s*(.+?)\s*(?:\*\*)?\s*$/gm)]
-  if (matches.length < 3) return null
-  return { questions: matches.map((match, index) => {
-    const number = match[1]!
-    const start = match.index! + match[0].length
-    const end = matches[index + 1]?.index ?? normalized.length
-    const body = normalized.slice(start, end)
-    const lines = body.split('\n').map(line => line.trim()).filter(Boolean)
-    const field = (label: string): string | undefined => {
-      const line = lines.find(value => value.includes(label))
-      if (line === undefined) return undefined
-      return line.replace(/^[-*•\s]+/, '').replace(new RegExp(`^${label}[：:]?\s*`), '').trim()
-    }
-    const question = match[2]!.replace(/^[-*]+\s*/, '').replace(/\*+$/, '').trim()
-    const type = field('回答类型') ?? '开放式叙述'
-    const helper = field('选项辅助')
-    const followUp = field('追问触发')
-    const confirmation = field('专家确认点')
-    const source = field('来源') ?? field('信息来源')
-    const title = question.split(/[——、，,：:？?]/)[0]!.slice(0, 18) || `问题 ${number}`
-    const options = helper === undefined || helper === '无'
-      ? undefined
-      : helper.split(/\s*(?:\/|、|；|;|\||，)\s*/).map(value => value.trim()).filter(value => value !== '' && value !== '无')
-    const sourceRefs: readonly QuestionSourceRef[] | undefined = source === undefined
-      ? undefined
-      : [{ sourceType: 'model_inference', title: source, locator: 'Agent 返回的问题包文本', rationale: '来源由 Agent 在兼容 Markdown 输出中声明，发布前仍需主持人核验。', confidence: 'medium', requiresConfirmation: true }]
-    const parsed: MockQuestion = { id: `Q${number.padStart(2, '0')}`, title, type, question, ...(sourceRefs === undefined ? {} : { sourceRefs }), ...(options !== undefined && options.length > 0 ? { options } : {}) }
-    if (helper !== undefined && helper !== '无') parsed.helper = helper
-    if (followUp !== undefined) parsed.followUp = followUp
-    if (confirmation !== undefined) parsed.helper = parsed.helper === undefined ? `专家确认点：${confirmation}` : `${parsed.helper}；专家确认点：${confirmation}`
-    return parsed
-  }) }
-}
+const generatedProfiles = new Map<string, InterviewProfile>(
+  persistedInterviews.flatMap(
+    item => item.profile === undefined ? [] : [[item.record.id, item.profile] as const]),
+)
+const generatedQuestionPacks = new Map<string, readonly MockQuestion[]>(
+  persistedInterviews.flatMap(
+    item => item.questions === undefined ? [] : [[item.record.id, ensureQuestionSources(item.questions)] as const]),
+)
+const generatedQuestionPackMeta = new Map<string, QuestionPackMeta>(
+  persistedInterviews.flatMap(
+    item => item.questionPackMeta === undefined ? [] : [[item.record.id, item.questionPackMeta] as const]),
+)
+const generatedPublicationSettings = new Map<string, PublicationSettings>(persistedInterviews.flatMap((item) => {
+  const publication = restorePublication(item)
+  return publication === undefined ? [] : [[item.record.id, publication] as const]
+}))
+const generatedInvitations = new Map<string, InvitationMeta>(
+  persistedInterviews.flatMap(
+    item => item.invitation === undefined ? [] : [[item.record.id, item.invitation] as const]),
+)
 
 type InterviewSidebarProps = PropsRuntime<'sidebar.workspaces'> & { createInterviewSession?: () => Promise<void>; openInterviewSession?: (id: string, expert?: string) => void; onOpenSettings?: () => void }
 
-export function InterviewSidebar({ wide, reopenDetails = () => undefined, createInterviewSession, openInterviewSession, onOpenSettings }: InterviewSidebarProps): ReactNode {
+export function InterviewSidebar({
+  wide, reopenDetails = () => undefined, createInterviewSession, openInterviewSession, onOpenSettings,
+}: InterviewSidebarProps): ReactNode {
   const [selected, setSelected] = useState(selectedInterviewId)
   const [interviews, setInterviews] = useState(interviewRecords)
   useEffect(() => {
@@ -463,7 +272,9 @@ export function InterviewSidebar({ wide, reopenDetails = () => undefined, create
       <div className={css.sidebarHint}>访谈条目 · {interviews.length} 个项目</div>
       <div className={css.sidebarActions}>
         <button type="button" className={css.newCourseButton} onClick={() => {
-          if (createInterviewSession !== undefined) void createInterviewSession().catch((reason: unknown) => { window.alert(reason instanceof Error ? reason.message : String(reason)) })
+          if (createInterviewSession !== undefined) void createInterviewSession().catch((reason: unknown) => {
+            window.alert(reason instanceof Error ? reason.message : String(reason))
+          })
           else { const id = `new-${Date.now()}`; setSelected(id); selectInterview(id); reopenDetails() }
         }}>＋ 新建专家访谈</button>
         {onOpenSettings !== undefined && <button type="button" className={css.settingsButton} onClick={onOpenSettings}>访谈设置</button>}
@@ -471,7 +282,8 @@ export function InterviewSidebar({ wide, reopenDetails = () => undefined, create
       <div className={css.historyList}>
         {interviews.length === 0 && <div className={css.sidebarMini}>暂无访谈项目<br />请先新建一个真实访谈</div>}
         {interviews.map(item => <button type="button" key={item.id} className={item.id === selected ? css.historyCardActive : css.historyCard} onClick={() => { setSelected(item.id); if (openInterviewSession !== undefined) openInterviewSession(item.id, item.expert); else { selectInterview(item.id); reopenDetails() } }}>
-          <span className={css.historyStatus}>{item.status}</span><strong>{item.title}</strong><small>{item.expert} · {item.industry}</small><em>{item.updated}</em>
+          <span className={css.historyStatus}>{item.status}</span><strong>{item.title}</strong>
+          <small>{item.expert} · {item.industry}</small><em>{item.updated}</em>
         </button>)}
       </div>
     </> : <div className={css.sidebarMini}>专<br />家</div>}
@@ -504,7 +316,13 @@ async function fileToExpertMaterial(file: File): Promise<ExpertMaterial> {
   }
 }
 
-function ProfileTab({ initialProfile, onGenerate, generating, error, onPreviewMaterial }: { initialProfile: InterviewProfile; onGenerate: (profile: InterviewProfile) => void; generating: boolean; error: string | null; onPreviewMaterial?: (material: ExpertMaterial) => void }) {
+function ProfileTab({ initialProfile, onGenerate, generating, error, onPreviewMaterial }: {
+  initialProfile: InterviewProfile
+  onGenerate: (profile: InterviewProfile) => void
+  generating: boolean
+  error: string | null
+  onPreviewMaterial?: (material: ExpertMaterial) => void
+}) {
   const [materials, setMaterials] = useState<readonly ExpertMaterial[]>(initialProfile.materials ?? [])
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
@@ -535,7 +353,7 @@ function ProfileTab({ initialProfile, onGenerate, generating, error, onPreviewMa
       setUploadError(reason instanceof Error ? reason.message : '资料读取失败，请重试')
     } finally { setUploading(false) }
   }
-  return <><div className={css.intro}><span className={css.eyebrow}>STEP 01 · EXPERT PROFILE</span><h2>先校准专家背景，再生成问题包</h2><p>这些资料只用于生成候选问题，正式访谈由专家 SPA 完成。主持人上传前默认已确认资料事实。</p></div><form className={css.form} onSubmit={submit}><div className={css.grid2}><div className={css.field}><label htmlFor="expert-name">专家姓名</label><input id="expert-name" name="name" defaultValue={initialProfile.name} required /></div><div className={css.field}><label htmlFor="expert-industry">所在行业</label><input id="expert-industry" name="industry" defaultValue={initialProfile.industry} required /></div><div className={css.field}><label htmlFor="expert-role">当前岗位</label><input id="expert-role" name="role" defaultValue={initialProfile.role} required /></div><div className={css.field}><label htmlFor="expert-years">实际从业年限</label><input id="expert-years" name="years" defaultValue={initialProfile.years} required /></div></div><div className={css.field}><label htmlFor="expert-stage">职业阶段（由专家校准）</label><select id="expert-stage" name="stage" defaultValue={initialProfile.stage} required><option value="">请选择职业阶段</option><option value="成长期">成长期</option><option value="成熟期">成熟期</option><option value="带教/管理期">带教/管理期</option></select></div><div className={css.field}><label htmlFor="expert-experience">代表经历与经验边界</label><textarea id="expert-experience" name="experience" defaultValue={initialProfile.experience} required /></div><div className={css.materialUpload}><div className={css.uploadRow}><span><strong>专家资料</strong><small>上传前已确认的履历、项目说明或经历报告，整理后自动加入问题生成素材。</small></span><label className={css.button} htmlFor="expert-material-upload">{uploading ? '整理中…' : '上传专家资料'}</label><input id="expert-material-upload" type="file" multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.md,.markdown,.txt" hidden onChange={(event) => { void handleFiles(event.currentTarget.files); event.currentTarget.value = '' }} /></div>{uploadError !== null && <div className={css.errorLine} role="alert">{uploadError}</div>}{materials.length > 0 && <div className={css.materialList}>{materials.map(material => <div className={css.materialRow} key={material.id}><span><strong>{material.name}</strong><small>已整理 · 已加入问题生成素材</small></span><button type="button" className={css.ghostButton} onClick={() => { onPreviewMaterial?.(material) }}>在better-sidebar预览</button><button type="button" className={css.ghostButton} onClick={() => { setMaterials(current => current.filter(item => item.id !== material.id)) }}>移除</button></div>)}</div>}</div><div className={css.checkline}>{['同意完整记录与引用', '敏感案例匿名', '允许后续回看'].map(label => <label className={css.tag} key={label}><input type="checkbox" defaultChecked />{label}</label>)}</div>{error !== null && <div className={css.errorLine} role="alert">{error} 请检查专家信息后重新执行。</div>}<div className={css.footer}><span className={css.muted}>{generating ? 'DSH Agent 正在生成问题包与访谈概览…' : error !== null ? '上一次生成未完成，原资料已保留' : '提交后会在右侧对话区记录 Agent 任务'}</span><button type="submit" className={css.primaryButton} disabled={generating || uploading}>{generating ? '生成中…' : error !== null ? '重新生成问题包' : '生成问题包'}</button></div></form></>
+  return <><div className={css.intro}><span className={css.eyebrow}>专家信息</span><h2>先校准专家背景，再生成问题包</h2><p>这些资料只用于生成候选问题，正式访谈由专家 SPA 完成。主持人上传前默认已确认资料事实。</p></div><form className={css.form} onSubmit={submit}><div className={css.grid2}><div className={css.field}><label htmlFor="expert-name">专家姓名</label><input id="expert-name" name="name" defaultValue={initialProfile.name} required /></div><div className={css.field}><label htmlFor="expert-industry">所在行业</label><input id="expert-industry" name="industry" defaultValue={initialProfile.industry} required /></div><div className={css.field}><label htmlFor="expert-role">当前岗位</label><input id="expert-role" name="role" defaultValue={initialProfile.role} required /></div><div className={css.field}><label htmlFor="expert-years">实际从业年限</label><input id="expert-years" name="years" defaultValue={initialProfile.years} required /></div></div><div className={css.field}><label htmlFor="expert-stage">职业阶段（由专家校准）</label><select id="expert-stage" name="stage" defaultValue={initialProfile.stage} required><option value="">请选择职业阶段</option><option value="成长期">成长期</option><option value="成熟期">成熟期</option><option value="带教/管理期">带教/管理期</option></select></div><div className={css.field}><label htmlFor="expert-experience">代表经历与经验边界</label><textarea id="expert-experience" name="experience" defaultValue={initialProfile.experience} required /></div><div className={css.materialUpload}><div className={css.uploadRow}><span><strong>专家资料</strong><small>上传前已确认的履历、项目说明或经历报告，整理后自动加入问题生成素材。</small></span><label className={css.button} htmlFor="expert-material-upload">{uploading ? '整理中…' : '上传专家资料'}</label><input id="expert-material-upload" type="file" multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.md,.markdown,.txt" hidden onChange={(event) => { void handleFiles(event.currentTarget.files); event.currentTarget.value = '' }} /></div>{uploadError !== null && <div className={css.errorLine} role="alert">{uploadError}</div>}{materials.length > 0 && <div className={css.materialList}>{materials.map(material => <div className={css.materialRow} key={material.id}><span><strong>{material.name}</strong><small>已整理 · 已加入问题生成素材</small></span><button type="button" className={css.ghostButton} onClick={() => { onPreviewMaterial?.(material) }}>在better-sidebar预览</button><button type="button" className={css.ghostButton} onClick={() => { setMaterials(current => current.filter(item => item.id !== material.id)) }}>移除</button></div>)}</div>}</div><div className={css.checkline}>{['同意完整记录与引用', '敏感案例匿名', '允许后续回看'].map(label => <label className={css.tag} key={label}><input type="checkbox" defaultChecked />{label}</label>)}</div>{error !== null && <div className={css.errorLine} role="alert">{error} 请检查专家信息后重新执行。</div>}<div className={css.footer}><span className={css.muted}>{generating ? 'DSH Agent 正在生成问题包与访谈概览…' : error !== null ? '上一次生成未完成，原资料已保留' : '提交后会在右侧对话区记录 Agent 任务'}</span><button type="submit" className={css.primaryButton} disabled={generating || uploading}>{generating ? '生成中…' : error !== null ? '重新生成问题包' : '生成问题包'}</button></div></form></>
 }
 
 function QuestionSources({ refs }: { refs: readonly QuestionSourceRef[] | undefined }): ReactNode {
@@ -543,18 +361,31 @@ function QuestionSources({ refs }: { refs: readonly QuestionSourceRef[] | undefi
   return <div className={css.sourcePanel}><div className={css.sourcePanelTitle}>问题生成来源</div>{sourceRefs.length === 0 ? <p className={css.sourceEmpty}>暂无逐题来源记录。该问题需要在下次生成时补充来源，不能将模型推断当作事实。</p> : <div className={css.sourceList}>{sourceRefs.map((source, index) => <div className={css.sourceItem} key={`${source.title}-${index}`}><div className={css.sourceItemHead}><strong>{SOURCE_TYPE_LABELS[source.sourceType] ?? source.sourceType}</strong><span>{source.confidence === undefined ? '待核验' : `置信度：${source.confidence}`}</span></div><div className={css.sourceItemTitle}>{source.title}</div>{source.locator && <div><b>定位：</b>{source.locator}</div>}{source.excerpt && <div><b>摘录：</b>{source.excerpt}</div>}{source.rationale && <div><b>作用：</b>{source.rationale}</div>}{source.requiresConfirmation && <div className={css.sourcePending}>需要主持人/专家确认</div>}</div>)}</div>}</div>
 }
 
-function QuestionsTab({ questions, packMeta, pending, initiallyConfirmed, onConfirmPending, onDiscardPending, onConfirmQuestionPack, onUpdateQuestion, onDeleteQuestion, onOpenSpa, onPublishSpa }: { questions: readonly MockQuestion[]; packMeta: QuestionPackMeta | undefined; pending: { questions: readonly MockQuestion[]; meta: QuestionPackMeta } | undefined; initiallyConfirmed?: boolean; onConfirmPending: () => void; onDiscardPending: () => void; onConfirmQuestionPack?: () => void; onUpdateQuestion: (question: MockQuestion) => void; onDeleteQuestion: (id: string) => void; onOpenSpa: () => void; onPublishSpa: () => void }) {
-  const persistedStatus = interviewRecords.find(item => item.id === selectedInterviewId)?.status
-  const [confirmed, setConfirmed] = useState(initiallyConfirmed ?? (persistedStatus === '已确认问题包' || persistedStatus === '已生成 SPA'))
-  const confirmationReported = useRef(confirmed)
-  useEffect(() => {
-    if (confirmed && !confirmationReported.current) {
-      confirmationReported.current = true
-      if (onConfirmQuestionPack === undefined) updateInterviewRecordStatus(selectedInterviewId, '已确认问题包')
-      else onConfirmQuestionPack()
-    }
-  }, [confirmed, onConfirmQuestionPack])
-  const activeQuestions = questions.filter(item => !item.deleted)
+function QuestionsTab({
+  questions, packMeta, pending, published, onConfirmPending, onDiscardPending,
+  onUpdateQuestion, onDeleteQuestion, onOpenSpa, onPublishSpa,
+  onExport, publishing, publicationError, publicationStatus, onCancelPublish, onNewVersion,
+}: {
+  questions: readonly MockQuestion[]
+  packMeta: QuestionPackMeta | undefined
+  pending: { questions: readonly MockQuestion[]; meta: QuestionPackMeta } | undefined
+  published: boolean
+  onConfirmPending: () => void
+  onDiscardPending: () => void
+  onUpdateQuestion: (question: MockQuestion) => void
+  onDeleteQuestion: (id: string) => void
+  onOpenSpa: () => void
+  onPublishSpa: () => void
+  onExport: () => void
+  onNewVersion: () => void
+  publishing: boolean
+  publicationError: string | null
+  publicationStatus: string | null
+  onCancelPublish: () => void
+}) {
+  const feedback = useRef<HTMLDivElement>(null)
+  useEffect(() => { if (publicationError !== null) feedback.current?.scrollIntoView({ block: 'nearest' }) }, [publicationError])
+  const activeQuestions = questions.filter(item => !item.deleted).map(normalizeQuestionControls)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draft, setDraft] = useState<MockQuestion | null>(null)
   const [sourceOpenId, setSourceOpenId] = useState<string | null>(null)
@@ -574,47 +405,66 @@ function QuestionsTab({ questions, packMeta, pending, initiallyConfirmed, onConf
     onDeleteQuestion(item.id)
     if (editingId === item.id) cancelEdit()
   }
-  return <><div className={css.intro}><span className={css.eyebrow}>STEP 02 · QUESTION SET</span><h2>问题包已经生成，等你确认</h2><p>共 {activeQuestions.length} 个有效问题，覆盖授权、经历校准、职责发现、任务深挖 A—J、阶段总结与最终回看。</p>{packMeta && <div className={css.packMeta}>问题包 {packMeta.packId} · v{packMeta.version} · {activeQuestions.length} 题 · 校验码 {packMeta.checksum}</div>}</div>{pending && <div className={css.overwriteNotice}><div><strong>检测到新问题包 v{pending.meta.version}</strong><p>当前问题包 v{packMeta?.version ?? pending.meta.version - 1} 将保留为历史版本。新版本共 {pending.questions.length} 题，确认后才会覆盖当前问题包。</p></div><div className={css.questionActions}><button type="button" className={css.button} onClick={onDiscardPending}>取消覆盖</button><button type="button" className={css.primaryButton} onClick={onConfirmPending}>确认覆盖</button></div></div>}<div className={css.questionList}>{activeQuestions.map(item => <details className={css.questionCard} key={item.id} open={item.id === 'Q01' || item.id === 'Q02' || item.id === editingId}><summary className={css.questionSummary}><span><strong>{item.id} · {item.title}</strong><small>{item.type}</small></span><span className={css.tag}>{item.id >= 'Q07' && item.id <= 'Q16' ? '任务深挖' : '核心'}</span></summary>{editingId === item.id && draft !== null ? <div className={css.editForm}><label className={css.editField}><span>问题标题</span><input value={draft.title} onChange={(event) => { setDraft({ ...draft, title: event.currentTarget.value }) }} /></label><label className={css.editField}><span>问题正文</span><textarea value={draft.question} onChange={(event) => { setDraft({ ...draft, question: event.currentTarget.value }) }} /></label><label className={css.editField}><span>辅助选项 / 说明</span><textarea value={draft.helper ?? ''} onChange={(event) => { setDraft({ ...draft, helper: event.currentTarget.value }) }} /></label><label className={css.editField}><span>追问</span><textarea value={draft.followUp ?? ''} onChange={(event) => { setDraft({ ...draft, followUp: event.currentTarget.value }) }} /></label>{draft.options && <label className={css.editField}><span>选项（每行一个）</span><textarea value={draft.options.join('\n')} onChange={(event) => { setDraft({ ...draft, options: event.currentTarget.value.split('\n') }) }} /></label>}<div className={`${css.questionActions} ${css.questionActionsSpread}`}><div className={css.questionActions}><button type="button" className={css.primaryButton} onClick={saveEdit}>保存修改</button><button type="button" className={css.ghostButton} onClick={cancelEdit}>取消编辑</button></div><button type="button" className={css.dangerButton} onClick={() => { removeQuestion(item) }}>删除问题</button></div></div> : <><p>{item.question}</p>{item.options && <div className={css.questionOptions}>{item.options.map(option => <span className={css.tag} key={option}>{option}</span>)}</div>}{item.helper && <div className={css.questionMeta}><b>辅助选项 / 说明</b>{item.helper}</div>}{item.followUp && <div className={css.questionMeta}><b>追问</b>{item.followUp}</div>}{sourceOpenId === item.id && <QuestionSources refs={item.sourceRefs} />}<div className={`${css.questionActions} ${css.questionActionsSpread}`}><div className={css.questionActions}><button type="button" className={css.button} onClick={() => { beginEdit(item) }}>编辑问题</button><button type="button" className={sourceOpenId === item.id ? css.sourceButtonActive : css.ghostButton} aria-expanded={sourceOpenId === item.id} onClick={() => { setSourceOpenId(sourceOpenId === item.id ? null : item.id) }}>{sourceOpenId === item.id ? '收起来源' : '查看来源'}</button></div><button type="button" className={css.dangerButton} onClick={() => { removeQuestion(item) }}>删除问题</button></div></>}</details>)}</div><div className={css.notice}>选项只帮助专家回忆，不代表标准答案；“其他”和“不适用/不确定”会始终保留。每个追问最多连续 2 次，专家可以暂不回答。删除问题会生成当前问题包的未发布修改，确认后才会影响 SPA。</div><div className={css.footer}><span className={css.muted}>{confirmed ? '已确认 · SPA 已可发布' : '待主持人确认后发布 SPA'}</span><div className={css.questionActions}><button type="button" className={confirmed ? css.button : css.primaryButton} onClick={() => { setConfirmed(true) }}>{confirmed ? '已确认问题包' : '确认问题并生成 SPA'}</button>{confirmed && <><button type="button" className={css.primaryButton} onClick={onPublishSpa}>发布并打开 SPA</button><button type="button" className={css.ghostButton} onClick={onOpenSpa}>查看工作台预览</button></>}</div></div></>
+  return <><fieldset className={css.publishLock} disabled={publishing}><div className={css.intro}><span className={css.eyebrow}>问题包</span><h2>{published ? '当前版本已发布' : '问题包已准备好'}</h2><p>当前有 {activeQuestions.length} 个有效问题。检查内容后，可直接发布给专家。</p>{packMeta && <div className={css.packMeta}>v{packMeta.version} · {activeQuestions.length} 题<details><summary>版本详情</summary><p>问题包 {packMeta.packId}<br />校验码 {packMeta.checksum}</p></details></div>}</div>{pending && <div className={css.overwriteNotice}><div><strong>检测到新问题包 v{pending.meta.version}</strong><p>当前问题包 v{packMeta?.version ?? pending.meta.version - 1} 将保留为历史版本。新版本共 {pending.questions.length} 题，确认后才会覆盖当前问题包。</p></div><div className={css.questionActions}><button type="button" className={css.button} onClick={onDiscardPending}>取消覆盖</button><button type="button" className={css.primaryButton} onClick={onConfirmPending}>确认覆盖</button></div></div>}<div className={css.questionList}>{activeQuestions.map(item => <details className={css.questionCard} key={item.id} open={item.id === 'Q01' || item.id === 'Q02' || item.id === editingId}><summary className={css.questionSummary}><span><strong>{item.id} · {item.title}</strong><small>{item.type} · {item.answerMode === 'text' ? '仅文字' : '选项＋文字'}</small></span><span className={css.tag}>{item.id >= 'Q07' && item.id <= 'Q16' ? '任务深挖' : '核心'}</span></summary>{editingId === item.id && draft !== null ? <div className={css.editForm}><label className={css.editField}><span>问题标题</span><input value={draft.title} onChange={(event) => { setDraft({ ...draft, title: event.currentTarget.value }) }} /></label><p>文字输入框始终显示；有辅助选项时自动使用“选项＋文字输入”。</p><label className={css.editField}><span>问题正文</span><textarea value={draft.question} onChange={(event) => { setDraft({ ...draft, question: event.currentTarget.value }) }} /></label><label className={css.editField}><span>辅助选项 / 说明</span><textarea value={draft.helper ?? ''} onChange={(event) => { setDraft({ ...draft, helper: event.currentTarget.value }) }} /></label><label className={css.editField}><span>追问</span><textarea value={draft.followUp ?? ''} onChange={(event) => { setDraft({ ...draft, followUp: event.currentTarget.value }) }} /></label>{(draft.options || draft.answerMode && draft.answerMode !== 'text') && <label className={css.editField}><span>实质回答选项（每行一个）</span><textarea value={(draft.options ?? []).join('\n')} onChange={(event) => { setDraft({ ...draft, options: event.currentTarget.value.split('\n') }) }} /></label>}<div className={`${css.questionActions} ${css.questionActionsSpread}`}><div className={css.questionActions}><button type="button" className={css.primaryButton} onClick={saveEdit}>保存修改</button><button type="button" className={css.ghostButton} onClick={cancelEdit}>取消编辑</button></div><button type="button" className={css.dangerButton} onClick={() => { removeQuestion(item) }}>删除问题</button></div></div> : <><p>{item.question}</p>{item.options && <div className={css.questionOptions}>{item.options.map(option => <span className={css.tag} key={option}>{option}</span>)}</div>}{item.helper && <div className={css.questionMeta}><b>辅助选项 / 说明</b>{item.helper}</div>}{item.followUp && <div className={css.questionMeta}><b>追问</b>{item.followUp}</div>}{sourceOpenId === item.id && <QuestionSources refs={item.sourceRefs} />}<div className={`${css.questionActions} ${css.questionActionsSpread}`}><div className={css.questionActions}><button type="button" className={css.button} onClick={() => { beginEdit(item) }}>编辑问题</button><button type="button" className={sourceOpenId === item.id ? css.sourceButtonActive : css.ghostButton} aria-expanded={sourceOpenId === item.id} onClick={() => { setSourceOpenId(sourceOpenId === item.id ? null : item.id) }}>{sourceOpenId === item.id ? '收起来源' : '查看来源'}</button></div><button type="button" className={css.dangerButton} onClick={() => { removeQuestion(item) }}>删除问题</button></div></>}</details>)}</div><div className={css.notice}>文字输入框始终显示，选项仅帮助专家回忆。只保留实质回答选项；“不适用”“暂不适用”“暂不使用”等兜底项及“其他，请补充”均不作为选项展示，请直接在常驻文字框补充；正常选项保留，专家仍可暂不回答。文字追问每题最多 2 次，Worker 的较低次数限制仍有效。旧题包在更新 Worker 页面及服务后直接生效，无需重新生成题包；历史回答和会话保留。编辑发布仍创建新版本。</div><div className={css.questionActions} aria-label="问题包操作"><button type="button" className={css.ghostButton} onClick={onExport}>下载 JSON 题包</button><button type="button" className={css.ghostButton} onClick={onNewVersion}>创建新发布版本</button></div><div ref={feedback} aria-label="发布反馈">{publicationError && <><p className={css.error} role="alert">发布失败：{publicationError}</p><button type="button" className={css.ghostButton} onClick={() => { window.dispatchEvent(new CustomEvent('interview-settings-open', { detail: { tab: 'worker' } })) }}>配置发布授权</button></>}{publishing && <p role="status">{publicationStatus ?? '正在连接 Worker…'}</p>}</div><div className={css.footer}><span className={css.muted}>{published ? '当前版本已发布' : '当前版本待发布'}</span><div className={css.questionActions}><button type="button" className={css.primaryButton} disabled={publishing || pending !== undefined} onClick={onPublishSpa}>{publishing ? '正在发布…' : '发布并打开 SPA'}</button><button type="button" className={css.ghostButton} onClick={onOpenSpa}>查看工作台预览</button></div></div></fieldset>{publishing && <button type="button" className={css.ghostButton} onClick={onCancelPublish}>取消发布</button>}</>
 }
 
-let activeInterviewFieldnoteId = 'FN-DRAFT'
 
-function SpaTab({ profile, questions, invitation, onPublishSpa }: { profile: InterviewProfile; questions: readonly MockQuestion[]; invitation: InvitationMeta; onPublishSpa: (open?: boolean) => string | null }) {
-  const [stage, setStage] = useState(0)
-  const [spaUrl, setSpaUrl] = useState('')
-  const [qrDataUrl, setQrDataUrl] = useState('')
+type SpaTabProps = { publicationSettings: PublicationSettings; publicationStatus: string | null }
+
+function SpaTab({ publicationSettings, publicationStatus }: SpaTabProps) {
   const [copied, setCopied] = useState<string | null>(null)
-  useEffect(() => {
-    const publicFieldnoteId = toPublicFieldnoteId(activeInterviewFieldnoteId)
-    const url = `${PUBLIC_SPA_BASE_URL}/practice-expert-interview-spa.html?fieldnoteId=${encodeURIComponent(publicFieldnoteId)}`
-    setSpaUrl(url)
-    // Keep QR generation out of the plugin bundle. The image endpoint is only
-    // given the public SPA URL, never interview answers or profile data.
-    setQrDataUrl(`https://api.qrserver.com/v1/create-qr-code/?size=176x176&margin=8&data=${encodeURIComponent(url)}`)
-  }, [activeInterviewFieldnoteId])
-  const shareText = `邀请您参加实践专家访谈\n${profile.name || '实践专家'} · ${profile.role || profile.industry || '实践岗位'}\n请打开链接完成访谈：${spaUrl}\n访谈口令：${invitation.code}\n口令激活后有效72小时。`
-  const copy = async (label: string): Promise<void> => {
-    const prepared = onPublishSpa(false) ?? spaUrl
-    const value = label === '分享文案' ? shareText.replace(spaUrl, prepared) : prepared
-    try { await navigator.clipboard.writeText(value); setCopied(label); window.setTimeout(() => setCopied(null), 1600) } catch { setCopied('复制失败') }
+  const receipt = readWorkerReceipt(publicationSettings.worker)
+  const code = receipt?.code ?? (receipt ? new URLSearchParams(new URL(receipt.url).hash.slice(1)).get('code') : null)
+  const copy = async (kind: 'code' | 'link'): Promise<void> => {
+    const value = kind === 'code' ? code : receipt?.url
+    if (!value) return
+    try { await navigator.clipboard.writeText(value); setCopied(kind) } catch { setCopied('failed') }
   }
-  return <><div className={css.intro}><span className={css.eyebrow}>STEP 03 · SPA PREVIEW</span><h2>访谈 SPA 已具备发布条件</h2><p>正式访谈在独立 SPA 中完成，专家不会进入插件工作台。先保存当前问题包，再复制链接或打开 SPA。</p></div><div className={css.preview}><div className={css.previewTop}><span className={css.metaLabel}>{profile.name || '实践专家'} · {profile.role || profile.industry || '待补充'}</span><span className={css.pill}>可发布</span></div><div className={css.previewBody}><h3 className={css.previewTitle}>专注回答，呈现真实经验</h3><p className={css.muted}>单题模式 · 进度提示 · 语音输入 · 可暂不回答 · 提交确认</p><div className={css.stageRow}>{['背景确认', '核心职责', '真实案例', '回看确认'].map((item, index) => <button type="button" key={item} className={index === stage ? `${css.stage} ${css.stageActive}` : css.stage} onClick={() => { setStage(index) }}>{String(index + 1).padStart(2, '0')} · {item}</button>)}</div><div className={css.quote}>{questions[0]?.question ?? '问题包尚未生成。'}</div><div className={css.field}><label>专家回答区域</label><textarea placeholder="正式 SPA 中由专家填写；此处仅为发布前预览……" readOnly /></div><div className={css.inviteCard}><div><span className={css.eyebrow}>专家访谈口令</span><strong>{invitation.code}</strong><p>6位数字口令不过期；专家首次激活后，SPA会话有效72小时。重新生成口令后，原口令失效。</p></div><button type="button" className={css.button} onClick={() => { void navigator.clipboard?.writeText(invitation.code); setCopied('口令'); window.setTimeout(() => setCopied(null), 1600) }}>{copied === '口令' ? '已复制口令' : '复制口令'}</button></div><div className={css.shareCard}><div className={css.shareInfo}><span className={css.eyebrow}>可分享访谈链接</span><code>{spaUrl}</code><div className={css.questionActions}><button type="button" className={css.button} onClick={() => { void copy('链接') }}>{copied === '链接' ? '已复制链接' : '复制链接'}</button><button type="button" className={css.button} onClick={() => { void copy('分享文案') }}>{copied === '分享文案' ? '已复制文案' : '复制分享文案'}</button></div></div>{qrDataUrl !== '' && <img className={css.qrCode} src={qrDataUrl} alt="SPA 访谈二维码" />}</div><div className={css.footer}><button type="button" className={css.ghostButton} onClick={() => { onPublishSpa(true) }}>发布并打开 SPA</button><button type="button" className={css.primaryButton} onClick={() => { onPublishSpa(false) }}>保存并生成链接</button></div></div></div></>
+  return <div className={css.shareLayout}>
+    <section className={css.card}><h3>专家访谈口令</h3><strong className={css.shareCode}>{code || (receipt?.accessStatus === 'not_required' ? '未启用口令验证' : '发布后由 Worker 生成')}</strong><div><button type="button" className={css.ghostButton} disabled={!code} onClick={() => { void copy('code') }}>复制口令</button></div><p className={css.muted}>口令随分享链接交给专家。持有链接的人可以使用此口令。</p></section>
+    <section className={css.card}><h3>分享链接</h3>{publicationStatus && <p role="status">{publicationStatus}</p>}{receipt ? <>
+      <p className={css.muted}>已发布题包 {receipt.key} · v{receipt.version}</p>
+      <div className={css.editField}><span>Worker 访谈地址</span><div className={css.shareLinkControl}>
+        <input readOnly aria-label="Worker 访谈地址" value={receipt.url} />
+        <button type="button" className={css.copyLinkButton} aria-label="复制链接" title="复制链接" onClick={() => { void copy('link') }}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+            <rect x="8" y="8" width="12" height="13" rx="2" />
+            <path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h3" />
+          </svg>
+        </button>
+      </div></div>
+      <p className={css.muted}>链接包含题包标识和口令，专家打开后自动进入访谈。</p>
+    </> : <p className={css.muted}>尚未发布到 Worker。请先到问题包页确认并发布。</p>}{copied && <p role="status">{copied === 'failed' ? '复制失败，请手动复制' : copied === 'code' ? '口令已复制' : '链接已复制'}</p>}</section>
+  </div>
 }
 
-export function InterviewWorkbench(props: InterviewProps): ReactNode {
+export function InterviewWorkbench(props: InterviewProps & { initialTab?: InterviewTab }): ReactNode {
   const isNewInterview = !interviewRecords.some(item => item.id === selectedInterviewId)
   const selectedRecord = interviewRecords.find(item => item.id === selectedInterviewId)
   const recordProfile: InterviewProfile | undefined = selectedRecord === undefined ? undefined : { name: selectedRecord.expert, industry: selectedRecord.industry, role: '', years: '', stage: '', experience: '' }
   const initialProfile = isNewInterview ? EMPTY_PROFILE : generatedProfiles.get(selectedInterviewId) ?? recordProfile ?? EMPTY_PROFILE
-  const [tab, setTab] = useState<InterviewTab>('profile')
+  const [tab, setTab] = useState<InterviewTab>(props.initialTab ?? 'profile')
+  const [publishing, setPublishing] = useState(false)
+  const [publicationError, setPublicationError] = useState<string | null>(null)
+  const [publicationStatus, setPublicationStatus] = useState<string | null>(null)
+  const publicationOperation = useRef<AbortController | null>(null)
+  useEffect(() => () => { publicationOperation.current?.abort() }, [])
   const [generationStatus, setGenerationStatus] = useState<GenerationStatus>('idle')
   const [generationError, setGenerationError] = useState<string | null>(null)
   const [profile, setProfile] = useState<InterviewProfile>(initialProfile)
   const [questionPack, setQuestionPack] = useState<readonly MockQuestion[]>(generatedQuestionPacks.get(selectedInterviewId) ?? [])
   const [questionPackMeta, setQuestionPackMeta] = useState<QuestionPackMeta | undefined>(generatedQuestionPackMeta.get(selectedInterviewId))
-  const [pendingQuestionPack, setPendingQuestionPack] = useState<{ questions: readonly MockQuestion[]; meta: QuestionPackMeta } | undefined>()
+  const [publicationSettings, setPublicationSettings] = useState<PublicationSettings>(
+    generatedPublicationSettings.get(selectedInterviewId) ?? {},
+  )
+  useEffect(() => {
+    setPublicationSettings(generatedPublicationSettings.get(selectedInterviewId) ?? {})
+  }, [props.sessionId])
+  const [pendingQuestionPack, setPendingQuestionPack] = useState<{
+    questions: readonly MockQuestion[]
+    meta: QuestionPackMeta
+  } | undefined>()
   const fieldnoteId = interviewRecords.find(item => item.id === selectedInterviewId)?.fieldnoteId ?? `FN-${selectedInterviewId.replace(/^new-/, '')}`
-  activeInterviewFieldnoteId = fieldnoteId
   const tabs = [['profile', '专家信息'], ['overview', '概览'], ['questions', '问题包'], ['spa', 'SPA 预览']] as const
   const generate = (nextProfile: InterviewProfile): void => {
     setProfile(nextProfile)
@@ -623,6 +473,7 @@ export function InterviewWorkbench(props: InterviewProps): ReactNode {
     generatedProfiles.set(selectedInterviewId, nextProfile)
     if (isNewInterview) addInterviewRecord(nextProfile, selectedInterviewId, '问题包生成中')
     else updateInterviewRecordStatus(selectedInterviewId, '问题包生成中')
+    const generationReferences = getEnabledGlobalReferenceDocuments()
     void props.generateInterview(props.sessionId, nextProfile).then((agentText) => {
       const parsed = parseAgentQuestionPack(agentText)
       if (parsed === null) throw new Error('Agent 已返回结果，但未找到完整的问题包 JSON 或至少 3 个可识别问题。请查看右侧对话原文后重新执行生成。')
@@ -630,14 +481,11 @@ export function InterviewWorkbench(props: InterviewProps): ReactNode {
       const validationError = validateQuestionPack(nextQuestionPack)
       if (validationError !== null) throw new Error(`${validationError} 请让 Agent 重新生成。`)
       const currentMeta = generatedQuestionPackMeta.get(selectedInterviewId)
-      const nextMeta: QuestionPackMeta = {
+      const nextMeta = createQuestionPackMeta({
+        questions: nextQuestionPack, sessionId: String(props.sessionId), generatedAt: new Date().toISOString(),
         packId: parsed.declaredPackId ?? currentMeta?.packId ?? `QP-${new Date().toISOString().slice(0, 10).replaceAll('-', '')}-${selectedInterviewId}`,
-        version: (currentMeta?.version ?? 0) + 1,
-        generatedAt: new Date().toISOString(),
-        sourceSessionId: String(props.sessionId),
-        checksum: checksumQuestionPack(nextQuestionPack),
-        globalReferences: getEnabledGlobalReferenceDocuments().map(document => ({ id: document.id, title: document.title, version: document.version, contentHash: checksumText(document.markdown) })),
-      }
+        version: (currentMeta?.version ?? 0) + 1, references: generationReferences,
+      })
       if (questionPack.length > 0) {
         setPendingQuestionPack({ questions: nextQuestionPack, meta: nextMeta })
         setGenerationStatus('done')
@@ -679,8 +527,14 @@ export function InterviewWorkbench(props: InterviewProps): ReactNode {
     updateInterviewRecordStatus(selectedInterviewId, '问题待确认')
   }
   const updateQuestion = (nextQuestion: MockQuestion): void => {
-    const nextQuestionPack = questionPack.map(item => item.id === nextQuestion.id ? cleanQuestionDraft(nextQuestion) : item)
-    const nextMeta = questionPackMeta === undefined ? undefined : { ...questionPackMeta, version: questionPackMeta.version + 1, generatedAt: new Date().toISOString(), checksum: checksumQuestionPack(nextQuestionPack) }
+    const cleaned = cleanQuestionDraft(nextQuestion)
+    const current = questionPack.find(item => item.id === nextQuestion.id)
+    if (JSON.stringify(current) === JSON.stringify(cleaned)) return
+    const nextQuestionPack = questionPack.map(item => item.id === nextQuestion.id ? cleaned : item)
+    const nextMeta = questionPackMeta === undefined ? undefined : {
+      ...questionPackMeta, version: questionPackMeta.version + 1,
+      generatedAt: new Date().toISOString(), checksum: checksumQuestionPack(nextQuestionPack),
+    }
     setQuestionPack(nextQuestionPack)
     if (nextMeta !== undefined) setQuestionPackMeta(nextMeta)
     generatedQuestionPacks.set(selectedInterviewId, nextQuestionPack)
@@ -691,8 +545,12 @@ export function InterviewWorkbench(props: InterviewProps): ReactNode {
   const deleteQuestion = (id: string): void => {
     const activeCount = questionPack.filter(item => !item.deleted).length
     if (activeCount <= 3) return
-    const nextQuestionPack = questionPack.map(item => item.id === id ? { ...item, deleted: true, deletedAt: new Date().toISOString() } : item)
-    const nextMeta = questionPackMeta === undefined ? undefined : { ...questionPackMeta, version: questionPackMeta.version + 1, generatedAt: new Date().toISOString(), checksum: checksumQuestionPack(nextQuestionPack) }
+    const nextQuestionPack = questionPack.map(item =>
+      item.id === id ? { ...item, deleted: true, deletedAt: new Date().toISOString() } : item)
+    const nextMeta = questionPackMeta === undefined ? undefined : {
+      ...questionPackMeta, version: questionPackMeta.version + 1,
+      generatedAt: new Date().toISOString(), checksum: checksumQuestionPack(nextQuestionPack),
+    }
     setQuestionPack(nextQuestionPack)
     if (nextMeta !== undefined) setQuestionPackMeta(nextMeta)
     generatedQuestionPacks.set(selectedInterviewId, nextQuestionPack)
@@ -700,32 +558,87 @@ export function InterviewWorkbench(props: InterviewProps): ReactNode {
     persistInterviews()
     updateInterviewRecordStatus(selectedInterviewId, '问题包有未发布修改')
   }
-  const publishSpa = (open = true): string | null => {
-    if (typeof window === 'undefined') return null
-    const invitation = ensureInvitation(selectedInterviewId)
-    const payload = JSON.stringify({ fieldnoteId, profile, questions: questionPack.filter(item => !item.deleted), questionPackMeta, invitation, publishedAt: new Date().toISOString() })
-    window.localStorage.setItem(`practice-expert-interview:${fieldnoteId}`, payload)
-    // Keep an alias under the URL-safe ID so the public SPA can load the
-    // project without exposing Chinese characters in its address.
-    const publicFieldnoteId = toPublicFieldnoteId(fieldnoteId)
-    window.localStorage.setItem(`practice-expert-interview:${publicFieldnoteId}`, payload)
-    window.localStorage.setItem('practice-expert-interview:latest', payload)
-    updateInterviewRecordStatus(selectedInterviewId, '已生成 SPA')
-    const url = `/practice-expert-interview-spa.html?fieldnoteId=${encodeURIComponent(publicFieldnoteId)}`
-    const publicUrl = `${PUBLIC_SPA_BASE_URL}${url}`
-    if (open) window.open(publicUrl, '_blank', 'noopener,noreferrer')
-    return publicUrl
+  const createPublicationVersion = (): void => {
+    if (!questionPackMeta) return
+    const next = { ...questionPackMeta, version: questionPackMeta.version + 1, generatedAt: new Date().toISOString() }
+    setQuestionPackMeta(next)
+    generatedQuestionPackMeta.set(selectedInterviewId, next)
+    persistInterviews()
+    updateInterviewRecordStatus(selectedInterviewId, '问题包有未发布修改')
   }
-  const statusText = generationStatus === 'running' ? 'Agent 生成中' : generationStatus === 'done' ? '问题包待确认' : generationStatus === 'failed' ? '生成失败' : '准备录入'
+  const preparePublication = () => {
+    if (!questionPackMeta?.generatedAt) throw new Error('请先生成有效版本的问题包')
+    const policy = publicationSettings.legacyVersion === questionPackMeta.version
+      && publicationSettings.scope && publicationSettings.count?.trim()
+      ? { scope: publicationSettings.scope, maxFollowups: Number(publicationSettings.count) } : undefined
+    const invitation = publicationSettings.legacyInvitationVersion === questionPackMeta.version
+      ? generatedInvitations.get(selectedInterviewId) : undefined
+    const publication = createPublication({
+      fieldnoteId, publicFieldnoteId: toPublicFieldnoteId(fieldnoteId), goal: publicationSettings.goal?.trim() || selectedRecord?.title || `${profile.industry} · ${profile.role}访谈`, profile,
+      questions: questionPack.filter(item => !item.deleted), questionPackMeta, invitation, interviewPolicy: policy,
+    }, questionPackMeta.generatedAt)
+    return { ...publication, invitation }
+  }
+  const publishSpa = async (): Promise<void> => {
+    if (publicationOperation.current) return
+    const controller = new AbortController()
+    publicationOperation.current = controller
+    const interviewId = selectedInterviewId
+    setPublishing(true); setPublicationError(null); setPublicationStatus('正在连接 Worker…')
+    try {
+      const target = readWorkerOrigin()
+      if (!target) throw new Error('请先在访谈设置的“Worker 发布”中填写目标地址')
+      const publication = preparePublication()
+      const key = `${publication.publicFieldnoteId}-v${publication.questionPackMeta.version}`
+      const result = await publishToWorker(target, key, JSON.stringify(publication), controller.signal, setPublicationStatus)
+      const receipt: WorkerPublicationReceipt = {
+        ...result, version: publication.questionPackMeta.version,
+        url: result.url,
+      }
+      const next = { ...(generatedPublicationSettings.get(interviewId) ?? publicationSettings), worker: receipt }
+      generatedPublicationSettings.set(interviewId, next)
+      setPublicationSettings(next)
+      updateInterviewRecordStatus(interviewId, '已生成 SPA')
+      setPublicationStatus('发布成功，已打开 SPA')
+      setTab('spa')
+    } catch (error) {
+      if (!controller.signal.aborted) { setPublicationError(error instanceof Error ? error.message : '发布失败，请重试'); setPublicationStatus(null) }
+    } finally {
+      if (publicationOperation.current === controller) {
+        publicationOperation.current = null
+        if (!controller.signal.aborted) setPublishing(false)
+      }
+    }
+  }
+  const exportQuestionPack = (): void => {
+    try {
+      const publication = preparePublication()
+      const blob = new Blob([JSON.stringify(publication, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = `${publication.publicFieldnoteId}-v${publication.questionPackMeta.version}.json`
+      anchor.click()
+      window.setTimeout(() => { URL.revokeObjectURL(url) }, 0)
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : '题包导出失败。')
+    }
+  }
+  const published = publicationSettings.worker?.version === questionPackMeta?.version && publicationSettings.worker !== undefined
+  const statusText = publishing ? '正在发布' : generationStatus === 'running' ? '正在生成问题包' : published ? '当前版本已发布' : questionPack.length > 0 ? '问题包待发布' : generationStatus === 'failed' ? '生成失败' : '准备录入'
   const activeQuestionCount = questionPack.filter(item => !item.deleted).length
-  return <div className={css.workbench}><header className={css.header}><div><span className={css.eyebrow}>实践专家访谈工作台</span><h1>{isNewInterview ? '新建实践专家访谈' : `${profile.industry} · ${profile.role}访谈`}</h1><p>插件负责准备问题包与发布 SPA；专家的实际访谈在 SPA 中完成。</p></div><span className={css.pill}>{statusText}</span></header><nav className={css.tabs} aria-label="专家访谈工作台标签页">{tabs.map(([id, label]) => <button type="button" key={id} className={tab === id ? css.tabActive : css.tab} disabled={id !== 'profile' && generationStatus !== 'done' && questionPack.length === 0} onClick={() => { setTab(id) }}>{label}</button>)}</nav><main className={css.content}><div className={css.contentTop}><div><span className={css.eyebrow}>{isNewInterview ? 'NEW INTERVIEW · 待录入' : `${fieldnoteId} · ${profile.name}`}</span></div><span className={css.mockLabel}>{generationStatus === 'done' || questionPack.length > 0 ? 'AGENT DRAFT' : isNewInterview ? 'NEW DRAFT' : 'PREPARATION'}</span></div>{tab === 'profile' && <ProfileTab initialProfile={initialProfile} onGenerate={generate} generating={generationStatus === 'running'} error={generationError} onPreviewMaterial={(material) => { props.openExpertMaterialPreview?.(props.sessionId, material) }} />}{tab === 'overview' && <><div className={css.intro}><span className={css.eyebrow}>WORKSPACE OVERVIEW</span><h2>把一次访谈，整理成可回看的实践证据</h2><p>当前条目围绕{profile.industry}行业{profile.role}，覆盖经历校准、核心职责、真实案例与专家回看。</p></div><div className={css.grid3}><div className={css.card}><h3>专家信息</h3><p>{profile.name} · {profile.role}<br />{profile.industry} · {profile.stage}<br />{profile.years}从业经验</p></div><div className={css.card}><h3>问题包</h3><p>{activeQuestionCount || 0} 个有效问题<br />开放回忆 + 选项辅助<br />{generationStatus === 'done' || questionPack.length > 0 ? '等待主持人确认' : '尚未生成'}<br />{questionPackMeta ? `v${questionPackMeta.version} · ${questionPackMeta.checksum}` : ''}</p></div><div className={css.card}><h3>SPA 单页</h3><p>Fieldnote ID：{fieldnoteId}<br />单题模式 · 进度提示<br />确认后按 ID 发布</p></div></div><div className={css.summary}><h3>下一步</h3><p>先确认专家背景并生成问题包。Agent 任务会同步出现在右侧对话区；问题包确认后才能发布 SPA。</p><div className={css.footer}><span className={css.muted}>{generationStatus === 'running' ? '正在等待 Agent 返回…' : '准备就绪'}</span><button type="button" className={css.primaryButton} disabled={generationStatus !== 'done' && questionPack.length === 0} onClick={() => { setTab('questions') }}>查看问题包</button></div></div></>}{tab === 'questions' && <QuestionsTab questions={questionPack} packMeta={questionPackMeta} pending={pendingQuestionPack} onConfirmPending={confirmPendingQuestionPack} onDiscardPending={discardPendingQuestionPack} onUpdateQuestion={updateQuestion} onDeleteQuestion={deleteQuestion} onOpenSpa={() => { setTab('spa') }} onPublishSpa={publishSpa} />}{tab === 'spa' && <SpaTab profile={profile} questions={questionPack.filter(item => !item.deleted)} invitation={ensureInvitation(selectedInterviewId)} onPublishSpa={publishSpa} />}</main></div>
+  return <div className={css.workbench}><header className={css.header}><div><span className={css.eyebrow}>实践专家访谈工作台</span><h1>{isNewInterview ? '新建实践专家访谈' : `${profile.industry} · ${profile.role}访谈`}</h1><p>准备问题包并发布访谈，专家通过分享链接作答。</p></div><span className={css.pill}>{statusText}</span></header><nav className={css.tabs} aria-label="专家访谈工作台标签页">{tabs.map(([id, label]) => <button type="button" key={id} className={tab === id ? css.tabActive : css.tab} disabled={publishing || id !== 'profile' && generationStatus !== 'done' && questionPack.length === 0} onClick={() => { setTab(id) }}>{label}</button>)}</nav><main className={css.content}><div className={css.contentTop}><div><span className={css.eyebrow}>{isNewInterview ? '新访谈 · 待录入' : `${fieldnoteId} · ${profile.name}`}</span></div></div>{tab === 'profile' && <ProfileTab initialProfile={initialProfile} onGenerate={generate} generating={generationStatus === 'running'} error={generationError} onPreviewMaterial={(material) => { props.openExpertMaterialPreview?.(props.sessionId, material) }} />}{tab === 'overview' && <><div className={css.intro}><span className={css.eyebrow}>访谈概览</span><h2>把一次访谈，整理成可回看的实践证据</h2><p>当前条目围绕{profile.industry}行业{profile.role}，覆盖经历校准、核心职责、真实案例与专家回看。</p></div><div className={css.grid3}><div className={css.card}><h3>专家信息</h3><p>{profile.name} · {profile.role}<br />{profile.industry} · {profile.stage}<br />{profile.years}从业经验</p></div><div className={css.card}><h3>问题包</h3><p>{activeQuestionCount || 0} 个有效问题<br />开放回忆 + 选项辅助<br />{published ? '当前版本已发布' : questionPack.length > 0 ? '可校阅并发布' : '尚未生成'}<br />{questionPackMeta ? `v${questionPackMeta.version} · ${questionPackMeta.checksum}` : ''}</p></div><div className={css.card}><h3>SPA 单页</h3><p>Fieldnote ID：{fieldnoteId}<br />单题模式 · 进度提示<br />发布后生成分享链接</p></div></div><div className={css.summary}><h3>下一步</h3><p>先确认专家背景并生成问题包。Agent 任务会同步出现在右侧对话区；校阅问题包后可直接发布。</p><div className={css.footer}><span className={css.muted}>{generationStatus === 'running' ? '正在等待 Agent 返回…' : '准备就绪'}</span><button type="button" className={css.primaryButton} disabled={generationStatus !== 'done' && questionPack.length === 0} onClick={() => { setTab('questions') }}>查看问题包</button></div></div></>}{tab === 'questions' && <QuestionsTab questions={questionPack} packMeta={questionPackMeta} pending={pendingQuestionPack} published={published} onConfirmPending={confirmPendingQuestionPack} onDiscardPending={discardPendingQuestionPack} onUpdateQuestion={updateQuestion} onDeleteQuestion={deleteQuestion} onOpenSpa={() => { setTab('spa') }} onPublishSpa={() => { void publishSpa() }} onExport={exportQuestionPack} publishing={publishing} onNewVersion={createPublicationVersion} publicationError={publicationError} publicationStatus={publicationStatus} onCancelPublish={() => { publicationOperation.current?.abort(); setPublishing(false); setPublicationStatus(null); setPublicationError('已取消发布等待；如 Worker 已接收，重试会确认相同题包') }} />}{tab === 'spa' && <SpaTab publicationSettings={publicationSettings} publicationStatus={publicationStatus} />}</main></div>
 }
 
 export function InterviewDetails(props: InterviewProps): ReactNode {
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [workerSettings, setWorkerSettings] = useState(false)
   useEffect(() => {
-    const open = (): void => setSettingsOpen(true)
-    const close = (): void => setSettingsOpen(false)
+    const open = (event: Event): void => {
+      setWorkerSettings((event as CustomEvent<{ tab?: unknown }>).detail?.tab === 'worker')
+      setSettingsOpen(true)
+    }
+    const close = (): void => { setSettingsOpen(false); setWorkerSettings(false) }
     window.addEventListener('interview-settings-open', open)
     window.addEventListener('interview-selected', close)
     return () => {
@@ -733,6 +646,7 @@ export function InterviewDetails(props: InterviewProps): ReactNode {
       window.removeEventListener('interview-selected', close)
     }
   }, [])
-  if (settingsOpen) return <InterviewSettings onClose={() => { setSettingsOpen(false) }} {...(props.openGlobalReferencePreview === undefined ? {} : { onPreviewDocument: props.openGlobalReferencePreview })} />
-  return <InterviewWorkbench key={selectedInterviewId} {...props} />
+  if (settingsOpen) return <InterviewSettings {...(workerSettings ? { initialTab: 'worker' as const } : {})} onClose={() => { setSettingsOpen(false) }}
+    {...(props.openGlobalReferencePreview === undefined ? {} : { onPreviewDocument: props.openGlobalReferencePreview })} />
+  return <InterviewWorkbench key={selectedInterviewId} {...props} {...(workerSettings ? { initialTab: 'questions' as const } : {})} />
 }

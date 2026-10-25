@@ -1,0 +1,13 @@
+# Worker input hotfix operations
+
+English | [中文](worker-ime-hotfix.zh.md)
+
+The portal reads `practice-expert-worker.js` into memory at startup. Replacing its release-directory file alone does not update the running response. The no-restart hotfix uses the existing Nginx `conf.d` bind mount and changes only `location = /practice-expert-worker.js` in `teaching-worker.portal.locations.inc` to an alias for a versioned public script under a hidden configuration subdirectory. No directory alias or additional public route is created. The Worker release, service configuration, account permissions, sessions and publications remain unchanged.
+
+Before deployment, back up the original bridge and location include outside Nginx `conf.d`, record hashes and Worker PID, and verify the exact location occurs once. Preserve all bytes outside that location. The replacement needs JavaScript MIME with UTF-8 and `Cache-Control: no-store`; preserve any existing security headers. Check that the Nginx container can read the file, run `nginx -t`, then reload gracefully. On failure restore the original include, validate and reload. Verify the public HTTPS script hash against the tested artifact, the page and SPA alias, API authentication and health, and the unchanged Worker PID. Keep backup paths and the deployed hash in the private deployment receipt.
+
+**Retire the override during the next full Worker release:** deploy a release containing the input fix, verify the upstream script against that release's artifact, and replace only the static script location with its ordinary proxy definition. Use the backup as a reference; do not restore an old entire include over newer routes. Run `nginx -t` and reload, then confirm the public script matches the new release. Remove the unused versioned script after confirming it has no configuration reference; retain rollback backups according to the deployment policy. Leaving the alias active would hide later release changes to the bridge.
+
+For immediate rollback, restore the original location from the matching backup and validate/reload Nginx; the Worker still holds the original bridge. A normal page refresh requests the no-store script; Ctrl+F5 forces a reload for an already open page. Do not clear browser site data or interview drafts as part of this fix.
+
+Run `node worker/tests/worker-input.browser.mjs` from the repository root, setting `PORTAL_TEST_CHROMIUM` to an installed compatible Chromium/Edge executable when needed. It launches an isolated headless browser, supplies synthetic session data and blocks other origins. Composition and paste are simulated DOM events, not Windows native IME/clipboard acceptance. It sends no answers or model tasks to production.

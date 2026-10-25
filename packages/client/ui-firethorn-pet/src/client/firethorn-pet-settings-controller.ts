@@ -65,7 +65,10 @@ export class FirethornPetSettingsController {
     this.unsubscribe()
   }
 
-  /** @returns the slot face consumed by the card renderer. */
+  /**
+   * Expose the staged settings snapshot and actions to the card renderer.
+   * @returns The slot face consumed by the card renderer.
+   */
   inject(): FirethornPetSettingsCardFace {
     return {
       hooks: { firethornPetCard: this.store },
@@ -76,7 +79,10 @@ export class FirethornPetSettingsController {
     }
   }
 
-  /** Stage the checkbox value without crossing the settings transport. */
+  /**
+   * Stage the checkbox value without crossing the settings transport.
+   * @param enabled - The visibility choice to stage.
+   */
   setEnabled(enabled: boolean): void {
     this.staged = enabled
     this.clearRequested = false

@@ -1,0 +1,24 @@
+[Unit]
+Description=Teaching interview follow-up and report Worker
+Wants=network-online.target docker.service
+After=network-online.target docker.service
+
+[Service]
+Type=simple
+User=teaching-worker
+Group=teaching-worker
+WorkingDirectory=/opt/teaching-worker/current
+ExecStart=/opt/teaching-worker/current/teaching-worker serve -c /data/teaching-worker/config.yaml
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=25s
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

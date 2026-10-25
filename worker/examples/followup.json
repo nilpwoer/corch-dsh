@@ -1,0 +1,22 @@
+{
+  "kind": "followup",
+  "question_id": "q_task",
+  "snapshot": {
+    "interview_id": "interview_demo",
+    "input_version": 1,
+    "question_pack_version": 1,
+    "profile": {
+      "name": "演示专家",
+      "industry": "工程服务",
+      "role": "方案审查",
+      "stage": "资深",
+      "experience": "负责方案审查和质量验收"
+    },
+    "questions": [
+      { "id": "q_task", "text": "请说明一个典型任务及其质量依据。", "required_slots": ["evidence"] }
+    ],
+    "answers": [
+      { "question_id": "q_task", "text": "负责方案审查，以验收记录确认质量。", "skipped": false, "confirmed": true }
+    ]
+  }
+}

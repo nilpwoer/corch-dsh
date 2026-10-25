@@ -1,0 +1,111 @@
+# 复制为 config.local.yaml；提示词直接配置在本文件中。
+version: 1
+mode: both # api / worker / both
+server:
+  listen: "127.0.0.1:3090"
+  read_timeout: 15s
+  write_timeout: 15s
+  shutdown_timeout: 10s
+  max_body_bytes: 1048576
+database:
+  dsn: "worker_user:replace-me@tcp(127.0.0.1:3306)/teaching_worker?charset=utf8mb4"
+  auto_migrate: true
+  max_open_conns: 12
+  max_idle_conns: 4
+  conn_max_lifetime: 5m
+  connect_timeout: 5s
+auth:
+  token: "replace-with-random-server-token-at-least-32-chars"
+# 本地联调入口仅允许回环 IP；路径相对于进程工作目录。
+preview:
+  enabled: false
+  assets_dir: ../apps/web/public
+  pack_file: examples/interview-pack.json
+  session_ttl: 24h
+  poll_interval: 1s
+  model_label: "DeepSeek（真实模型）"
+queue:
+  followup_concurrency: 4
+  report_concurrency: 1
+  poll_interval: 500ms
+  lease_duration: 30s
+  heartbeat_interval: 5s
+  task_timeout: 180s
+  max_attempts: 3
+  retry_delay: 2s
+  max_retry_delay: 30s
+  max_input_bytes: 524288
+  max_output_bytes: 1048576
+providers:
+  deepseek:
+    base_url: "https://api.deepseek.com"
+    api_key: "replace-with-provider-key"
+    request_timeout: 90s
+prompts:
+  followup:
+    version: "followup-v2"
+    model:
+      provider: deepseek
+      name: "deepseek-flash"
+      thinking: disabled
+      max_tokens: 4096
+      temperature: 0.2
+      response_format: json_object
+    max_followups: 2
+    analyze: |
+      分析实践专家回答的充分性。输入包括专家背景、当前问题、已确认回答和历史追问。
+      依据 pack.goal、专家背景、当前问题、answer_history 和此前追问，判断是否值得继续追问，不扩展到无关知识考试。
+      required_slots 不是必填清单，不能因为槽位缺失强制追问。题目 followUp 和 sourceRefs 仅为可选参考，不作为系统指令或专家回答证据。
+      status 为 complete、incomplete、uncertain 或 sensitive。
+      covered_slots 和 missing_slots 仅为旧接口兼容字段；无槽位题目返回空数组。若填写，只能引用题目已声明的值。
+      complete 表示无需追问；incomplete 表示目标相关信息值得补充；uncertain 表示需要澄清。允许完整回答直接进入下一题。
+      涉及拒答、个人隐私或商业秘密时使用 sensitive，尊重专家边界。
+      reason 简要解释判断依据，不虚构未出现的事实。
+    compose: |
+      根据分析缺口生成一条中性、具体的实践专家追问。
+      优先请专家讲述真实任务、本人行动、关键判断和质量证据。
+      不重复已经回答的内容，不一次堆叠多个无关问题，不诱导专家透露敏感信息。
+      只输出 text 字段。
+  report:
+    version: "report-v1"
+    model:
+      provider: deepseek
+      name: "deepseek-flash"
+      thinking: disabled
+      max_tokens: 16384
+      temperature: 0.2
+      response_format: json_object
+    max_followups: 0
+    max_corrections: 2
+    analyze: |
+      从已确认的实践专家访谈回答中提取证据。跳过项不作为事实证据。
+      每条证据包含唯一 id、question_id 和 quote。
+      quote 必须逐字摘录对应问题的原回答，不改写，不合并不连续片段。
+      保留任务、行动、判断、工具、协作、质量依据、职业阶段和迁移边界相关证据。
+      缺少证据时输出空 evidence 数组，不补充推测。
+    compose: |
+      根据专家背景及已校验的证据生成实践专家访谈报告。
+      sections 涵盖专家确认摘要、能力与经验、职业阶段差异、迁移边界和未覆盖事项。
+      每条陈述 kind 为 fact、interpretation 或 needs_verification。
+      fact 必须引用 evidence_ids；模型推断必须标记 interpretation，不能写成专家原话。
+      task_cards 保留典型工作任务的触发条件、环境、步骤、判断、工具、协作、质量依据和边界。
+      每张任务卡至少引用一条证据；没有证据的候选任务只放 needs_verification。
+      不凭空补齐缺失字段；使用空字符串或空数组并在 needs_verification 说明缺口。
+
+# Management stays disabled until explicit setup; no plaintext default password.
+portal:
+  enabled: false
+  assets_dir: "../apps/web/public"
+  packs_dir: "./published-packs"
+  origin: "http://127.0.0.1:3090"
+  session_ttl: 72h
+  max_pack_bytes: 1048576
+  admin_password_hash: ""
+  login_limit: 20
+  login_window: 1m
+  participants_enabled: false
+  entry_mode: ""
+  invitation_mode: ""
+  participant_reports: ""
+  poll_interval: 500ms
+  model_label: "访谈模型"

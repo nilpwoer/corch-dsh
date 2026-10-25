@@ -1839,7 +1839,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
       },
     ],
     ownerProps: [
-      '/**\n * Owner share of the browser hole — the only facts crossing the shell/region\n * boundary. Business data and actions arrive through the region\'s own inject.\n */\nexport interface SidebarSectionOwnerProps {\n  /** Shell fold-state output: wide renders the full browser, rail the icon column. */\n  wide: boolean\n  /** Rail icons request expansion; the browser rides the wide flip for focus. */\n  expandSidebar: () => void\n  /** Which browser occupies the shared sidebar region. */\n  sidebarMode: SidebarMode\n  /** Select the browser that occupies the shared sidebar region. */\n  setSidebarMode: (mode: SidebarMode) => void\n  /** Reset a closed details track before opening it again. */\n  reopenDetails: () => void\n}',
+      '/**\n * Owner share of the browser hole — the only facts crossing the shell/region\n * boundary. Business data and actions arrive through the region\'s own inject.\n */\nexport interface SidebarSectionOwnerProps {\n  /** Shell fold-state output: wide renders the full browser, rail the icon column. */\n  wide: boolean\n  /** Rail icons request expansion; the browser rides the wide flip for focus. */\n  expandSidebar: () => void\n  /** Which browser occupies the shared sidebar region. */\n  sidebarMode: SidebarMode\n  /** Select the browser that occupies the shared sidebar region. */\n  setSidebarMode: (mode: SidebarMode) => void\n  /** Reset a closed details track before opening it again. */\n  reopenDetails?: () => void\n}',
     ],
     ownerPropsReferences: [],
     standardProps: [

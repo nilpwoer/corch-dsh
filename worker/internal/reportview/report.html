@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{.Result.Report.Title}}</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f7f7f6;color:#20262e;font:15px/1.8 system-ui,"Noto Sans SC","Microsoft YaHei",sans-serif}main{max-width:940px;margin:auto;padding:24px}header{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:18px;flex-wrap:wrap}.brand{font-weight:650}.button{display:inline-block;border:1px solid #ccd2da;border-radius:7px;background:white;padding:7px 14px;color:#273747;text-decoration:none}.report{background:white;border:1px solid #dfe3e7;border-radius:12px;padding:30px;box-shadow:0 2px 5px #00000004}h1{font-size:24px;line-height:1.5;margin:12px 0 28px}h2{font-size:18px;line-height:1.6;margin:30px 0 12px;break-after:avoid}h3{font-size:16px;margin:22px 0 10px;break-after:avoid}.meta,.kind{font-size:12px;color:#596979}.meta{overflow-wrap:anywhere}.statement{margin:12px 0}.kind{display:inline-block;margin-right:7px;border:1px solid #e0e5e9;border-radius:4px;padding:0 5px}.kind-fact{color:#285e4a;background:#f1f8f3}.kind-interpretation{color:#4a5884;background:#f4f5fb}.kind-needs_verification{color:#805c2b;background:#fdf8ed}p,li,blockquote{white-space:pre-wrap;overflow-wrap:anywhere}a.cite{color:#a63c38;margin-left:5px}blockquote{border-left:3px solid #d9dee4;background:#f7f8f9;margin:14px 0;padding:13px 16px}blockquote:target{border-color:#a63c38;background:#fff6e9}blockquote p{margin:8px 0 0}.task{margin:20px 0;padding-top:1px}.label{font-weight:650}.footer{font-size:12px;color:#687585;text-align:center;margin-top:22px}@media(max-width:600px){main{padding:12px}.report{padding:19px}h1{font-size:21px}}@page{size:A4;margin:18mm}@media print{body{background:white}main{max-width:none;padding:0}header{display:none}.report{border:0;box-shadow:none;padding:0}a{color:inherit;text-decoration:none}p,blockquote,li{orphans:3;widows:3}h2,h3{break-after:avoid}.footer{margin-top:20px}}
+</style></head><body><main><header><span class="brand">实践专家访谈</span><a class="button" href="{{.PDFURL}}" download>下载 PDF</a></header><article class="report">
+<div class="meta">报告 v{{.Result.ReportVersion}} · 答案版本 {{.Result.InputVersion}} · {{.ReleaseVersion}}<br>访谈 {{.InterviewID}}</div>
+<h1>{{.Result.Report.Title}}</h1>
+{{range .Result.Report.Sections}}<section><h2>{{.Title}}</h2>{{range .Statements}}<p class="statement"><span class="kind kind-{{.Kind}}">{{kindLabel .Kind}}</span>{{.Text}}{{range .EvidenceIDs}} <a class="cite" href="#evidence-{{.}}">[{{.}}]</a>{{end}}</p>{{end}}</section>{{end}}
+{{range .Result.Report.TaskCards}}<section class="task"><h2>典型任务：{{.Title}}</h2>
+{{if .Trigger}}<p><span class="label">触发条件：</span>{{.Trigger}}</p>{{end}}
+{{if .Context}}<p><span class="label">情境约束：</span>{{.Context}}</p>{{end}}
+{{if .Steps}}<p><span class="label">步骤：</span>{{join .Steps "\n"}}</p>{{end}}
+{{if .Judgments}}<p><span class="label">关键判断：</span>{{join .Judgments "\n"}}</p>{{end}}
+{{if .Tools}}<p><span class="label">工具：</span>{{join .Tools "、"}}</p>{{end}}
+{{if .Collaboration}}<p><span class="label">协作：</span>{{.Collaboration}}</p>{{end}}
+{{if .QualityEvidence}}<p><span class="label">质量依据：</span>{{.QualityEvidence}}</p>{{end}}
+{{if .Boundaries}}<p><span class="label">边界：</span>{{.Boundaries}}</p>{{end}}
+<p>{{range .EvidenceIDs}}<a class="cite" href="#evidence-{{.}}">[{{.}}]</a>{{end}}</p></section>{{end}}
+{{if .Result.Report.NeedsVerification}}<section><h2>尚待核实</h2><ul>{{range .Result.Report.NeedsVerification}}<li>{{.}}</li>{{end}}</ul></section>{{end}}
+<section><h2>原文证据</h2>{{range .Result.Evidence}}<blockquote id="evidence-{{.ID}}"><strong>{{.ID}} · {{.QuestionID}}</strong><p>{{.Quote}}</p></blockquote>{{else}}<p>本次报告没有可引用的原文证据，内容仅列为待核实事项。</p>{{end}}</section>
+</article><div class="footer">实践专家访谈 · 报告保留原文引用，分析解释与待核实事项分别呈现。</div></main></body></html>
