@@ -74,6 +74,18 @@ async function launch() {
     await page.getByRole('dialog', { name, exact: true }).getByRole('button', { name: action, exact: true }).click()
   }
 }
+async function captureWindowOpened() {
+  return desktop.waitForEvent('window', { predicate: async candidate => {
+    const session = await candidate.context().newCDPSession(candidate)
+    let targetId
+    try { targetId = (await session.send('Target.getTargetInfo')).targetInfo.targetId }
+    finally { await session.detach() }
+    return desktop.evaluate(({ BrowserWindow, webContents }, targetId) => {
+      const contents = webContents.fromDevToolsTargetId(targetId)
+      return Boolean(contents && BrowserWindow.getAllWindows().some(window => window.webContents.id === contents.id))
+    }, targetId)
+  } })
+}
 async function rpc(channel, method, payload = {}) {
   return page.evaluate(async ({ channel, method, payload }) => {
     const response = await fetch(channel + '/' + method, { method: 'POST', headers: { 'content-type': 'application/json' },
@@ -392,7 +404,7 @@ try {
   await page.getByText('通常无需登录', { exact: true }).waitFor()
   assert.equal(await page.getByRole('combobox', { name: '区域范围', exact: true }).inputValue(), '成渝经济圈')
   assert.equal(await page.getByRole('button', { name: /鱼泡直聘/u }).getAttribute('aria-pressed'), 'true')
-  const captureOpened = desktop.waitForEvent('window')
+  const captureOpened = captureWindowOpened()
   await page.getByRole('button', { name: '开始检索', exact: true }).click()
   const capture = await captureOpened
   await capture.getByRole('button', { name: '登录合成站点', exact: true }).waitFor()
@@ -508,7 +520,7 @@ try {
   await capture.getByLabel('合成密码', { exact: true }).fill('synthetic-password')
   await capture.getByRole('button', { name: '登录合成站点', exact: true }).click()
   await capture.getByRole('heading', { name: '合成后端开发岗位', exact: true }).waitFor()
-  const [detail] = await Promise.all([desktop.waitForEvent('window'), capture.getByRole('link', { name: '新窗口打开岗位', exact: true }).click()])
+  const [detail] = await Promise.all([captureWindowOpened(), capture.getByRole('link', { name: '新窗口打开岗位', exact: true }).click()])
   await detail.getByRole('heading', { name: '合成后端开发岗位', exact: true }).waitFor()
   await capture.close()
   const renderSettleMs = JSON.parse(await readFile(join(data, 'jd-collection-settings.json'), 'utf8')).render_settle_ms
@@ -689,7 +701,7 @@ try {
   await page.getByRole('textbox', { name: '岗位名称（可手动修改，使用顿号分隔）', exact: true }).fill('照护设备维护员')
   await rpc('/api', 'session.selectModel', { sessionId: automatic.session_id, provider: 'jd-fixture', model: 'jd-fixture-model' })
   await page.getByRole('button', { name: '确认岗位并继续', exact: true }).click()
-  const automaticWindow = desktop.waitForEvent('window')
+  const automaticWindow = captureWindowOpened()
   await page.getByRole('button', { name: '开始检索', exact: true }).click()
   const autoCapture = await automaticWindow
   await autoCapture.getByRole('button', { name: '登录自动采集合成站点', exact: true }).waitFor()

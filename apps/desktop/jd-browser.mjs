@@ -1,10 +1,48 @@
 /** Isolated human-login capture windows. Only rendered text leaves the browser session. */
 import { randomUUID, createHash } from 'node:crypto'
+import { createJdCaptureStatus } from './jd-capture-status.mjs'
 import { createJdCollection, jdChallengeURL, jdHasDuties, jdLoginWall, jdPlatform, jdSourceURL, jdUnavailableReason } from './jd-collection.mjs'
 
 const CAPTURE_WINDOW_TITLE = 'JD 采集 · 完整岗位正文可读后自动保存；风控验证须确认恢复'
 
 const safeURL = jdSourceURL
+
+/** Observe the first readable platform content without changing the page or making requests.
+ * @param document - Current platform document.
+ * @param key - Document-owned observer cleanup slot.
+ * @param generation - Navigation generation; older injections cannot replace a newer observer.
+ * @returns Whether visible text or interactive content appears before the document is replaced.
+ */
+export function waitForJdContent(document, key, generation) {
+  const view = document.defaultView
+  if ((view[key]?.generation || 0) > generation) return Promise.resolve(false)
+  view[key]?.()
+  return new Promise(resolve => {
+    let finished = false
+    const finish = visible => {
+      if (finished) return
+      finished = true
+      observer.disconnect()
+      view.removeEventListener('pagehide', replaced)
+      document.removeEventListener('load', scan, true)
+      if (view[key] === cancel) view[key] = Object.assign(() => undefined, { generation })
+      resolve(visible)
+    }
+    const cancel = () => finish(false)
+    cancel.generation = generation
+    const replaced = () => finish(false)
+    const scan = () => {
+      if ((document.body?.innerText || '').trim() || [...document.querySelectorAll('input, button, img, svg, canvas, iframe, video')]
+        .some(element => element.getClientRects().length && view.getComputedStyle(element).visibility !== 'hidden')) finish(true)
+    }
+    const observer = new view.MutationObserver(scan)
+    observer.observe(document.documentElement, { subtree: true, childList: true, characterData: true, attributes: true })
+    view[key] = cancel
+    view.addEventListener('pagehide', replaced, { once: true })
+    document.addEventListener('load', scan, true)
+    scan()
+  })
+}
 
 /** Read rendered duties and identify the displayed job without reading browser credentials.
  * Zhaopin and 58 require their visible description cards; visible Zhaopin offline-status imagery also rejects a source.
@@ -122,11 +160,12 @@ export function monitorJdSecurity(document, readPage, throttleMs, key, ready, ge
  * @param options - Electron constructors, private desktop data directory, and capture limits.
  * @returns Rendered collection, reusable login windows, explicit verification/resume and platform status. Invalid candidate URLs fail independently and consume their batch position. Security challenges persistently stop automatic network access. No cookie or arbitrary script API is exposed.
  */
-export function createJdBrowser({ BrowserWindow, maxCaptureChars, loadTimeoutMs, dataDirectory, onPending }) {
+export function createJdBrowser({ BrowserWindow, WebContentsView, maxCaptureChars, loadTimeoutMs, dataDirectory, onPending }) {
   const captures = new Map()
   const platformWindows = new Map()
   const protectedSessions = new WeakSet()
   const contentsStates = new Map()
+  const presentations = new Map()
   let collection
   let disposed = false
   let automaticError
@@ -138,6 +177,35 @@ export function createJdBrowser({ BrowserWindow, maxCaptureChars, loadTimeoutMs,
     if (disposed) throw new Error('JD 采集服务已关闭')
   }
   const activeWindow = state => state && (state.activeWindow && !state.activeWindow.isDestroyed() ? state.activeWindow : [...state.windows].find(window => !window.isDestroyed()))
+  const showStatus = (window, state, kind) => presentations.get(window)?.show(kind, state.platform) || Promise.resolve()
+  const showStatusLater = (window, state, kind) => {
+    void showStatus(window, state, kind).catch(() => {
+      // The local view reports its own failure through the native title; the workbench retains the collection outcome.
+    })
+  }
+  const clearNavigationTimer = window => { clearTimeout(window.jdLoadTimer); window.jdLoadTimer = undefined }
+  const failWindow = (window, state, kind, message) => {
+    if (window.isDestroyed() || disposed) return
+    clearNavigationTimer(window)
+    state.suspended = true
+    state.verification = false
+    state.autoCapture = false
+    state.loadFailure = message
+    window.webContents.stop?.()
+    showStatusLater(window, state, kind)
+  }
+  const revealContent = (window, state) => {
+    if (disposed || window.isDestroyed() || !presentations.get(window)?.isLoading()) return
+    const epoch = window.jdNavigationEpoch || 0
+    window.jdContentKey ||= '__corchJdContent_' + randomUUID()
+    void window.webContents.executeJavaScript(`(${waitForJdContent.toString()})(document, ${JSON.stringify(window.jdContentKey)}, ${epoch})`)
+      .then(visible => {
+        if (!visible || disposed || window.isDestroyed() || epoch !== (window.jdNavigationEpoch || 0)) return
+        if (presentations.get(window)?.isLoading()) { presentations.get(window).hide(); clearNavigationTimer(window) }
+      }, () => {
+        // Document replacement or closing its window discards this passive visibility observer.
+      })
+  }
   const notifyPending = () => {
     try { onPending?.() }
     catch { /* A closing workbench can reject a wake-up; the durable inbox is replayed by its next pending read. */ }
@@ -161,7 +229,11 @@ export function createJdBrowser({ BrowserWindow, maxCaptureChars, loadTimeoutMs,
       for (const state of platformWindows.values()) if (state.platform === jdPlatform(url)) {
         state.verification = false
         state.autoCapture = false
-        for (const window of state.windows) if (!window.isDestroyed()) window.webContents.stop?.()
+        for (const window of state.windows) if (!window.isDestroyed()) {
+          window.webContents.stop?.()
+          clearNavigationTimer(window)
+          showStatusLater(window, state, 'blocked')
+        }
       }
     }
   }
@@ -192,6 +264,7 @@ export function createJdBrowser({ BrowserWindow, maxCaptureChars, loadTimeoutMs,
     state.windows.add(window)
     state.activeWindow = window
     contentsStates.set(contentsId, state)
+    presentations.set(window, createJdCaptureStatus(window, { WebContentsView }))
     window.on('focus', () => { state.activeWindow = window })
     window.setMenu(null)
     window.setTitle(CAPTURE_WINDOW_TITLE)
@@ -209,23 +282,43 @@ export function createJdBrowser({ BrowserWindow, maxCaptureChars, loadTimeoutMs,
       } catch { event.preventDefault() }
     })
     window.webContents.on('will-attach-webview', event => event.preventDefault())
-    window.webContents.on('did-start-navigation', (_event, _url, inPlace, isMainFrame) => {
+    window.webContents.on('did-start-navigation', (_event, url, inPlace, isMainFrame) => {
       if (isMainFrame && !inPlace) {
         window.jdMonitorEpoch = (window.jdMonitorEpoch || 0) + 1
         window.jdNavigationEpoch = (window.jdNavigationEpoch || 0) + 1
+        window.jdNavigationURL = url
+        if (!window.jdOwnedNavigation && (state.verification || !state.suspended && !policy().blocked(state.sourceURL))) {
+          showStatusLater(window, state, 'loading')
+          clearNavigationTimer(window)
+          window.jdLoadTimer = setTimeout(() => failWindow(window, state, 'timeout', '页面加载超时，请重新打开来源；未自动重试。'), loadTimeoutMs)
+        }
       }
     })
-    window.webContents.on('dom-ready', () => startMonitor(window, state))
-    window.webContents.on('did-stop-loading', () => startMonitor(window, state))
+    window.webContents.on('dom-ready', () => { revealContent(window, state); startMonitor(window, state) })
+    window.webContents.on('did-stop-loading', () => { revealContent(window, state); startMonitor(window, state) })
+    window.webContents.on('did-fail-load', (_event, code, _description, url, isMainFrame) => {
+      if (!isMainFrame || code === -3 || window.isDestroyed() || (policy().blocked(state.sourceURL) && !state.verification)) return
+      if (url && window.jdNavigationURL && url !== window.jdNavigationURL) return
+      failWindow(window, state, 'failure', '岗位页面加载失败，请重新打开来源；未自动重试。')
+    })
+    window.webContents.on('render-process-gone', () => {
+      failWindow(window, state, 'failure', '岗位页面显示已中断，请重新打开来源；未自动重试。')
+    })
     window.webContents.setWindowOpenHandler(({ url }) => {
       try {
         safeURL(url)
-        if (!state.verification && (policy().blocked(state.sourceURL) || policy().blocked(url))) return { action: 'deny' }
+        if (!state.verification && (state.suspended || policy().blocked(state.sourceURL) || policy().blocked(url))) return { action: 'deny' }
         if (!state.verification && jdChallengeURL(url)) { stopPlatform(state.sourceURL, '平台打开安全验证页面，自动访问已停止'); return { action: 'deny' } }
       } catch { return { action: 'deny' } }
-      return { action: 'allow', outlivesOpener: true, overrideBrowserWindowOptions: { width: 1360, height: 860, useContentSize: true, webPreferences: { ...preferences, session: window.webContents.session } } }
+      return { action: 'allow', outlivesOpener: true, overrideBrowserWindowOptions: { show: false, width: 1360, height: 860, useContentSize: true, webPreferences: { ...preferences, session: window.webContents.session } } }
     })
-    window.webContents.on('did-create-window', popup => protect(popup, state))
+    window.webContents.on('did-create-window', popup => {
+      protect(popup, state)
+      popup.jdLoadTimer = setTimeout(() => failWindow(popup, state, 'timeout', '页面加载超时，请重新打开来源；未自动重试。'), loadTimeoutMs)
+      void showStatus(popup, state, 'loading').then(() => {
+        if (!popup.isDestroyed()) { popup.show(); popup.focus(); revealContent(popup, state); startMonitor(popup, state) }
+      }).catch(() => { /* The local status view preserves a readable native title when its own document fails. */ })
+    })
     const browserSession = window.webContents.session
     if (!protectedSessions.has(browserSession)) {
       protectedSessions.add(browserSession)
@@ -247,7 +340,13 @@ export function createJdBrowser({ BrowserWindow, maxCaptureChars, loadTimeoutMs,
               owner.authorizedNavigation = undefined
               return callback({ cancel: false })
             }
-            void policy().reserve(details.url).then(permission => callback({ cancel: disposed || owner.suspended || permission !== 'allowed' || policy().blocked(owner.sourceURL) || policy().blocked(details.url) }), () => callback({ cancel: true }))
+            void policy().reserve(details.url).then(permission => {
+              if (permission === 'rate_limited' && !disposed && !owner.suspended) {
+                const capture = [...owner.windows].find(candidate => !candidate.isDestroyed() && candidate.webContents.id === details.webContentsId)
+                if (capture) failWindow(capture, owner, 'rate_limited', '该平台已达到访问上限，请稍后重新打开来源。')
+              }
+              callback({ cancel: disposed || owner.suspended || permission !== 'allowed' || policy().blocked(owner.sourceURL) || policy().blocked(details.url) })
+            }, () => callback({ cancel: true }))
             return
           }
           callback({ cancel: false })
@@ -263,6 +362,9 @@ export function createJdBrowser({ BrowserWindow, maxCaptureChars, loadTimeoutMs,
       })
     }
     window.once('closed', () => {
+      clearNavigationTimer(window)
+      presentations.get(window)?.dispose()
+      presentations.delete(window)
       window.jdMonitorEpoch = (window.jdMonitorEpoch || 0) + 1
       contentsStates.delete(contentsId)
       state.windows.delete(window)
@@ -285,7 +387,7 @@ export function createJdBrowser({ BrowserWindow, maxCaptureChars, loadTimeoutMs,
   const windowFor = state => {
     let window = activeWindow(state)
     if (!window) {
-      window = new BrowserWindow({ title: CAPTURE_WINDOW_TITLE, width: 1360, height: 860, useContentSize: true,
+      window = new BrowserWindow({ title: CAPTURE_WINDOW_TITLE, show: false, width: 1360, height: 860, useContentSize: true,
         webPreferences: { ...preferences, partition: 'persist:jd-research' } })
       protect(window, state)
     }
@@ -296,10 +398,12 @@ export function createJdBrowser({ BrowserWindow, maxCaptureChars, loadTimeoutMs,
     const binding = state?.bindingGeneration
     if (!window) throw new Error('采集窗口已关闭，请重新打开来源')
     if (policy().blocked(state.sourceURL) && !allowResume) return blockedItem(state.sourceURL)
+    if (state.suspended) return { state: 'failed', url: state.sourceURL, message: state.loadFailure || '页面加载已停止，请重新打开来源。' }
     if (window.webContents.isLoadingMainFrame()) throw new Error('页面仍在加载，请稍后继续采集')
     const actualURL = safeURL(window.webContents.getURL())
     const result = await window.webContents.executeJavaScript(`(${pageReaderSource()})(document)`)
     if (!isActive() || state.bindingGeneration !== binding) throw new Error('岗位页面采集已停止或已切换搜索')
+    if (state.suspended) return { state: 'failed', url: state.sourceURL, message: state.loadFailure }
     if (policy().blocked(state.sourceURL) && !allowResume) return blockedItem(state.sourceURL)
     if (result.blocked || jdChallengeURL(actualURL)) {
       stopPlatform(state.sourceURL, '页面显示安全验证或访问限制，自动访问已停止')
@@ -335,17 +439,28 @@ export function createJdBrowser({ BrowserWindow, maxCaptureChars, loadTimeoutMs,
   const navigate = async (state, url) => {
     const permission = await policy().reserve(url)
     if (disposed) throw new Error('JD 采集服务已关闭')
-    if (permission === 'blocked') return blockedItem(url)
-    if (permission === 'rate_limited') return { state: 'rate_limited', url, message: '该平台已达到每小时访问上限，已停止本次访问；请稍后再试或导入已获授权的原文。' }
+    if (permission === 'blocked' || permission === 'rate_limited') {
+      state.autoCapture = false
+      const existing = activeWindow(state)
+      if (existing) {
+        if (permission === 'blocked') showStatusLater(existing, state, 'blocked')
+        else failWindow(existing, state, 'rate_limited', '该平台已达到访问上限，请稍后重新打开来源。')
+      }
+      return permission === 'blocked' ? blockedItem(url) : { state: 'rate_limited', url, message: '该平台已达到每小时访问上限，已停止本次访问；请稍后再试或导入已获授权的原文。' }
+    }
     const window = windowFor(state)
     state.sourceURL = url
     state.verification = false
     state.suspended = false
+    state.loadFailure = undefined
     state.authorizedNavigation = url
-    window.show(); window.restore(); window.focus()
+    window.jdOwnedNavigation = true
     let timer
     let active = true
     try {
+      await showStatus(window, state, 'loading')
+      if (window.isDestroyed()) throw new Error('采集窗口已关闭')
+      window.show(); window.restore(); window.focus()
       const operation = async () => {
         try { await window.loadURL(url) }
         catch (error) {
@@ -355,6 +470,7 @@ export function createJdBrowser({ BrowserWindow, maxCaptureChars, loadTimeoutMs,
         }
         while (active && !disposed && !window.isDestroyed()) {
           if (policy().blocked(url)) return blockedItem(url)
+          if (state.suspended) return { state: 'failed', url, message: state.loadFailure }
           await new Promise(resolve => setTimeout(resolve, policy().settings.render_settle_ms))
           if (!active || disposed || window.isDestroyed()) break
           if (policy().blocked(url)) return blockedItem(url)
@@ -372,14 +488,15 @@ export function createJdBrowser({ BrowserWindow, maxCaptureChars, loadTimeoutMs,
         timer = setTimeout(() => {
           active = false
           state.suspended = true
-          window.webContents.stop?.()
+          failWindow(window, state, 'timeout', '岗位页面加载或正文渲染超时，已停止后台访问，未自动重试')
           reject(new Error('岗位页面加载或正文渲染超时，已停止后台访问，未自动重试'))
         }, loadTimeoutMs)
       })])
     } catch (error) {
       if (policy().blocked(url)) return blockedItem(url)
-      return { state: 'failed', url, message: error.message }
-    } finally { active = false; clearTimeout(timer) }
+      if (!window.isDestroyed() && !state.suspended) failWindow(window, state, 'failure', '岗位页面加载失败，请重新打开来源；未自动重试。')
+      return { state: 'failed', url, message: state.loadFailure || error.message }
+    } finally { active = false; clearTimeout(timer); window.jdOwnedNavigation = false }
   }
   return {
     async open(input) {
@@ -399,7 +516,7 @@ export function createJdBrowser({ BrowserWindow, maxCaptureChars, loadTimeoutMs,
         if (state.bindingGeneration !== binding) return { state: 'failed', url, message: '采集来源已切换，此次打开已停止。' }
         const item = await navigate(state, url)
         if (item.state === 'captured' && state.bindingGeneration === binding) deliver(state, item)
-        return ['blocked', 'rate_limited'].includes(item.state) ? item : { id: input.id, state: 'opened' }
+        return ['blocked', 'rate_limited', 'failed'].includes(item.state) ? item : { id: input.id, state: 'opened' }
       })
     },
     async collect(input) {
@@ -466,9 +583,14 @@ export function createJdBrowser({ BrowserWindow, maxCaptureChars, loadTimeoutMs,
       state.sourceURL = url
       state.verification = true
       state.suspended = false
+      state.loadFailure = undefined
       const window = windowFor(state)
+      await showStatus(window, state, 'loading')
       window.show(); window.restore(); window.focus()
-      void window.loadURL(url).catch(() => { /* Human verification keeps a failed page visible without scheduling a retry. */ })
+      void window.loadURL(url).catch(error => {
+        if (error.code !== 'ERR_ABORTED' && error.errno !== -3)
+          failWindow(window, state, 'failure', '平台验证页面加载失败，请重新打开验证窗口；未自动重试。')
+      })
       return { id: input.id, state: 'opened' }
     },
     async resume(input) {

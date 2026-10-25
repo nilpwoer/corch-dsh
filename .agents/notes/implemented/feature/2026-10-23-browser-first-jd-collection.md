@@ -20,6 +20,8 @@ Automatic capture uses a durable native delivery queue rather than a one-time re
 
 Explicit login walls withholding complete content cannot enter new graph corpora, even when their visible fragments contain valid quotes. Previously saved projects and graph versions remain readable and unchanged; rejecting new use does not rewrite historical evidence.
 
+Each capture owns a local, script-free `WebContentsView` in a separate in-memory session. It loads before the window becomes visible and covers the platform until passive document observation finds visible content. Main-frame load failures, renderer exits, empty-page deadlines and platform stops retain readable local status instead of an empty window. Failed opens preserve their failure outcome, suspend background access and require an explicit new navigation; failed verification does not clear the persisted platform stop. Navigation generations prevent late visibility observations from covering or revealing another document. Popup and parent lifetimes dispose only their owned local view. Injecting status into the recruitment DOM would alter source evidence, and replacing its URL would discard page state; the separate view avoids both effects. Native regression tests and [Electron acceptance](../../../../apps/desktop/jd-capture-status.acceptance.mjs) cover loading, failure, timeout, explicit retry and stopped-platform presentation without changing login or recovery policy.
+
 The [source-evidence decision](2026-10-20-jd-search-integration.md) retains original attribution, literal quotations and inference rules. The [confirmed-workspace decision](2026-10-23-confirmed-jd-workspaces.md) retains independent archives, immutable confirmation and HTML reports.
 
 ## Alternatives considered

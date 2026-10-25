@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createJdBrowser, monitorJdSecurity, readJdPage } from './jd-browser.mjs'
+import { createJdBrowser, monitorJdSecurity, readJdPage, waitForJdContent } from './jd-browser.mjs'
 
 function renderedDOM(html, url, options = {}) {
   const dom = new JSDOM(html, { url, ...options })
@@ -151,6 +151,19 @@ function browserFixture(result, options = {}) {
   const windows = []
   const navigations = []
   const requests = {}
+  class StatusView {
+    constructor(viewOptions) {
+      this.options = viewOptions
+      this.webContents = Object.assign(new EventEmitter(), {
+        session: Object.assign(new EventEmitter(), { setPermissionRequestHandler() {}, setPermissionCheckHandler() {} }),
+        setWindowOpenHandler() {}, isDestroyed: () => this.closed === true,
+        loadURL: async url => { this.url = url },
+        close: () => { this.closed = true; this.webContents.emit('destroyed') },
+      })
+    }
+    setVisible(value) { this.visible = value }
+    setBounds(value) { this.bounds = value }
+  }
   const browserSession = Object.assign(new EventEmitter(), {
     setPermissionRequestHandler() {}, setPermissionCheckHandler() {},
     webRequest: { onBeforeRequest(handler) { requests.before = handler }, onHeadersReceived(handler) { requests.headers = handler } },
@@ -159,10 +172,13 @@ function browserFixture(result, options = {}) {
     constructor(windowOptions = {}) {
       super()
       this.options = windowOptions
+      this.statusViews = []
+      this.contentView = { addChildView: view => this.statusViews.push(view), removeChildView: view => { this.statusViews = this.statusViews.filter(item => item !== view) } }
       this.contents = Object.assign(new EventEmitter(), {
         id: windows.length + 1, session: browserSession,
         setWindowOpenHandler(handler) { this.windowOpenHandler = handler }, isLoadingMainFrame: () => this.loading === true,
         getURL: () => this.url || 'https://www.zhipin.com/job_detail/job-1.html', executeJavaScript: async script => {
+          if (script.includes('waitForJdContent')) return options.visibleContent !== false
           if (options.executeJavaScript) return options.executeJavaScript(script, this)
           const value = await (typeof result === 'function' ? result(this.url) : result)
           return script.includes('monitorJdSecurity') ? value.blocked : value
@@ -176,9 +192,10 @@ function browserFixture(result, options = {}) {
       windows.push(this)
     }
     setMenu() {}
-    setTitle() {}
+    setTitle(title) { this.title = title }
     getSize() { return [1376, 899] }
     getContentSize() { return [1360, 860] }
+    getContentBounds() { return { x: 0, y: 0, width: 1360, height: 860 } }
     getMinimumSize() { return this.minimumSize || [0, 0] }
     setMinimumSize(width, height) { this.minimumSize = [width, height] }
     async loadURL(url) {
@@ -186,7 +203,10 @@ function browserFixture(result, options = {}) {
       if (verdict.cancel) throw new Error('Navigation cancelled')
       this.url = url
       navigations.push({ url, time: Date.now() })
+      this.webContents.emit('did-start-navigation', {}, url, false, true)
       options.onLoad?.(this, url)
+      this.webContents.emit('dom-ready')
+      this.webContents.emit('did-stop-loading')
     }
     isDestroyed() { return this.destroyed === true }
     show() {}
@@ -194,8 +214,84 @@ function browserFixture(result, options = {}) {
     focus() { this.emit('focus') }
     destroy() { this.destroyed = true; this.emit('closed') }
   }
-  return { browser: createJdBrowser({ BrowserWindow: Window, maxCaptureChars: 250000, loadTimeoutMs: 10000, ...options }), windows, navigations, requests }
+  return { browser: createJdBrowser({ BrowserWindow: Window, WebContentsView: StatusView, maxCaptureChars: 250000, loadTimeoutMs: 10000, ...options }), windows, navigations, requests }
 }
+
+test('opening a failed navigation reports failure and permits only an explicit new attempt', async () => {
+  let fail = true
+  const fixture = browserFixture(read(detail), { onLoad() { if (fail) throw new Error('ERR_CONNECTION_RESET') } })
+  try {
+    const opened = await fixture.browser.open({ id: 'project-1', url: firstSource })
+    assert.equal(opened.state, 'failed')
+    assert.match(opened.message, /岗位页面加载失败/u)
+    assert.doesNotMatch(opened.message, /ERR_CONNECTION_RESET/u)
+    assert.match(decodeURIComponent(fixture.windows[0].statusViews[0].url), /页面暂时打不开/u)
+    assert.equal((await fixture.browser.read({ id: 'project-1' })).state, 'failed')
+    assert.equal(fixture.navigations.length, 1)
+    fail = false
+    assert.equal((await fixture.browser.open({ id: 'project-1', url: firstSource })).state, 'opened')
+    assert.equal(fixture.navigations.length, 2)
+    assert.equal(fixture.windows[0].statusViews[0].visible, false)
+  } finally { fixture.browser.dispose() }
+})
+
+test('main-frame failures and renderer exits retain a readable failure without retrying', async t => {
+  for (const failure of ['network', 'renderer']) {
+    const { browser, windows, navigations, requests } = durableFixture(t, read(detail, firstSource))
+    try {
+      await browser.open({ id: 'failure-project', url: firstSource })
+      const window = windows[0], view = window.statusViews[0]
+      assert.equal(view.visible, false)
+      for (const [code, url, main] of [[-105, firstSource, false], [-3, firstSource, true], [-105, firstSource + '?old', true]])
+        window.webContents.emit('did-fail-load', {}, code, 'failed', url, main)
+      assert.equal((await browser.read({ id: 'failure-project' })).state, 'captured')
+      if (failure === 'network') window.webContents.emit('did-fail-load', {}, -105, 'ERR_NAME_NOT_RESOLVED', firstSource, true)
+      else window.webContents.emit('render-process-gone', {}, { reason: 'crashed' })
+      await new Promise(resolve => setImmediate(resolve))
+      assert.equal(view.visible, true)
+      assert.match(decodeURIComponent(view.url), /页面暂时打不开/u)
+      assert.equal(window.stopped, true)
+      assert.equal((await browser.read({ id: 'failure-project' })).state, 'failed')
+      assert.equal(navigations.length, 1)
+      const request = await new Promise(resolve => requests.before({ webContentsId: window.webContents.id, resourceType: 'xhr', url: firstSource }, resolve))
+      assert.equal(request.cancel, true)
+    } finally { browser.dispose() }
+  }
+})
+
+test('passive content visibility resolves for visible pages and is cancelled on document replacement', async () => {
+  const dom = renderedDOM('<main></main>', 'https://jobs.example/test')
+  const pending = waitForJdContent(dom.window.document, '__visibility', 1)
+  dom.window.document.querySelector('main').textContent = '岗位页面'
+  assert.equal(await pending, true)
+  dom.window.document.querySelector('main').textContent = ''
+  const old = waitForJdContent(dom.window.document, '__visibility', 2)
+  const next = waitForJdContent(dom.window.document, '__visibility', 3)
+  assert.equal(await old, false)
+  assert.equal(await waitForJdContent(dom.window.document, '__visibility', 1), false)
+  dom.window.dispatchEvent(new dom.window.Event('pagehide'))
+  assert.equal(await next, false)
+  dom.window.close()
+})
+
+test('a DOM result returning after renderer failure cannot become a saved original', async t => {
+  let release, started
+  const reading = new Promise(resolve => { started = resolve })
+  const { browser, windows } = durableFixture(t, read(detail, firstSource), { executeJavaScript: script => {
+    if (script.includes('monitorJdSecurity')) return false
+    started()
+    return new Promise(resolve => { release = resolve })
+  } })
+  try {
+    const opening = browser.open({ id: 'late-dom', url: firstSource })
+    await reading
+    windows[0].webContents.emit('render-process-gone', {}, { reason: 'crashed' })
+    release(read(detail, firstSource))
+    assert.equal((await opening).state, 'failed')
+    assert.equal(browser.pending().deliveries.length, 0)
+    assert.equal(browser.platforms()[0].cache_count, 0)
+  } finally { browser.dispose() }
+})
 
 test('BOSS security challenges return a blocked result without saving challenge text or retrying', async () => {
   for (const page of [

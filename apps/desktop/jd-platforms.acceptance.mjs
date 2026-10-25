@@ -1,5 +1,5 @@
 /** Opt-in live-platform acceptance through the production Electron collector, without a remote-debugging connection. */
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, WebContentsView } from 'electron'
 import assert from 'node:assert/strict'
 import { readFile, writeFile } from 'node:fs/promises'
 import { mkdirSync, readFileSync } from 'node:fs'
@@ -36,7 +36,7 @@ class ObservedWindow extends BrowserWindow {
     })
   }
 }
-const broker = createJdBrowser({ BrowserWindow: ObservedWindow, maxCaptureChars: 250000, loadTimeoutMs: 60000, dataDirectory: data })
+const broker = createJdBrowser({ BrowserWindow: ObservedWindow, WebContentsView, maxCaptureChars: 250000, loadTimeoutMs: 60000, dataDirectory: data })
 const compact = item => {
   const { body, ...metadata } = item
   return { ...metadata, ...(body ? { body_chars: body.length } : {}) }

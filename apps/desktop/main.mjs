@@ -1,5 +1,5 @@
 /** Windows portable desktop. The restricted preload exposes publication and JD actions to the local workbench. */
-import { app, BrowserWindow, dialog, Menu, session, ipcMain, safeStorage, shell } from 'electron'
+import { app, BrowserWindow, WebContentsView, dialog, Menu, session, ipcMain, safeStorage, shell } from 'electron'
 import { spawn, execFile } from 'node:child_process'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { createWriteStream, existsSync } from 'node:fs'
@@ -29,7 +29,7 @@ let ready = false
 let backendDone
 let log
 let localOrigin
-const jdBrowser = createJdBrowser({ BrowserWindow, maxCaptureChars: 250000, loadTimeoutMs: 60000, dataDirectory: data, onPending: () => {
+const jdBrowser = createJdBrowser({ BrowserWindow, WebContentsView, maxCaptureChars: 250000, loadTimeoutMs: 60000, dataDirectory: data, onPending: () => {
   if (!ready || shuttingDown || !mainWindow || mainWindow.isDestroyed()) return
   const contents = mainWindow.webContents
   if (!contents.isDestroyed() && sameOrigin(contents.getURL(), localOrigin)) contents.send('corch:jd:pending')
