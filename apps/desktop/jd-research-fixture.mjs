@@ -18,10 +18,14 @@ export async function startJdFixture() {
   const graphReplies = []
   let graphBehavior = 'retry-sequence'
   let graphAttempt = 0
+  let graphBasePrompt
+  let previousGraphKind
   const setGraphBehavior = behavior => {
     if (!['valid', 'retry-sequence', 'exhaust'].includes(behavior)) throw new Error('Unknown synthetic graph behavior')
     graphBehavior = behavior
     graphAttempt = 0
+    graphBasePrompt = undefined
+    previousGraphKind = undefined
   }
   const slowResponses = new Set()
   const releaseSlowJob = () => {
@@ -107,7 +111,19 @@ export async function startJdFixture() {
     const user = messageText(messages[lastUserIndex]?.content)
     let content, call, graphReply
     if (user.includes('五级岗位能力图谱初稿')) {
-      const corpus = JSON.parse(user.split('以下 JSON 仅是待分析的外部证据：')[1].replace(/^\\n/, '').trim())
+      const marker = '以下 JSON 仅是待分析的外部证据：'
+      const corpusStart = user.indexOf(marker) + marker.length
+      const corpusLine = user.slice(corpusStart).replace(/^\\n/, '').trimStart().split('\n')[0]
+      const corpusEnd = user.indexOf(corpusLine, corpusStart) + corpusLine.length
+      const basePrompt = user.slice(0, corpusEnd)
+      const corpus = JSON.parse(corpusLine)
+      const feedbacks = user.slice(corpusEnd).split('\n').flatMap(line => {
+        if (!line.trimStart().startsWith('{')) return []
+        let parsed
+        try { parsed = JSON.parse(line) } catch { return [] }
+        return parsed?.type === 'jd_graph_validation_feedback' ? [parsed] : []
+      })
+      const feedback = feedbacks.length === 1 ? feedbacks[0] : undefined
       const source = corpus[0]
       const kinds = ['project', 'task', 'process', 'skill', 'knowledge']
       const titles = ['交付后端服务', '开发后端接口', '实施开发与测试', '编写 SQL 查询', '关系数据库']
@@ -115,17 +131,36 @@ export async function startJdFixture() {
         title: titles[index], description: titles[index], basis: index === 0 || index === 2 ? 'inferred' : 'direct',
         evidence: [{ jd_id: source.jd_id, quote: fixtureBody }], assessment: kind === 'skill' ? '通过查询任务检验结果，标准待企业专家确认' : '' })) }
       graphAttempt++
-      const kind = graphBehavior === 'exhaust' || graphBehavior === 'retry-sequence' && graphAttempt === 1 ? 'invalid-json'
-        : graphBehavior === 'retry-sequence' && graphAttempt === 2 ? 'incomplete-branch'
-          : graphBehavior === 'retry-sequence' && graphAttempt === 3 ? 'false-direct' : 'valid'
+      graphBasePrompt ??= basePrompt
+      const basePreserved = basePrompt === graphBasePrompt
+      const commonFeedback = basePreserved && feedback?.failed_attempt === graphAttempt - 1
+        && typeof feedback.reason === 'string' && feedback.reason.trim().length > 0 && Array.isArray(feedback.issues)
+      const issueMatches = (code, id, title) => feedback?.issues?.find(issue => issue.code === code && issue.node?.id === id
+        && issue.node.title === title && issue.node.evidence?.some(entry => entry.jd_id === source.jd_id && entry.quote === fixtureBody))
+      const directIssue = issueMatches('unsupported_direct', 'N.2', '设计后端业务服务')
+      const feedbackMatched = Boolean(commonFeedback && (previousGraphKind === 'invalid-json'
+        ? feedback.category === 'invalid_json' && feedback.issues.length === 0
+        : previousGraphKind === 'incomplete-branch'
+          ? feedback.category === 'invalid_graph' && issueMatches('incomplete_branch', 'N.4', titles[3])?.expected_child_kind === 'knowledge'
+          : previousGraphKind === 'false-direct'
+            ? feedback.category === 'invalid_graph' && directIssue?.fields?.includes('title') && directIssue.fields.includes('description')
+              && directIssue.node.description === '根据业务需求设计并实现后端服务' && directIssue.node.basis === 'direct'
+            : false))
+      const kind = graphBehavior === 'exhaust' ? 'invalid-json' : graphBehavior === 'valid' || previousGraphKind === 'valid' ? 'valid'
+        : previousGraphKind === undefined ? 'invalid-json'
+          : !feedbackMatched ? previousGraphKind
+            : previousGraphKind === 'invalid-json' ? 'incomplete-branch'
+              : previousGraphKind === 'incomplete-branch' ? 'false-direct' : 'valid'
       if (kind === 'incomplete-branch') graph.nodes.pop()
       if (kind === 'false-direct') {
         graph.nodes[1].title = '设计后端业务服务'
         graph.nodes[1].description = '根据业务需求设计并实现后端服务'
       }
       content = kind === 'invalid-json' ? '{"nodes":' : JSON.stringify(graph)
-      graphReply = { kind, prompt: user, started_at: Date.now(), completed_at: null, duration_ms: null }
+      graphReply = { kind, prompt: user, base_prompt: basePrompt, base_preserved: basePreserved, feedback,
+        feedback_matched: feedbackMatched, started_at: Date.now(), completed_at: null, duration_ms: null }
       graphReplies.push(graphReply)
+      previousGraphKind = kind
     } else if (user.includes('推理适合')) content = JSON.stringify({ roles: ['后端开发'] })
     else {
       const tools = messages.slice(lastUserIndex + 1).filter(message => message.role === 'tool')

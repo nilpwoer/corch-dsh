@@ -5,20 +5,62 @@ import { graphFixture, projectFixture } from './jd-fixture.client.ts'
 
 const policy = { maxGraphAttempts: 4, modelIdleTimeoutMs: 500 }
 
-test('completed malformed JSON, incomplete branches and false direct labels regenerate with identical original instructions', async () => {
+test('retries preserve the base instructions and return the actual rejected node to the model', async () => {
   const project = projectFixture(), original = structuredClone(project)
   const wrongBasis = graphFixture()
   wrongBasis[0]!.basis = 'direct'
   const invalidInputs = ['{"nodes":[', JSON.stringify({ nodes: graphFixture().slice(0, -1) }), JSON.stringify({ nodes: wrongBasis })]
   const responses = [...invalidInputs, JSON.stringify({ nodes: graphFixture() })]
-  const request = vi.fn(async () => responses.shift()!)
+  const base = buildJdGraphPrompt(project)
+  const received: Record<string, unknown>[] = []
+  const request = vi.fn(async (prompt: string) => {
+    if (responses.length === 4) expect(prompt).toBe(base)
+    else {
+      expect(prompt.startsWith(base + '\n\n')).toBe(true)
+      const feedback = JSON.parse(prompt.slice(prompt.lastIndexOf('\n') + 1)) as Record<string, unknown>
+      expect(feedback.type).toBe('jd_graph_validation_feedback')
+      expect(feedback.failed_attempt).toBe(4 - responses.length)
+      received.push(feedback)
+    }
+    return responses.shift()!
+  })
   const progress = vi.fn()
   await expect(generateValidatedJdGraph(project, request, policy, progress, new AbortController().signal))
     .resolves.toEqual({ nodes: graphFixture() })
-  expect(request.mock.calls).toEqual(Array.from({ length: 4 }, () => [buildJdGraphPrompt(project)]))
+  expect(received[0]).toMatchObject({ category: 'invalid_json', issues: [] })
+  expect(received[1]).toMatchObject({ category: 'invalid_graph', issues: [
+    { code: 'incomplete_branch', node: { id: 'N4' }, expected_child_kind: 'knowledge' },
+  ] })
+  expect(received[2]).toMatchObject({ category: 'invalid_graph', issues: [
+    { code: 'unsupported_direct', node: wrongBasis[0], fields: ['title', 'description'] },
+  ] })
   expect(progress.mock.calls.at(-1)?.[0]).toContain('重新生成（4/4）')
   expect(project).toEqual(original)
   expect(wrongBasis[0]!.basis).toBe('direct')
+})
+
+test('valid output is returned on its first attempt without adding a correction message', async () => {
+  const project = projectFixture()
+  const request = vi.fn(async () => JSON.stringify({ nodes: graphFixture() }))
+  await expect(generateValidatedJdGraph(project, request, policy, vi.fn(), new AbortController().signal))
+    .resolves.toEqual({ nodes: graphFixture() })
+  expect(request.mock.calls).toEqual([[buildJdGraphPrompt(project)]])
+})
+
+test('all invalid direct declarations are reported together and only model output changes their labels', async () => {
+  const project = projectFixture(), rejected = graphFixture(), repaired = graphFixture()
+  rejected[0]!.basis = rejected[2]!.basis = 'direct'
+  const original = structuredClone(rejected)
+  const request = vi.fn(async (prompt: string) => {
+    if (request.mock.calls.length === 1) return JSON.stringify({ nodes: rejected })
+    const feedback = JSON.parse(prompt.slice(prompt.lastIndexOf('\n') + 1)) as { issues: { node: { id: string; basis: string } }[] }
+    expect(feedback.issues.map(issue => issue.node.id)).toEqual(['N1', 'N3'])
+    expect(feedback.issues.every(issue => issue.node.basis === 'direct')).toBe(true)
+    return JSON.stringify({ nodes: repaired })
+  })
+  await expect(generateValidatedJdGraph(project, request, policy, vi.fn(), new AbortController().signal))
+    .resolves.toEqual({ nodes: repaired })
+  expect(rejected).toEqual(original)
 })
 
 test('exhaustion keeps the rejected inference marker and does not expose internal identifiers', async () => {

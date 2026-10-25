@@ -142,7 +142,11 @@
       "false-direct",
       "valid"
     ],
-    "original_prompt_repeated_verbatim": true,
+    "base_prompt_preserved_verbatim": true,
+    "targeted_feedback_before_correction": true,
+    "invalid_json_feedback": true,
+    "missing_leaf_feedback": true,
+    "direct_basis_feedback": true,
     "invalid_graph_never_submitted": true,
     "exactly_one_version_after_retry": true,
     "readable_retry_progress": true,

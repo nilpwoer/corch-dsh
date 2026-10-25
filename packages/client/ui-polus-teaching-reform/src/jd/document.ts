@@ -1,5 +1,6 @@
 /** Validation and deterministic exports shared by the Host and browser consumers. */
 import type { SessionId } from '@deepseek-ai/dsh-client-runtime/client'
+import { JdGraphValidationError, type JdGraphValidationIssue } from './validation.ts'
 import type {
   JdEvidence,
   JdGraph,
@@ -200,6 +201,7 @@ function parseGraphNodes(value: unknown, sources: readonly JdSource[]): JdGraphN
     throw new Error('图谱须包含 1–2000 个节点')
   const byId = new Map(nodes.map(node => [node.id, node]))
   if (byId.size !== nodes.length) throw new Error('图谱节点编号重复')
+  const issues: JdGraphValidationIssue[] = []
   for (const node of nodes) {
     const level = levels.indexOf(node.kind)
     if (
@@ -207,18 +209,22 @@ function parseGraphNodes(value: unknown, sources: readonly JdSource[]): JdGraphN
         ? node.parent_id !== null
         : byId.get(node.parent_id ?? '')?.kind !== levels[level - 1]
     )
-      throw new Error(`节点父级不符合五级结构：${node.id}`)
-    if (level < 4 && !nodes.some(child => child.parent_id === node.id))
-      throw new Error(`图谱分支不完整：${node.id}`)
-    if (
-      node.basis === 'direct' &&
-      ![node.title, node.description].every(statement =>
-        node.evidence.some(evidence => evidence.quote.includes(statement)),
-      )
-    ) {
-      throw new Error(`原文未直接陈述节点内容，请标为推断：${node.id}`)
+      issues.push({ code: 'invalid_parent', node, expected_parent_kind: levels[level - 1] ?? null,
+        message: `节点父级不符合五级结构：${node.id}` })
+    const childKind = levels[level + 1]
+    if (childKind && !nodes.some(child => child.parent_id === node.id))
+      issues.push({ code: 'incomplete_branch', node, expected_child_kind: childKind,
+        message: `图谱分支不完整：${node.id}` })
+    if (node.basis === 'direct') {
+      const unsupported = (['title', 'description'] as const).filter(field =>
+        !node.evidence.some(evidence => evidence.quote.includes(node[field])))
+      if (unsupported.length)
+        issues.push({ code: 'unsupported_direct', node, fields: unsupported,
+          message: `原文未直接陈述节点内容，请标为推断：${node.id}` })
     }
   }
+  const [first, ...remaining] = issues
+  if (first) throw new JdGraphValidationError(first, ...remaining)
   const ordered: JdGraphNode[] = []
   const visit = (parent: string | null): void => {
     for (const node of nodes.filter(node => node.parent_id === parent)) {

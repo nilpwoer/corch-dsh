@@ -576,13 +576,21 @@ try {
   assert.equal(graphProject.graphs.length, 1)
   const initialGraphReplies = fixture.graphReplies.slice()
   assert.deepEqual(initialGraphReplies.map(reply => reply.kind), ['invalid-json', 'incomplete-branch', 'false-direct', 'valid'])
-  assert.ok(initialGraphReplies.every(reply => reply.prompt === initialGraphReplies[0].prompt), 'Automatic retries repeat the original graph prompt verbatim')
+  const baseGraphPrompt = initialGraphReplies[0].prompt
+  assert.ok(initialGraphReplies.every(reply => reply.base_preserved && reply.base_prompt === baseGraphPrompt && reply.prompt.startsWith(baseGraphPrompt)), 'Every repair retains the complete original graph instructions and evidence corpus')
+  assert.equal(initialGraphReplies[0].feedback, undefined)
+  assert.deepEqual(initialGraphReplies.slice(1).map(reply => reply.feedback.category), ['invalid_json', 'invalid_graph', 'invalid_graph'])
+  for (const [index, reply] of initialGraphReplies.slice(1).entries()) {
+    assert.equal(reply.feedback.failed_attempt, index + 1)
+    assert.equal(reply.feedback_matched, true, 'The fixture corrects its last output only when it receives the corresponding validation feedback')
+    assert.notEqual(reply.prompt, baseGraphPrompt, 'Repeating the original request without feedback cannot repair a rejected graph')
+  }
   assert.ok(initialGraphReplies[3].duration_ms > modelIdleTimeoutMs, 'Active reasoning and text continue beyond one configured idle interval')
   assert.deepEqual(graphProject.sources, saved.sources, 'Graph validation and retries cannot alter retained originals')
   const firstGraphSaves = graphSaveRequests.filter(project => project.id === first.id && project.graphs.length > 0)
   assert.ok(firstGraphSaves.length > 0)
   for (const project of firstGraphSaves) assert.deepEqual(project.graphs, graphProject.graphs, 'Only the valid graph may reach Host persistence')
-  checks.push('one generation action retries finalized malformed JSON, a missing knowledge leaf and false direct evidence; the unchanged prompt yields exactly one valid graph while active streaming exceeds the configured idle interval')
+  checks.push('one generation action supplies targeted validation feedback for malformed JSON, a missing knowledge leaf and false direct evidence; preserved base instructions and originals yield exactly one valid graph while active streaming exceeds the configured idle interval')
   const graphText = await page.locator('section[aria-label="JD 研究工作台"] main').innerText()
   assert.ok(!/父节点|SHA-256|JD-[A-Za-z0-9-]+|STEP 0/u.test(graphText), 'Graph UI must describe capabilities without internal identifiers')
   assert.ok(graphText.includes('所属项目：'))
@@ -650,7 +658,13 @@ try {
   await page.getByText(exhausted.workspace.error, { exact: true }).waitFor()
   const exhaustedReplies = fixture.graphReplies.slice(graphReplyBaseline)
   assert.equal(exhaustedReplies.length, 4, 'Host attempt limit stops repeated invalid model replies')
-  assert.ok(exhaustedReplies.every(reply => reply.kind === 'invalid-json' && reply.prompt === exhaustedReplies[0].prompt))
+  assert.ok(exhaustedReplies.every(reply => reply.kind === 'invalid-json' && reply.base_preserved && reply.base_prompt === exhaustedReplies[0].prompt && reply.prompt.startsWith(exhaustedReplies[0].prompt)))
+  assert.equal(exhaustedReplies[0].feedback, undefined)
+  for (const [index, reply] of exhaustedReplies.slice(1).entries()) {
+    assert.equal(reply.feedback.failed_attempt, index + 1)
+    assert.equal(reply.feedback.category, 'invalid_json')
+    assert.equal(reply.feedback_matched, true)
+  }
   assert.ok(exhausted.workspace.error.includes('4'), 'Exhaustion feedback explains the attempted generation count')
   assert.deepEqual(exhausted.graphs, beforeExhaustion.graphs, 'Retry exhaustion cannot create or change graph versions')
   assert.deepEqual(exhausted.confirmations, beforeExhaustion.confirmations, 'Retry exhaustion cannot change confirmations')
@@ -662,6 +676,9 @@ try {
     assert.deepEqual(project.sources, beforeExhaustion.sources)
   }
   presentation.graph_generation = { initial_reply_kinds: initialGraphReplies.map(reply => reply.kind),
+    feedback_categories: initialGraphReplies.slice(1).map(reply => reply.feedback.category),
+    failed_attempts: initialGraphReplies.slice(1).map(reply => reply.feedback.failed_attempt),
+    base_prompt_preserved: initialGraphReplies.every(reply => reply.base_preserved),
     active_stream_ms: initialGraphReplies[3].duration_ms, model_idle_timeout_ms: modelIdleTimeoutMs,
     exhausted_attempts: exhaustedReplies.length, final_error: exhausted.workspace.error }
   fixture.setGraphBehavior('valid')
@@ -876,7 +893,8 @@ try {
       model_records_available_on_demand: true, return_to_workbench: true, repeated_jd_navigation_single_instance: true,
       no_empty_details_column: true, workbench_restored_after_restart: true },
     confirmation: { host_persisted: true, discoverable_for_curriculum: true, export_denied_before_confirmation: true, each_version_requires_confirmation: true, confirmed_versions: allConfirmed.confirmations.map(item => item.version) },
-    graph_validation_retry: { initial_replies: initialGraphReplies.map(reply => reply.kind), original_prompt_repeated_verbatim: true,
+    graph_validation_retry: { initial_replies: initialGraphReplies.map(reply => reply.kind), base_prompt_preserved_verbatim: true,
+      targeted_feedback_before_correction: true, invalid_json_feedback: true, missing_leaf_feedback: true, direct_basis_feedback: true,
       invalid_graph_never_submitted: true, exactly_one_version_after_retry: true, readable_retry_progress: true, active_stream_exceeds_idle_interval: true,
       exhausted_attempts: exhaustedReplies.length, final_error_visible: true, confirmed_versions_immutable: true, source_and_citations_immutable: true },
     html_export: { saved_in_client_data: true, system_browser_requested: true, exact_source_quotes: true, hashes_and_urls: true, inference_marked: true, source_text_immutable: true,
@@ -898,7 +916,9 @@ try {
   console.error(error.stack ?? error.message)
   await writeFile(join(out, 'failure.json'), JSON.stringify({ failure, site_requests: fixture.siteRequests,
     tools: fixture.toolCalls, denied_tools: fixture.deniedCalls,
-    graph_replies: fixture.graphReplies.map(({ kind, duration_ms }) => ({ kind, duration_ms })) }, null, 2) + '\n')
+    graph_replies: fixture.graphReplies.map(({ kind, duration_ms, feedback, feedback_matched, base_preserved }) => ({
+      kind, duration_ms, feedback_category: feedback?.category, feedback_matched, base_preserved,
+    })) }, null, 2) + '\n')
   await saveVerification()
   if (page && !page.isClosed()) {
     await page.screenshot({ path: join(out, 'failure.png'), fullPage: true, timeout: 5000 }).catch(() => {})
