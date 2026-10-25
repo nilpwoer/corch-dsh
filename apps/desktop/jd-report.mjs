@@ -1,12 +1,11 @@
 /** Save standalone JD reports under the desktop data directory and open them with the system browser. */
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { pathToFileURL } from 'node:url'
 
 /**
  * Create the native HTML exporter for the trusted local workbench.
  * @param options - App-owned exports directory and Electron shell operations.
- * @returns A writer accepting a basename and at most 24 MiB of HTML; successful writes remain saved even when opening fails.
+ * @returns A writer accepting a basename and at most 24 MiB of HTML; native HTML file associations open the saved path. Rejected launches and resolved error messages reveal the saved file in its folder.
  */
 export function createJdReport({ exportsDirectory, shell }) {
   return async input => {
@@ -25,7 +24,8 @@ export function createJdReport({ exportsDirectory, shell }) {
       await writeFile(path, html, { flag: 'wx', mode: 0o600 })
     } catch { throw new Error('HTML 报告保存失败，请检查客户端 data/exports 目录的写入权限和可用空间。') }
     try {
-      await shell.openExternal(pathToFileURL(path).href)
+      const error = await shell.openPath(path)
+      if (error) throw new Error(error)
       return { path, opened: 'browser' }
     } catch {
       try { shell.showItemInFolder(path) }

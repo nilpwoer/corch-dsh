@@ -134,7 +134,9 @@
     "source_text_immutable": true,
     "readable_numbered_sources": true,
     "offline_original_navigation_without_scripts": true,
-    "internal_ids_not_rendered": true
+    "internal_ids_not_rendered": true,
+    "native_file_association": true,
+    "resolved_launch_error_reveals_saved_report": true
   },
   "file_import": {
     "txt_loaded": true,

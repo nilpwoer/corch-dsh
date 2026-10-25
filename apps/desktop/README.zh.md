@@ -32,6 +32,8 @@ JD 候选来源在隔离、持久化的浏览器会话中渲染，同一平台�
 
 [教学工作台](../../packages/client/ui-polus-teaching-reform/README.zh.md)说明搜索存档、来源证据、推断标记及已确认 HTML 导出。[按需真实平台验收程序](jd-platforms.acceptance.mjs)使用生产采集器且不连接远程调试，记录状态、导航时间和来源哈希。[自动保存真实验收](jd-login-live.acceptance.mjs)启动普通桌面，验证无需点击继续的 Host 存档，不连接远程调试、不发送模型请求。合成验收不能证明真实网站兼容性。
 
+已确认的 HTML 报告以原生文件路径传给 `shell.openPath`，使用系统 `.html` 默认关联，支持中文、空格和 URL 特殊字符文件名。打开结果为空字符串才表示成功；返回错误信息或拒绝 Promise 时，定位已保存的报告文件。打开程序由系统关联决定。[桌面验收](jd-research.acceptance.mjs)的可选 `--live-shell` 参数调用真实文件及目录打开操作，通过注入启动失败验证回退，不改动系统关联。
+
 ## 构建参考
 
 桌面装配与教学插件是私有工作区包，通过便携客户端分发，不加入上游 npm 发布序列。使用 Windows x64、受支持的 Node.js、pnpm11.7.0 和 Windows PowerShell/tar。先运行仓库正常构建，再执行：

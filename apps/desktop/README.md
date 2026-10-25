@@ -32,6 +32,8 @@ Successful rendered originals are cached privately under `data/jd-collection` wi
 
 The [teaching workbench](../../packages/client/ui-polus-teaching-reform/README.md) documents archived searches, source evidence, inference labels and confirmed HTML export. Live compatibility can be checked with [the opt-in platform driver](jd-platforms.acceptance.mjs), which uses the production collector without remote debugging and records state, navigation times and source hashes. [Automatic-save live acceptance](jd-login-live.acceptance.mjs) runs the ordinary desktop and verifies Host persistence without a continuation click, remote debugging or model prompts. Synthetic acceptance does not establish real-site compatibility.
 
+Confirmed HTML exports pass the saved native file path to `shell.openPath`, using the OS `.html` association, including filenames with Unicode, spaces and URL-special characters. An empty launch result means success; a returned error message or rejected promise reveals the saved report in its directory. The OS chooses the registered HTML application. The opt-in `--live-shell` flag on [desktop acceptance](jd-research.acceptance.mjs) invokes actual file and folder handlers; its launch-failure injection tests fallback without changing OS associations.
+
 ## Build reference
 
 The desktop assembly and teaching plugin are private workspace packages distributed through the portable client, outside the upstream npm release sequence. Use Windows x64, a supported Node.js release, pnpm11.7.0 and Windows PowerShell/tar. Run the normal repository build, then:

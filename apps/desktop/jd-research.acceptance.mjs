@@ -5,13 +5,13 @@ import { createRequire } from 'node:module'
 import { readFile, writeFile, mkdir, readdir, symlink, realpath, copyFile, appendFile } from 'node:fs/promises'
 import { resolve, join, sep } from 'node:path'
 import { parseArgs } from 'node:util'
-import { fileURLToPath } from 'node:url'
+import { pathToFileURL } from 'node:url'
 import { backendEnvironment } from './policy.mjs'
 import { autoFixtureBody, autoReplayBody, delayedFixtureBody, feedbackFixtureBody, fixtureBody, startJdFixture } from './jd-research-fixture.mjs'
 
 const require = createRequire(import.meta.url)
 const { _electron: electron } = require('playwright')
-const { values } = parseArgs({ options: { exe: { type: 'string' }, data: { type: 'string' }, out: { type: 'string' }, source: { type: 'boolean' }, update: { type: 'boolean' } } })
+const { values } = parseArgs({ options: { exe: { type: 'string' }, data: { type: 'string' }, out: { type: 'string' }, source: { type: 'boolean' }, update: { type: 'boolean' }, 'live-shell': { type: 'boolean' } } })
 assert.ok(values.exe && values.data && values.out, 'Supply --exe, --data and --out')
 const data = resolve(values.data), out = resolve(values.out)
 await mkdir(out, { recursive: true })
@@ -29,7 +29,7 @@ const checks = [], errors = []
 const presentation = {}
 async function saveVerification() {
   await writeFile(join(out, 'verification.json'), JSON.stringify({ passed, checks, errors, failure, presentation,
-    actual_desktop: true, actual_loader: true, synthetic_external_systems: true, paid_model_calls: 0 }, null, 2) + '\n')
+    actual_desktop: true, actual_loader: true, synthetic_external_systems: true, native_shell_real: Boolean(values['live-shell']), paid_model_calls: 0 }, null, 2) + '\n')
 }
 async function launch() {
   desktop = await electron.launch({ executablePath: resolve(values.exe), args: [...(values.source ? [resolve('apps/desktop/main.mjs')] : []), '--data-dir', data, '--lang=zh-CN'],
@@ -38,10 +38,26 @@ async function launch() {
     void appendFile(join(out, 'electron-stderr.log'), chunk).catch(error => console.error('Could not save Electron diagnostics:', error.message))
   })
   page = await desktop.firstWindow({ timeout: 60000 })
-  await desktop.evaluate(({ shell }) => {
+  await desktop.evaluate(({ shell }, live) => {
+    const openPath = shell.openPath.bind(shell), showItemInFolder = shell.showItemInFolder.bind(shell)
     globalThis.jdAcceptanceOpened = []
-    shell.openExternal = async url => { globalThis.jdAcceptanceOpened.push(url) }
-  })
+    globalThis.jdAcceptanceShown = []
+    globalThis.jdAcceptanceShellActions = []
+    globalThis.jdAcceptanceLaunchError = ''
+    shell.openPath = async path => {
+      const injected = Boolean(globalThis.jdAcceptanceLaunchError)
+      const error = injected ? globalThis.jdAcceptanceLaunchError : live ? await openPath(path) : ''
+      globalThis.jdAcceptanceShellActions.push({ kind: 'open_file', path, error, injected, real: live && !injected })
+      if (!error) globalThis.jdAcceptanceOpened.push(path)
+      return error
+    }
+    shell.openExternal = async () => { throw new Error('Local reports must use the native file association') }
+    shell.showItemInFolder = path => {
+      if (live) showItemInFolder(path)
+      globalThis.jdAcceptanceShown.push(path)
+      globalThis.jdAcceptanceShellActions.push({ kind: 'show_in_folder', path, real: live })
+    }
+  }, Boolean(values['live-shell']))
   page.setDefaultTimeout(30000)
   page.on('pageerror', error => errors.push(error.message))
   await page.getByRole('button', { name: 'JD 搜索', exact: true }).waitFor()
@@ -178,14 +194,14 @@ async function archivedProjects(count) {
 async function exportHtml(version, project) {
   const previous = await desktop.evaluate(() => globalThis.jdAcceptanceOpened.length)
   await page.getByRole('button', { name: '导出 HTML', exact: true }).click()
-  let url
+  let path
   for (let attempt = 0; attempt < 100; attempt++) {
-    url = await desktop.evaluate((_electron, count) => globalThis.jdAcceptanceOpened[count], previous)
-    if (url) break
+    path = await desktop.evaluate((_electron, count) => globalThis.jdAcceptanceOpened[count], previous)
+    if (path) break
     await new Promise(resolve => setTimeout(resolve, 100))
   }
-  assert.ok(url, 'HTML export must request the system browser')
-  const path = fileURLToPath(url)
+  assert.ok(path, 'HTML export must request the system HTML file association')
+  const url = pathToFileURL(path).href
   assert.ok(path.startsWith(join(data, 'exports') + sep), 'Report must be saved under this client data directory')
   assert.ok(path.endsWith('.html'))
   const html = await readFile(path, 'utf8')
@@ -535,6 +551,14 @@ try {
   const allConfirmed = await savedProject(first.id, project => project.confirmations?.length === 2, 'second graph confirmation')
   const secondHtml = await exportHtml(2, allConfirmed)
   assert.notEqual(firstHtml.path, secondHtml.path)
+  await desktop.evaluate(() => { globalThis.jdAcceptanceLaunchError = 'synthetic association launch failure' })
+  await page.getByRole('button', { name: '导出 HTML', exact: true }).click()
+  await page.getByText(/浏览器未能打开，已显示文件所在目录/u).waitFor()
+  const fallbackPath = await desktop.evaluate(() => globalThis.jdAcceptanceShown.at(-1))
+  assert.ok(fallbackPath?.startsWith(join(data, 'exports') + sep))
+  assert.ok((await readFile(fallbackPath, 'utf8')).includes(fixtureBody), 'An error string must reveal the preserved report rather than claim browser success')
+  presentation.native_shell_actions = await desktop.evaluate(() => globalThis.jdAcceptanceShellActions)
+  await desktop.evaluate(() => { globalThis.jdAcceptanceLaunchError = '' })
   await page.getByRole('combobox', { name: '图谱版本', exact: true }).selectOption('1')
   await page.getByRole('button', { name: '2 平台与范围', exact: true }).click()
   await selectProject(second.id)
@@ -742,7 +766,8 @@ try {
       no_empty_details_column: true, workbench_restored_after_restart: true },
     confirmation: { host_persisted: true, discoverable_for_curriculum: true, export_denied_before_confirmation: true, each_version_requires_confirmation: true, confirmed_versions: allConfirmed.confirmations.map(item => item.version) },
     html_export: { saved_in_client_data: true, system_browser_requested: true, exact_source_quotes: true, hashes_and_urls: true, inference_marked: true, source_text_immutable: true,
-      readable_numbered_sources: true, offline_original_navigation_without_scripts: true, internal_ids_not_rendered: true },
+      readable_numbered_sources: true, offline_original_navigation_without_scripts: true, internal_ids_not_rendered: true,
+      native_file_association: true, resolved_launch_error_reveals_saved_report: true },
     file_import: { txt_loaded: true, md_loaded: true, keyboard_same_file_reselection: true, filename_feedback: true, unsaved_draft_restored: true },
     graph_actions: { shared_dimensions_and_typography: true, four_distinct_steps: true, no_md_pdf_buttons: true, narrow_controls_fit: true },
   }
