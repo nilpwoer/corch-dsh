@@ -16,6 +16,10 @@ The analysis prompt follows the JD-driven capability mapping method: retain evid
 
 The final “Save search project” action rewrites both reports and adds `finalizedAt` to the project index only after the workspace confirms both file writes. Future workbenches can use the stored report paths and timestamp. Changing the confirmed JD sample invalidates this marker.
 
+JD orchestration admits a prompt only when the bound conversation has no running or queued work. It subscribes before sending, identifies the new durable user input by its exact prompt text, and reads the corresponding turn's final assistant text after its recorded end. It returns only after the conversation becomes idle, so a subsequent artifact request can be admitted. Partial JSON cannot commit a search result. A fixed browser deadline cannot represent the combined queue, tool and model execution time, so the session lifecycle owns completion; failure, interruption, cancellation and removal release the subscription explicitly.
+
+When browser project metadata is missing, the workbench can recover the latest completed search from the session. Recovery requires the exact generated search prompt and valid jobs, ignores an unfinished or failed latest search, and leaves existing project records untouched. It sends no prompt and does not claim that workspace files were written. The durable session therefore preserves a late result even when an earlier client stopped waiting.
+
 ## Alternatives considered
 
 **Write files directly through a client filesystem API:** the workbench's client workspace service exposes workspace and file navigation, but no write operation. The active session's DSH file tools provide workspace-scoped writes without adding a new client API.
@@ -23,6 +27,8 @@ The final “Save search project” action rewrites both reports and adds `final
 **Store all job content only in browser storage:** this would make artifacts browser-specific and would not provide deliverable files in the DSH workspace.
 
 **Create the project only after analysis:** users would lose the searchable project entry when analysis is delayed or fails. The project is listed immediately after search results arrive; subsequent artifact errors remain visible without removing it.
+
+**Use a fixed browser timeout:** valid searches can exceed that deadline while tools and the model continue running. Detaching then leaves a visible assistant answer without a project or step transition. The recorded completion of the admitted work establishes the result's availability.
 
 ## Consequences
 

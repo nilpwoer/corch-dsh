@@ -3,6 +3,7 @@ import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { JdSearchAbility, JdSearchAnalysis, JdSearchJob, JdSearchRequest, JdSearchTask, TeachingReformProps } from './types.ts'
 import css from './JdSearchWorkbench.module.css'
 import { buildJdSearchHtmlReport, buildJdSearchReport, jdSearchProjectPaths, jdSearchProjectTitle, readJdSearchProject, readJdSearchProjects, writeJdSearchProject, JD_SEARCH_PROJECTS_CHANGED } from './jdSearchProjects.ts'
+import { readCompletedJdSearch } from './jdAgentResult.ts'
 
 const STEPS = ['搜索目标', '平台与范围', 'JD 结果筛选', '典型工作任务', '能力标签']
 const DIRECT_PLATFORMS = ['公开网页', '四川高校人才网']
@@ -95,6 +96,8 @@ function Tasks({ tasks, next, reportPath, htmlReportPath, reportSaved, openRepor
 function Abilities({ abilities, save, saving, finalizedAt, status }: { abilities: readonly JdSearchAbility[]; save: () => void; saving: boolean; finalizedAt: string | undefined; status: string }): ReactNode { return <><Header step={5} title="专业能力标签" text="只映射到专业能力，不生成课程安排。" /><div className={css.abilityGrid}>{abilities.map(ability => <article className={css.abilityCard} key={ability.title}><Pill>{ability.level}</Pill><h3>{ability.title}</h3><p>关联 {ability.taskCount} 个典型工作任务 · 来源 {ability.sourceCount} 条 JD</p></article>)}</div><div className={css.summaryBox}><div><h3>{finalizedAt === undefined ? '本次搜索结果已确认' : '搜索项目已冻结'}</h3><p>{status || (finalizedAt === undefined ? '点击后将保存并冻结本项目的 Markdown 与 HTML 报告，供后续工作台引用。' : `Markdown 与 HTML 报告已冻结 · ${new Date(finalizedAt).toLocaleString('zh-CN')}`)}</p></div><button className={css.primaryButton} type="button" disabled={saving || finalizedAt !== undefined} onClick={save}>{saving ? '正在保存并冻结…' : finalizedAt === undefined ? '保存搜索项目' : '已冻结'}</button></div></> }
 
 export function JdSearchWorkbench(props: TeachingReformProps): ReactNode {
+  const settledSnapshot = props.useSession(snapshot =>
+    snapshot.openState === 'open' && !snapshot.running && snapshot.queue.length === 0 ? snapshot : null)
   const activeSessionId = useRef(String(props.sessionId))
   activeSessionId.current = String(props.sessionId)
   const initialProject = readJdSearchProject(String(props.sessionId))
@@ -134,6 +137,25 @@ export function JdSearchWorkbench(props: TeachingReformProps): ReactNode {
     setFinalizing(false)
     setFinalizeStatus('')
   }, [props.sessionId])
+  useEffect(() => {
+    const sessionId = String(props.sessionId)
+    if (busy || settledSnapshot === null || readJdSearchProject(sessionId) !== undefined) return
+    const recovered = readCompletedJdSearch(settledSnapshot)
+    if (recovered === undefined) return
+    const paths = jdSearchProjectPaths(sessionId)
+    const project = {
+      sessionId, title: jdSearchProjectTitle(recovered.request, recovered.jobs.length),
+      request: recovered.request, jobs: recovered.jobs, jobsPath: paths.jobs,
+      updatedAt: new Date(recovered.completedAt).toISOString(),
+    }
+    writeJdSearchProject(project)
+    setProjectRecord(project)
+    setTarget({ major: project.request.major, direction: project.request.direction, roles: [...project.request.roles] })
+    setJobs(project.jobs)
+    setStep(3)
+    setError(undefined)
+    setFileStatus('已从会话恢复搜索结果；岗位 JD 文件尚未重新写入工作区。')
+  }, [props.sessionId, settledSnapshot, busy])
   const search = async (platforms: string[], range: Omit<JdSearchRequest, 'major' | 'direction' | 'roles' | 'platforms'>): Promise<void> => {
     const sessionId = String(props.sessionId)
     const session = props.sessionId

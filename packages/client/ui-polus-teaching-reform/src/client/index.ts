@@ -17,6 +17,7 @@ import { ExpertMaterialSidebarTab } from './ExpertMaterialSidebarTab.tsx'
 import { GlobalReferenceSidebarTab } from './GlobalReferenceSidebarTab.tsx'
 import { buildInterviewPrompt } from './interviewPrompt.ts'
 import { buildJdAnalysisPrompt, buildJdRoleInferencePrompt, buildJdSearchArtifactPrompt, buildJdSearchPrompt } from './jdSearchPrompt.ts'
+import { parseJdAgentJson, parseJdJobs, promptJdAgent } from './jdAgentResult.ts'
 
 export const inject = ['sessions', 'workspaces', 'layout', 'connection', 'slots', 'betterSidebar']
 
@@ -47,7 +48,13 @@ type InterviewSnapshotNode = {
   blocks?: readonly InterviewTextBlock[]
   data?: unknown
 }
-type InterviewSession = { subscribe: (listener: () => void) => () => void; getSnapshot: () => { nodes: readonly InterviewSnapshotNode[]; partial?: { turn: number; step: number; blocks: readonly InterviewTextBlock[] } | null } }
+type InterviewSession = {
+  subscribe: (listener: () => void) => () => void
+  getSnapshot: () => {
+    nodes: readonly InterviewSnapshotNode[]
+    partial?: { turn: number; step: number; blocks: readonly InterviewTextBlock[] } | null
+  }
+}
 
 type JdAgentFunctions = {
   inferJdRoles: (id: SessionId, major: string, direction: string) => Promise<readonly string[]>
@@ -141,94 +148,8 @@ const waitForInterviewResult = async (session: InterviewSession, baselineSeq: nu
   })
 }
 
-type AssistantProgress = { turn: number; step: number }
-
-const isAfterProgress = (progress: AssistantProgress, baseline: AssistantProgress | undefined): boolean => baseline === undefined
-  || progress.turn > baseline.turn
-  || (progress.turn === baseline.turn && progress.step > baseline.step)
-
-const waitForAgentJson = async (session: InterviewSession, baselineSeq: number, baselineProgress: AssistantProgress | undefined): Promise<string> => {
-  const read = (): string | null => {
-    const snapshot = session.getSnapshot()
-    const partial = snapshot.partial
-    if (partial !== undefined && partial !== null && isAfterProgress(partial, baselineProgress)) {
-      const text = partial.blocks.filter(block => block.kind === 'text' && block.text !== undefined).map(block => block.text).join('\n').trim()
-      if (text !== '' && hasClosedJsonObject(text)) return text
-    }
-    const candidates = snapshot.nodes
-      .filter(node => (node.kind === 'assistant' || node.kind === 'assistant-step') && node.seq > baselineSeq)
-      .toReversed()
-    for (const assistant of candidates) {
-      const data = typeof assistant.data === 'object' && assistant.data !== null ? assistant.data as { status?: string; blocks?: readonly InterviewTextBlock[]; finalNode?: { blocks?: readonly InterviewTextBlock[] } } : undefined
-      const blocks = data?.finalNode?.blocks ?? data?.blocks ?? assistant.blocks
-      const text = blocks?.filter(block => block.kind === 'text' && block.text !== undefined).map(block => block.text).join('\n').trim() ?? ''
-      if (text !== '' && (hasClosedJsonObject(text) || /\"(?:jobs|status|tasks|abilities)\"\s*:/.test(text) && text.includes(']'))) return text
-    }
-    return null
-  }
-  const immediate = read()
-  if (immediate !== null) return immediate
-  return await new Promise<string>((resolve, reject) => {
-    let unsubscribe = (): void => undefined
-    const timeout = window.setTimeout(() => { unsubscribe(); reject(new Error('Agent 已接受任务，但在 5 分钟内未返回可解析结果')) }, 300000)
-    const check = (): void => {
-      const text = read()
-      if (text === null) return
-      window.clearTimeout(timeout)
-      unsubscribe()
-      resolve(text)
-    }
-    unsubscribe = session.subscribe(check)
-    check()
-  })
-}
-
-const waitForAgentAcknowledgement = async (session: InterviewSession, baselineSeq: number, expected: readonly string[]): Promise<void> => {
-  const read = (): boolean => session.getSnapshot().nodes.some(node => {
-    if ((node.kind !== 'assistant' && node.kind !== 'assistant-step') || node.seq <= baselineSeq) return false
-    const data = typeof node.data === 'object' && node.data !== null ? node.data as { status?: string; finalNode?: { blocks?: readonly InterviewTextBlock[] }; blocks?: readonly InterviewTextBlock[] } : undefined
-    if (node.kind === 'assistant-step' && data?.finalNode === undefined && data?.status !== 'settled') return false
-    const blocks = data?.finalNode?.blocks ?? data?.blocks ?? node.blocks
-    const text = blocks?.filter(block => block.kind === 'text' && block.text !== undefined).map(block => block.text).join('\n') ?? ''
-    return expected.every(confirmation => text.includes(confirmation))
-  })
-  if (read()) return
-  await new Promise<void>((resolve, reject) => {
-    let unsubscribe = (): void => undefined
-    const timeout = window.setTimeout(() => { unsubscribe(); reject(new Error(`Agent 未确认文件已写入：${expected}`)) }, 300000)
-    const check = (): void => {
-      if (!read()) return
-      window.clearTimeout(timeout)
-      unsubscribe()
-      resolve()
-    }
-    unsubscribe = session.subscribe(check)
-    check()
-  })
-}
-
-function parseAgentJson<T>(text: string): T {
-  const start = text.indexOf('{')
-  const end = text.lastIndexOf('}')
-  if (start < 0 || end <= start) throw new Error('Agent 返回内容不是 JSON')
-  try { return JSON.parse(text.slice(start, end + 1)) as T } catch { throw new Error('Agent 返回的 JSON 无法解析') }
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-function isAgentJob(value: unknown): value is JdSearchJob {
-  if (!isRecord(value)) return false
-  return typeof value.id === 'string'
-    && typeof value.title === 'string'
-    && typeof value.company === 'string'
-    && typeof value.place === 'string'
-    && typeof value.platform === 'string'
-    && typeof value.score === 'number' && Number.isFinite(value.score) && value.score >= 0 && value.score <= 100
-    && typeof value.summary === 'string'
-    && typeof value.body === 'string' && value.body.trim() !== ''
-    && (value.sourceUrl === undefined || typeof value.sourceUrl === 'string')
 }
 
 function isAgentAbility(value: unknown): value is JdSearchAbility {
@@ -274,17 +195,7 @@ function createInterviewAgentFunctions(ctx: ClientContext) {
   const promptAgent = async (id: SessionId, prompt: string): Promise<string> => {
     const session = ctx.sessions.binding(id)?.session
     if (session === undefined) throw new Error('当前 JD 搜索会话不可用')
-    const baselineSnapshot = session.getSnapshot()
-    const baselineSeq = baselineSnapshot.nodes.reduce((max, node) => Math.max(max, node.seq), 0)
-    const latestAssistant = baselineSnapshot.partial ?? baselineSnapshot.nodes.filter(node => node.kind === 'assistant').at(-1)
-    const baselineProgress = latestAssistant !== undefined
-      && 'turn' in latestAssistant && typeof latestAssistant.turn === 'number'
-      && 'step' in latestAssistant && typeof latestAssistant.step === 'number'
-      ? { turn: latestAssistant.turn, step: latestAssistant.step }
-      : undefined
-    const result = await session.prompt([{ type: 'text', text: prompt }], 'queue')
-    if (!result.ok) throw new Error(result.error.message)
-    return await waitForAgentJson(session, baselineSeq, baselineProgress)
+    return await promptJdAgent(session, prompt)
   }
   const renameJdSearchProject = async (id: SessionId, title: string): Promise<void> => {
     const session = ctx.sessions.binding(id)?.session
@@ -295,10 +206,9 @@ function createInterviewAgentFunctions(ctx: ClientContext) {
   const saveJdSearchArtifacts = async (id: SessionId, artifacts: readonly { path: string; contents: string }[]): Promise<void> => {
     const session = ctx.sessions.binding(id)?.session
     if (session === undefined) throw new Error('当前 JD 搜索会话不可用')
-    const baselineSeq = session.getSnapshot().nodes.reduce((max, node) => Math.max(max, node.seq), 0)
-    const result = await session.prompt([{ type: 'text', text: buildJdSearchArtifactPrompt(artifacts) }], 'queue')
-    if (!result.ok) throw new Error(result.error.message)
-    await waitForAgentAcknowledgement(session, baselineSeq, artifacts.map(artifact => `已保存：${artifact.path}`))
+    const text = await promptJdAgent(session, buildJdSearchArtifactPrompt(artifacts))
+    const missing = artifacts.filter(artifact => !text.includes(`已保存：${artifact.path}`))
+    if (missing.length > 0) throw new Error(`Agent 未确认文件已写入：${missing.map(artifact => artifact.path).join('、')}`)
   }
   const openJdSearchReport = async (id: SessionId, path: string): Promise<void> => {
     const cwd = ctx.sessions.list.getSnapshot().byId[id]?.cwd
@@ -307,19 +217,13 @@ function createInterviewAgentFunctions(ctx: ClientContext) {
   }
   const jdFunctions: JdAgentFunctions = {
     inferJdRoles: async (id, major, direction) => {
-      const result = parseAgentJson<unknown>(await promptAgent(id, buildJdRoleInferencePrompt(major, direction)))
+      const result = parseJdAgentJson(await promptAgent(id, buildJdRoleInferencePrompt(major, direction)))
       if (!isRecord(result) || !Array.isArray(result.roles) || result.roles.some(role => typeof role !== 'string')) throw new Error('Agent 返回结果缺少有效岗位名称')
       return result.roles.filter(role => role.trim() !== '').slice(0, 8)
     },
-    runJdSearch: async (id, request) => {
-      const result = parseAgentJson<unknown>(await promptAgent(id, buildJdSearchPrompt(request)))
-      if (!isRecord(result) || !Array.isArray(result.jobs)) throw new Error('Agent 返回结果缺少 jobs')
-      if (!result.jobs.every(isAgentJob)) throw new Error('Agent 返回的岗位缺少完整 JD 正文或包含无效字段')
-      if (new Set(result.jobs.map(job => job.id)).size !== result.jobs.length) throw new Error('Agent 返回的岗位编号重复')
-      return result.jobs
-    },
+    runJdSearch: async (id, request) => parseJdJobs(await promptAgent(id, buildJdSearchPrompt(request))),
     analyzeJdSearch: async (id, jobs) => {
-      const result = parseAgentJson<unknown>(await promptAgent(id, buildJdAnalysisPrompt(jobs)))
+      const result = parseJdAgentJson(await promptAgent(id, buildJdAnalysisPrompt(jobs)))
       if (!isRecord(result) || !Array.isArray(result.tasks) || !Array.isArray(result.abilities)) throw new Error('Agent 返回结果缺少任务或能力标签')
       if (!result.abilities.every(isAgentAbility)) throw new Error('Agent 返回的专业能力标签字段无效')
       if (result.tasks.length < 5 || result.tasks.length > 15) throw new Error('典型工作任务数量应为 5–15 条')
@@ -341,7 +245,10 @@ function createInterviewAgentFunctions(ctx: ClientContext) {
 }
 
 export function apply(ctx: ClientContext): void {
-  const { generateInterview, observeInterviewCommands, inferJdRoles, runJdSearch, analyzeJdSearch, renameJdSearchProject, saveJdSearchArtifacts, openJdSearchReport } = createInterviewAgentFunctions(ctx)
+  const {
+    generateInterview, observeInterviewCommands, inferJdRoles, runJdSearch, analyzeJdSearch,
+    renameJdSearchProject, saveJdSearchArtifacts, openJdSearchReport,
+  } = createInterviewAgentFunctions(ctx)
   const betterSidebar = ctx.get('betterSidebar') as BetterSidebarService | undefined
   ctx.effect(() => {
     if (betterSidebar === undefined) return () => undefined

@@ -1,0 +1,15 @@
+{
+  "provider": "controlled model fixture",
+  "real_model_calls": 0,
+  "waiting_after_301_seconds_step": 2,
+  "complete_json_before_finish_step": 2,
+  "completed_step": 3,
+  "job_cards": 1,
+  "sidebar_project_visible": true,
+  "project_persisted": true,
+  "workspace_write_failure_visible": true,
+  "workspace_file_exists": false,
+  "restored_step": 3,
+  "restoration_extra_model_calls": 0,
+  "existing_project_preserved": true
+}

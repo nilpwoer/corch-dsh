@@ -10,6 +10,8 @@ The five-step navigation opens any step whose data is available in the current p
 
 On the ability-tag step, “Save search project” writes both reports again and records a finalization timestamp in the project index after the workspace confirms both writes. Other workbenches can use the project record's report paths and finalization timestamp. Changing the included JD sample clears that finalization state.
 
+JD actions require an idle conversation and wait for the admitted input's completed turn. Streaming JSON remains provisional; task failure, interruption and session removal produce errors instead of accepting partial results. Search duration alone does not detach the result listener. Reopening a session can reconstruct a missing sidebar project from its latest completed, valid search response without another model request. Existing projects remain authoritative. Recovery restores browser metadata and JD content; it does not confirm or repeat workspace file writes.
+
 ## Expert interviews
 
 The client plugin prepares expert profiles and versioned question packages, then publishes to an explicitly configured Worker. Existing interview data stays in the browser; the Worker owns participant sessions, execution settings and reports. The profile mounts this bundle alongside an installed `dsh-better-sidebar` provider.
