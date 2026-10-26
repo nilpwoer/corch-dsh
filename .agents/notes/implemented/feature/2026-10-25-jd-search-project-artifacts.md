@@ -14,6 +14,8 @@ The workbench stores project metadata in browser local storage keyed by the DSH 
 
 The analysis prompt follows the JD-driven capability mapping method: retain evidence ids, merge semantically equivalent tasks, exclude vague support or participation statements as standalone tasks, and map only to professional ability tags. Search results retain cleaned JD bodies alongside summaries and source URLs.
 
+The final “Save search project” action rewrites both reports and adds `finalizedAt` to the project index only after the workspace confirms both file writes. Future workbenches can use the stored report paths and timestamp. Changing the confirmed JD sample invalidates this marker.
+
 ## Alternatives considered
 
 **Write files directly through a client filesystem API:** the workbench's client workspace service exposes workspace and file navigation, but no write operation. The active session's DSH file tools provide workspace-scoped writes without adding a new client API.
@@ -24,4 +26,4 @@ The analysis prompt follows the JD-driven capability mapping method: retain evid
 
 ## Consequences
 
-Project metadata follows browser local storage and is specific to the browser origin. Job data and reports live in the DSH workspace and depend on the active session being available and its file tools completing the requested write. File paths are stored with the project for reopening and troubleshooting. A failed artifact write does not hide the search results or remove the sidebar project.
+Project metadata follows browser local storage and is specific to the browser origin. Job data and reports live in the DSH workspace and depend on the active session being available and its file tools completing the requested write. File paths are stored with the project for reopening and troubleshooting. A failed artifact write does not hide the search results or remove the sidebar project. The finalization marker is project metadata; the two workspace reports are the frozen deliverables shared with follow-on workbenches.

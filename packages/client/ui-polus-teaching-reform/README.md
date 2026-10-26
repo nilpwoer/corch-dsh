@@ -6,6 +6,10 @@ After users confirm the JD sample and generate typical work tasks, the workbench
 
 A search result immediately creates a sidebar project record keyed by its DSH session id. Project listing metadata and excluded job ids are stored in browser local storage, with a volatile in-memory fallback while the client is running. Job data and the reports are stored in the DSH workspace through the active session's file tools; a failed file write remains visible in the workbench and does not remove the project from the sidebar.
 
+The five-step navigation opens any step whose data is available in the current project. Revisiting a completed step only displays its saved inputs or results; search and analysis run only after the user presses their action buttons.
+
+On the ability-tag step, “Save search project” writes both reports again and records a finalization timestamp in the project index after the workspace confirms both writes. Other workbenches can use the project record's report paths and finalization timestamp. Changing the included JD sample clears that finalization state.
+
 ## Expert interviews
 
 The client plugin prepares expert profiles and versioned question packages, then publishes to an explicitly configured Worker. Existing interview data stays in the browser; the Worker owns participant sessions, execution settings and reports. The profile mounts this bundle alongside an installed `dsh-better-sidebar` provider.

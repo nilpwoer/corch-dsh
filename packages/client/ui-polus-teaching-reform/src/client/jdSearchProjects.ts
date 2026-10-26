@@ -65,6 +65,7 @@ function isProject(value: unknown): value is JdSearchProject {
     && (value.reportPath === undefined || typeof value.reportPath === 'string')
     && (value.htmlReportPath === undefined || typeof value.htmlReportPath === 'string')
     && (value.reportSavedAt === undefined || typeof value.reportSavedAt === 'string')
+    && (value.finalizedAt === undefined || typeof value.finalizedAt === 'string')
     && typeof value.updatedAt === 'string'
 }
 

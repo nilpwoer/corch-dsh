@@ -137,6 +137,8 @@
 .content { max-width: 900px; margin: 0 auto; padding: 22px 26px 34px; }
 .progress { display: flex; gap: 3px; overflow-x: auto; padding: 10px 20px; border-bottom: 1px solid var(--dsw-alias-border-l1); }
 .progressButton, .progressActive { border: 0; border-radius: 7px; padding: 8px 12px; background: transparent; color: var(--dsw-alias-fg-tertiary); cursor: pointer; font-size: 12px; white-space: nowrap; }
+.progressButton:disabled, .progressActive:disabled { cursor: default; }
+.progressButton:disabled:not([aria-current]) { opacity: .55; }
 .progressButton span, .progressActive span { display: inline-grid; place-items: center; width: 20px; height: 20px; margin-right: 6px; border-radius: 50%; background: var(--dsw-alias-bg-module-platform); font-size: 10px; }
 .progressActive { background: var(--dsw-alias-bg-module-platform); color: var(--dsw-alias-fg-primary); font-weight: 600; }
 .sectionIntro { display: grid; gap: 7px; margin-bottom: 18px; }.sectionIntro h2 { margin: 0; font-size: 18px; }.eyebrow { color: var(--dsw-alias-fg-tertiary); font-size: 11px; letter-spacing: .08em; }
