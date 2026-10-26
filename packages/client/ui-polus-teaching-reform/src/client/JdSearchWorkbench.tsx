@@ -112,7 +112,64 @@ export function JdSearchWorkbench(props: TeachingReformProps): ReactNode {
   const [fileStatus, setFileStatus] = useState('')
   const [finalizing, setFinalizing] = useState(false)
   const [finalizeStatus, setFinalizeStatus] = useState('')
+  const activeWorkflow = useRef<AbortController | null>(null)
+  const [workflow, setWorkflow] = useState<AbortController | null>(null)
+  const [stillRunning, setStillRunning] = useState(false)
+  const [cancelling, setCancelling] = useState(false)
+  const cancellationOwner = useRef<AbortController | null>(null)
+  const recoveryBlocked = useRef(false)
   useEffect(() => {
+    if (workflow === null) return
+    const reminder = window.setTimeout(() => { setStillRunning(true) }, 5 * 60 * 1000)
+    return () => { window.clearTimeout(reminder) }
+  }, [workflow])
+  useEffect(() => () => {
+    activeWorkflow.current = null
+    cancellationOwner.current = null
+  }, [props.sessionId])
+  const beginWorkflow = (): AbortController => {
+    const controller = new AbortController()
+    activeWorkflow.current = controller
+    setWorkflow(controller)
+    setStillRunning(false)
+    return controller
+  }
+  const finishWorkflow = (controller: AbortController): void => {
+    if (activeWorkflow.current !== controller) return
+    activeWorkflow.current = null
+    setWorkflow(null)
+    setStillRunning(false)
+  }
+  const cancelWorkflow = async (): Promise<void> => {
+    const controller = activeWorkflow.current
+    if (controller === null || controller.signal.aborted) return
+    const sessionId = String(props.sessionId)
+    recoveryBlocked.current = true
+    cancellationOwner.current = controller
+    controller.abort(new Error('已取消 JD 工作流'))
+    finishWorkflow(controller)
+    setBusy(false)
+    setFinalizing(false)
+    setFileStatus(current => current.startsWith('正在保存') ? '已取消保存等待；请在工作区核对实际文件。' : current)
+    setError('已取消 JD 工作流')
+    setCancelling(true)
+    try {
+      await props.cancelJdWorkflow(props.sessionId)
+    } catch (reason) {
+      if (activeSessionId.current === sessionId && cancellationOwner.current === controller) setError(`已取消工作流等待，但未能确认 Agent 停止：${reason instanceof Error ? reason.message : String(reason)}`)
+    } finally {
+      if (activeSessionId.current === sessionId && cancellationOwner.current === controller) {
+        cancellationOwner.current = null
+        setCancelling(false)
+      }
+    }
+  }
+  useEffect(() => {
+    setWorkflow(null)
+    setStillRunning(false)
+    setCancelling(false)
+    setBusy(false)
+    recoveryBlocked.current = false
     const stored = readJdSearchProject(String(props.sessionId))
     if (stored === undefined) {
       setProjectRecord(undefined)
@@ -139,7 +196,7 @@ export function JdSearchWorkbench(props: TeachingReformProps): ReactNode {
   }, [props.sessionId])
   useEffect(() => {
     const sessionId = String(props.sessionId)
-    if (busy || settledSnapshot === null || readJdSearchProject(sessionId) !== undefined) return
+    if (busy || recoveryBlocked.current || settledSnapshot === null || readJdSearchProject(sessionId) !== undefined) return
     const recovered = readCompletedJdSearch(settledSnapshot)
     if (recovered === undefined) return
     const paths = jdSearchProjectPaths(sessionId)
@@ -157,20 +214,32 @@ export function JdSearchWorkbench(props: TeachingReformProps): ReactNode {
     setFileStatus('已从会话恢复搜索结果；岗位 JD 文件尚未重新写入工作区。')
   }, [props.sessionId, settledSnapshot, busy])
   const search = async (platforms: string[], range: Omit<JdSearchRequest, 'major' | 'direction' | 'roles' | 'platforms'>): Promise<void> => {
+    if (activeWorkflow.current !== null || cancelling) return
+    const controller = beginWorkflow()
+    const signal = controller.signal
+    recoveryBlocked.current = false
     const sessionId = String(props.sessionId)
     const session = props.sessionId
+    const isCurrent = (): boolean => activeSessionId.current === sessionId && activeWorkflow.current === controller
     setBusy(true); setError(undefined); setFileStatus('')
     const request: JdSearchRequest = { ...target, platforms, ...range }
     let results: readonly JdSearchJob[]
-    try { results = await props.runJdSearch(session, request) } catch (reason) { if (activeSessionId.current === sessionId) { setError(reason instanceof Error ? reason.message : '搜索失败'); setBusy(false) } return }
+    try {
+      results = await props.runJdSearch(session, request, signal)
+      signal.throwIfAborted()
+    } catch (reason) {
+      if (isCurrent()) { setError(reason instanceof Error ? reason.message : '搜索失败'); setBusy(false) }
+      finishWorkflow(controller)
+      return
+    }
     const paths = jdSearchProjectPaths(sessionId)
     const project = {
       sessionId, title: jdSearchProjectTitle(request, results.length), request, jobs: results,
       jobsPath: paths.jobs, updatedAt: new Date().toISOString(),
     }
-    if (activeSessionId.current === sessionId) setProjectRecord(project)
+    if (isCurrent()) setProjectRecord(project)
     writeJdSearchProject(project)
-    if (activeSessionId.current === sessionId) {
+    if (isCurrent()) {
       setJobs(results)
       setStep(3)
       setFileStatus('正在保存岗位 JD 到本地工作区…')
@@ -182,29 +251,39 @@ export function JdSearchWorkbench(props: TeachingReformProps): ReactNode {
       renameWarning = reason instanceof Error ? reason.message : String(reason)
     }
     try {
-      await props.saveJdSearchArtifacts(session, [{ path: paths.jobs, contents: JSON.stringify({ request, jobs: results }, null, 2) }])
-      const savedProject = { ...project, updatedAt: new Date().toISOString() }
-      if (activeSessionId.current === sessionId) setProjectRecord(savedProject)
-      writeJdSearchProject(savedProject)
-      if (activeSessionId.current === sessionId) setFileStatus(renameWarning === '' ? `岗位 JD 已保存到 ${paths.jobs}` : `岗位 JD 已保存到 ${paths.jobs}；会话标题未更新：${renameWarning}`)
+      signal.throwIfAborted()
+      await props.saveJdSearchArtifacts(session,
+        [{ path: paths.jobs, contents: JSON.stringify({ request, jobs: results }, null, 2) }], signal)
+      signal.throwIfAborted()
+      if (isCurrent()) {
+        setFileStatus(renameWarning === '' ? `岗位 JD 已保存到 ${paths.jobs}` : `岗位 JD 已保存到 ${paths.jobs}；会话标题未更新：${renameWarning}`)
+      }
     } catch (reason) {
-      if (activeSessionId.current === sessionId) setFileStatus(`岗位 JD 已进入项目列表，但本地文件保存失败：${reason instanceof Error ? reason.message : String(reason)}`)
-    } finally { if (activeSessionId.current === sessionId) setBusy(false) }
+      if (isCurrent()) setFileStatus(`岗位 JD 已进入项目列表，但本地文件保存失败：${reason instanceof Error ? reason.message : String(reason)}`)
+    } finally {
+      if (isCurrent()) setBusy(false)
+      finishWorkflow(controller)
+    }
   }
   const analyze = async (confirmed: readonly JdSearchJob[]): Promise<void> => {
+    if (activeWorkflow.current !== null || cancelling) return
+    const controller = beginWorkflow()
+    const signal = controller.signal
     const sessionId = String(props.sessionId)
     const session = props.sessionId
+    const isCurrent = (): boolean => activeSessionId.current === sessionId && activeWorkflow.current === controller
     setBusy(true); setError(undefined); setFileStatus('')
     const stored = readJdSearchProject(sessionId) ?? (projectRecord?.sessionId === sessionId ? projectRecord : undefined)
     if (stored !== undefined) {
       const confirmedProject = { ...stored, confirmedJobIds: confirmed.map(job => job.id), updatedAt: new Date().toISOString() }
       delete confirmedProject.finalizedAt
       delete confirmedProject.reportSavedAt
-      if (activeSessionId.current === sessionId) setProjectRecord(confirmedProject)
+      if (isCurrent()) setProjectRecord(confirmedProject)
       writeJdSearchProject(confirmedProject)
     }
     try {
-      const result = await props.analyzeJdSearch(session, confirmed)
+      const result = await props.analyzeJdSearch(session, confirmed, signal)
+      signal.throwIfAborted()
       const current = readJdSearchProject(sessionId) ?? (projectRecord?.sessionId === sessionId ? projectRecord : undefined)
       const paths = jdSearchProjectPaths(sessionId)
       const project = current === undefined ? undefined : {
@@ -212,29 +291,35 @@ export function JdSearchWorkbench(props: TeachingReformProps): ReactNode {
         updatedAt: new Date().toISOString(),
       }
       if (project === undefined) throw new Error('当前搜索项目记录不可用，无法生成报告')
-      if (activeSessionId.current === sessionId) setProjectRecord(project)
+      if (isCurrent()) setProjectRecord(project)
       writeJdSearchProject(project)
-      if (activeSessionId.current === sessionId) {
+      if (isCurrent()) {
         setAnalysis(result)
         setFileStatus('正在保存典型工作任务报告…')
       }
       await props.saveJdSearchArtifacts(session, [
         { path: paths.report, contents: buildJdSearchReport(project) },
         { path: paths.htmlReport, contents: buildJdSearchHtmlReport(project) },
-      ])
+      ], signal)
+      signal.throwIfAborted()
+      if (readJdSearchProject(sessionId)?.updatedAt !== project.updatedAt) return
       const savedProject = { ...project, reportSavedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
-      if (activeSessionId.current === sessionId) setProjectRecord(savedProject)
+      if (isCurrent()) setProjectRecord(savedProject)
       writeJdSearchProject(savedProject)
-      if (activeSessionId.current === sessionId) setFileStatus(`典型工作任务报告已保存：${paths.report} · ${paths.htmlReport}`)
-      if (activeSessionId.current === sessionId) setStep(4)
+      if (isCurrent()) setFileStatus(`典型工作任务报告已保存：${paths.report} · ${paths.htmlReport}`)
+      if (isCurrent()) setStep(4)
     } catch (reason) {
-      if (activeSessionId.current === sessionId) {
+      if (isCurrent()) {
         setError(reason instanceof Error ? reason.message : '任务分析失败')
         if (readJdSearchProject(sessionId)?.analysis !== undefined) setStep(4)
       }
-    } finally { if (activeSessionId.current === sessionId) setBusy(false) }
+    } finally {
+      if (isCurrent()) setBusy(false)
+      finishWorkflow(controller)
+    }
   }
   const finalize = async (): Promise<void> => {
+    if (activeWorkflow.current !== null || cancelling) return
     const sessionId = String(props.sessionId)
     const session = props.sessionId
     const current = readJdSearchProject(sessionId) ?? (projectRecord?.sessionId === sessionId ? projectRecord : undefined)
@@ -242,6 +327,9 @@ export function JdSearchWorkbench(props: TeachingReformProps): ReactNode {
       setFinalizeStatus('缺少已生成的任务分析，无法冻结项目。')
       return
     }
+    const controller = beginWorkflow()
+    const signal = controller.signal
+    const isCurrent = (): boolean => activeSessionId.current === sessionId && activeWorkflow.current === controller
     setFinalizing(true)
     setFinalizeStatus('')
     const paths = jdSearchProjectPaths(sessionId)
@@ -250,29 +338,48 @@ export function JdSearchWorkbench(props: TeachingReformProps): ReactNode {
       await props.saveJdSearchArtifacts(session, [
         { path: paths.report, contents: buildJdSearchReport(reportProject) },
         { path: paths.htmlReport, contents: buildJdSearchHtmlReport(reportProject) },
-      ])
+      ], signal)
+      signal.throwIfAborted()
+      if (readJdSearchProject(sessionId)?.updatedAt !== current.updatedAt) return
       const finalizedAt = new Date().toISOString()
       const frozenProject = { ...reportProject, reportSavedAt: finalizedAt, finalizedAt, updatedAt: finalizedAt }
-      if (activeSessionId.current === sessionId) setProjectRecord(frozenProject)
+      if (isCurrent()) setProjectRecord(frozenProject)
       writeJdSearchProject(frozenProject)
-      if (activeSessionId.current === sessionId) setFinalizeStatus('Markdown 与 HTML 报告已写入工作区，项目已冻结。')
+      if (isCurrent()) setFinalizeStatus('Markdown 与 HTML 报告已写入工作区，项目已冻结。')
     } catch (reason) {
-      if (activeSessionId.current === sessionId) setFinalizeStatus(`冻结失败：${reason instanceof Error ? reason.message : String(reason)}`)
+      if (isCurrent()) setFinalizeStatus(`冻结失败：${reason instanceof Error ? reason.message : String(reason)}`)
     } finally {
-      if (activeSessionId.current === sessionId) setFinalizing(false)
+      if (isCurrent()) setFinalizing(false)
+      finishWorkflow(controller)
     }
+  }
+  const inferRoles = async (major: string, direction: string): Promise<readonly string[]> => {
+    if (activeWorkflow.current !== null || cancelling) throw new Error('当前 JD 工作流仍在运行')
+    const controller = beginWorkflow()
+    try {
+      const roles = await props.inferJdRoles(props.sessionId, major, direction, controller.signal)
+      controller.signal.throwIfAborted()
+      return roles
+    } finally { finishWorkflow(controller) }
   }
   useEffect(() => { const reset = (): void => { setProjectKey(current => current + 1); setStep(1); setTarget({ major: '', direction: '', roles: [] }); setJobs([]); setAnalysis({ tasks: [], abilities: [] }); setError(undefined); setFileStatus(''); setFinalizeStatus(''); setFinalizing(false) }; window.addEventListener('jd-search-new', reset); return () => window.removeEventListener('jd-search-new', reset) }, [])
   const savedProject = projectRecord?.sessionId === String(props.sessionId) ? projectRecord : readJdSearchProject(String(props.sessionId))
+  const workflowStatus = workflow === null && !cancelling ? null : <div className={css.notice}>
+    <div role="status">{cancelling ? '正在请求 Agent 停止…' : stillRunning
+      ? 'Agent 仍在运行，已等待超过 5 分钟。将继续等待结果，也可以取消工作流。'
+      : '正在等待 Agent 完成任务。'}</div>
+    <button className={css.button} type="button" disabled={cancelling || workflow?.signal.aborted === true}
+      onClick={() => { void cancelWorkflow() }}>取消工作流</button>
+  </div>
   const canOpenStep = (candidate: number): boolean => {
-    if (busy || finalizing) return false
+    if (busy || finalizing || workflow !== null || cancelling) return false
     if (candidate === 1) return true
     if (candidate === 2) return target.major.trim() !== '' && target.roles.length > 0
     if (candidate === 3) return jobs.length > 0
     if (candidate === 4) return analysis.tasks.length > 0
     return analysis.abilities.length > 0
   }
-  return <div className={css.workbench}><header className={css.header}><div><span className={css.kicker}>岗位研究工作台</span><h1>JD 搜索</h1><p>从真实岗位描述中提取典型工作任务，形成专业能力参考。</p></div><Pill>AGENT WORKFLOW</Pill></header><div className={css.progress}>{STEPS.map((item, index) => { const candidate = index + 1; const enabled = canOpenStep(candidate); return <button type="button" key={item} aria-current={candidate === step ? 'step' : undefined} disabled={!enabled || candidate === step} className={candidate === step ? css.progressActive : css.progressButton} onClick={() => setStep(candidate)}><span>{candidate}</span>{item}</button> })}</div><main className={css.content}>{step === 1 && <Target key={projectKey} initialTarget={target} infer={(major, direction) => props.inferJdRoles(props.sessionId, major, direction)} next={(major, direction, roles) => { setTarget({ major, direction, roles }); setStep(2) }} />}{step === 2 && <Platforms key={String(props.sessionId)} busy={busy} error={error} initialRequest={savedProject?.request} next={(platforms, range) => { void search(platforms, range) }} />}{step === 3 && <Results key={String(props.sessionId)} jobs={jobs} busy={busy} confirmedJobIds={savedProject?.confirmedJobIds} excludedJobIds={savedProject?.excludedJobIds} fileStatus={fileStatus} onExcludedChange={(excludedJobIds) => {
+  return <div className={css.workbench}><header className={css.header}><div><span className={css.kicker}>岗位研究工作台</span><h1>JD 搜索</h1><p>从真实岗位描述中提取典型工作任务，形成专业能力参考。</p></div><Pill>AGENT WORKFLOW</Pill></header><div className={css.progress}>{STEPS.map((item, index) => { const candidate = index + 1; const enabled = canOpenStep(candidate); return <button type="button" key={item} aria-current={candidate === step ? 'step' : undefined} disabled={!enabled || candidate === step} className={candidate === step ? css.progressActive : css.progressButton} onClick={() => { setStep(candidate) }}><span>{candidate}</span>{item}</button> })}</div><main className={css.content}>{workflowStatus}{step === 1 && <Target key={projectKey} initialTarget={target} infer={inferRoles} next={(major, direction, roles) => { setTarget({ major, direction, roles }); setStep(2) }} />}{step === 2 && <Platforms key={String(props.sessionId)} busy={busy} error={error} initialRequest={savedProject?.request} next={(platforms, range) => { void search(platforms, range) }} />}{step === 3 && <Results key={String(props.sessionId)} jobs={jobs} busy={busy} confirmedJobIds={savedProject?.confirmedJobIds} excludedJobIds={savedProject?.excludedJobIds} fileStatus={fileStatus} onExcludedChange={(excludedJobIds) => {
     const current = projectRecord?.sessionId === String(props.sessionId) ? projectRecord : readJdSearchProject(String(props.sessionId))
     if (current === undefined) return
     const nextProject = { ...current, excludedJobIds, updatedAt: new Date().toISOString() }
@@ -286,5 +393,5 @@ export function JdSearchWorkbench(props: TeachingReformProps): ReactNode {
     writeJdSearchProject(nextProject)
     setAnalysis({ tasks: [], abilities: [] })
     setStep(3)
-  }} next={(confirmed) => { void analyze(confirmed) }} />}{step === 4 && <Tasks key={String(props.sessionId)} tasks={analysis.tasks} next={() => setStep(5)} reportPath={savedProject?.reportPath} htmlReportPath={savedProject?.htmlReportPath} reportSaved={savedProject?.reportSavedAt !== undefined} openReport={() => props.openJdSearchReport(props.sessionId, savedProject?.htmlReportPath ?? '')} saveStatus={fileStatus} />}{step === 5 && <Abilities abilities={analysis.abilities} save={() => { void finalize() }} saving={finalizing} finalizedAt={savedProject?.finalizedAt} status={finalizeStatus} />}{fileStatus !== '' && step !== 3 && step !== 4 && <div className={css.notice}>{fileStatus}</div>}{error !== undefined && step !== 2 && <div className={css.loginNotice}>{error}</div>}</main></div>
+  }} next={(confirmed) => { void analyze(confirmed) }} />}{step === 4 && <Tasks key={String(props.sessionId)} tasks={analysis.tasks} next={() => { setStep(5) }} reportPath={savedProject?.reportPath} htmlReportPath={savedProject?.htmlReportPath} reportSaved={savedProject?.reportSavedAt !== undefined} openReport={() => props.openJdSearchReport(props.sessionId, savedProject?.htmlReportPath ?? '')} saveStatus={fileStatus} />}{step === 5 && <Abilities abilities={analysis.abilities} save={() => { void finalize() }} saving={finalizing} finalizedAt={savedProject?.finalizedAt} status={finalizeStatus} />}{fileStatus !== '' && step !== 3 && step !== 4 && <div className={css.notice}>{fileStatus}</div>}{error !== undefined && step !== 2 && <div className={css.loginNotice}>{error}</div>}</main></div>
 }

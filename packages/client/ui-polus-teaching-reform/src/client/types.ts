@@ -12,11 +12,13 @@ export type TeachingReformProps = PropsRuntime<'conversation.details.context'> &
   observeInterviewCommands: (id: SessionId, listener: (command: 'regenerate') => void) => () => void
   openExpertMaterialPreview?: (sessionId: SessionId, material: ExpertMaterial) => void
   openGlobalReferencePreview?: (document: GlobalReferenceDocument) => void
-  runJdSearch: (id: SessionId, request: JdSearchRequest) => Promise<readonly JdSearchJob[]>
-  inferJdRoles: (id: SessionId, major: string, direction: string) => Promise<readonly string[]>
-  analyzeJdSearch: (id: SessionId, jobs: readonly JdSearchJob[]) => Promise<JdSearchAnalysis>
+  runJdSearch: (id: SessionId, request: JdSearchRequest, signal?: AbortSignal) => Promise<readonly JdSearchJob[]>
+  inferJdRoles: (id: SessionId, major: string, direction: string, signal?: AbortSignal) => Promise<readonly string[]>
+  analyzeJdSearch: (id: SessionId, jobs: readonly JdSearchJob[], signal?: AbortSignal) => Promise<JdSearchAnalysis>
+  /** Cancel the current host turn; aborting a workflow signal only cancels its client wait. */
+  cancelJdWorkflow: (id: SessionId) => Promise<void>
   renameJdSearchProject: (id: SessionId, title: string) => Promise<void>
-  saveJdSearchArtifacts: (id: SessionId, artifacts: readonly { path: string; contents: string }[]) => Promise<void>
+  saveJdSearchArtifacts: (id: SessionId, artifacts: readonly { path: string; contents: string }[], signal?: AbortSignal) => Promise<void>
   openJdSearchReport: (id: SessionId, path: string) => Promise<void>
 }
 

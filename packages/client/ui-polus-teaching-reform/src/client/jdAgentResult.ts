@@ -50,7 +50,9 @@ function assistantText(node: AssistantMessageNode): string {
  * @returns Final assistant text after its turn/end and session idle; rejects on admission, lifecycle or cancellation errors.
  */
 export async function promptJdAgent(session: PromptSession, prompt: string, signal?: AbortSignal): Promise<string> {
-  if (signal?.aborted) throw new Error('已取消等待 Agent 结果')
+  const cancellation = (): Error => signal?.reason instanceof Error && signal.reason.name !== 'AbortError'
+    ? signal.reason : new Error('已取消等待 Agent 结果')
+  if (signal?.aborted) throw cancellation()
   const initial = session.getSnapshot()
   if (initial.removed) throw new Error('当前 JD 搜索会话已移除')
   if (initial.openError !== null) throw new Error(`无法读取 JD 搜索会话：${initial.openError.message}`)
@@ -70,13 +72,13 @@ export async function promptJdAgent(session: PromptSession, prompt: string, sign
       if ('error' in result) reject(result.error)
       else resolve(result.text)
     }
-    const abort = (): void => { finish({ error: new Error('已取消等待 Agent 结果') }) }
+    const abort = (): void => { finish({ error: cancellation() }) }
     const check = (): void => {
       if (settled) return
       try {
         const snapshot = session.getSnapshot()
         if (snapshot.removed) throw new Error('当前 JD 搜索会话已移除')
-        if (snapshot.openError !== null) throw new Error(`无法读取 JD 搜索会话：${snapshot.openError.message}`)
+        // A failed history resync does not end accepted work; durable task events still apply.
         if (!accepted) return
         if (completedText !== undefined) {
           if (!snapshot.running && snapshot.queue.length === 0) finish({ text: completedText })

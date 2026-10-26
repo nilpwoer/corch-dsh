@@ -11,7 +11,7 @@ import { JdSearchSidebar, JdSearchWorkbench } from './JdSearchWorkbench.tsx'
 import { InterviewDetails, InterviewSidebar, rebindInterviewSession, selectInterview } from './InterviewWorkbench.tsx'
 import { loadGlobalReferenceDocumentsForGeneration } from './InterviewSettings.tsx'
 import type { GlobalReferenceDocument } from './InterviewSettings.tsx'
-import type { InterviewProfile, JdSearchAbility, JdSearchAnalysis, JdSearchJob, JdSearchRequest, JdSearchTask, TeachingReformProps } from './types.ts'
+import type { InterviewProfile, JdSearchAbility, JdSearchTask, TeachingReformProps } from './types.ts'
 import type { ExpertMaterial } from './types.ts'
 import { ExpertMaterialSidebarTab } from './ExpertMaterialSidebarTab.tsx'
 import { GlobalReferenceSidebarTab } from './GlobalReferenceSidebarTab.tsx'
@@ -56,14 +56,9 @@ type InterviewSession = {
   }
 }
 
-type JdAgentFunctions = {
-  inferJdRoles: (id: SessionId, major: string, direction: string) => Promise<readonly string[]>
-  runJdSearch: (id: SessionId, request: JdSearchRequest) => Promise<readonly JdSearchJob[]>
-  analyzeJdSearch: (id: SessionId, jobs: readonly JdSearchJob[]) => Promise<JdSearchAnalysis>
-  renameJdSearchProject: (id: SessionId, title: string) => Promise<void>
-  saveJdSearchArtifacts: (id: SessionId, artifacts: readonly { path: string; contents: string }[]) => Promise<void>
-  openJdSearchReport: (id: SessionId, path: string) => Promise<void>
-}
+type JdAgentFunctions = Pick<TeachingReformProps,
+  'inferJdRoles' | 'runJdSearch' | 'analyzeJdSearch' | 'renameJdSearchProject'
+  | 'saveJdSearchArtifacts' | 'openJdSearchReport' | 'cancelJdWorkflow'>
 
 function sessionContainsText(session: InterviewSession, text: string): boolean {
   if (text.trim() === '') return false
@@ -192,10 +187,10 @@ function createInterviewAgentFunctions(ctx: ClientContext) {
       if (/重新生成问题包|重新生成问题|重做问题包/.test(readUserText(latest))) listener('regenerate')
     })
   }
-  const promptAgent = async (id: SessionId, prompt: string): Promise<string> => {
+  const promptAgent = async (id: SessionId, prompt: string, signal?: AbortSignal): Promise<string> => {
     const session = ctx.sessions.binding(id)?.session
     if (session === undefined) throw new Error('当前 JD 搜索会话不可用')
-    return await promptJdAgent(session, prompt)
+    return await promptJdAgent(session, prompt, signal)
   }
   const renameJdSearchProject = async (id: SessionId, title: string): Promise<void> => {
     const session = ctx.sessions.binding(id)?.session
@@ -203,10 +198,10 @@ function createInterviewAgentFunctions(ctx: ClientContext) {
     const result = await session.rename(title)
     if (!result.ok) throw new Error(result.error.message)
   }
-  const saveJdSearchArtifacts = async (id: SessionId, artifacts: readonly { path: string; contents: string }[]): Promise<void> => {
+  const saveJdSearchArtifacts: JdAgentFunctions['saveJdSearchArtifacts'] = async (id, artifacts, signal) => {
     const session = ctx.sessions.binding(id)?.session
     if (session === undefined) throw new Error('当前 JD 搜索会话不可用')
-    const text = await promptJdAgent(session, buildJdSearchArtifactPrompt(artifacts))
+    const text = await promptJdAgent(session, buildJdSearchArtifactPrompt(artifacts), signal)
     const missing = artifacts.filter(artifact => !text.includes(`已保存：${artifact.path}`))
     if (missing.length > 0) throw new Error(`Agent 未确认文件已写入：${missing.map(artifact => artifact.path).join('、')}`)
   }
@@ -216,14 +211,15 @@ function createInterviewAgentFunctions(ctx: ClientContext) {
     await ctx.workspaces.openPath(resolveWorkspacePath(cwd, path))
   }
   const jdFunctions: JdAgentFunctions = {
-    inferJdRoles: async (id, major, direction) => {
-      const result = parseJdAgentJson(await promptAgent(id, buildJdRoleInferencePrompt(major, direction)))
-      if (!isRecord(result) || !Array.isArray(result.roles) || result.roles.some(role => typeof role !== 'string')) throw new Error('Agent 返回结果缺少有效岗位名称')
+    inferJdRoles: async (id, major, direction, signal) => {
+      const result = parseJdAgentJson(await promptAgent(id, buildJdRoleInferencePrompt(major, direction), signal))
+      if (!isRecord(result) || !Array.isArray(result.roles)
+        || !result.roles.every((role: unknown): role is string => typeof role === 'string')) throw new Error('Agent 返回结果缺少有效岗位名称')
       return result.roles.filter(role => role.trim() !== '').slice(0, 8)
     },
-    runJdSearch: async (id, request) => parseJdJobs(await promptAgent(id, buildJdSearchPrompt(request))),
-    analyzeJdSearch: async (id, jobs) => {
-      const result = parseJdAgentJson(await promptAgent(id, buildJdAnalysisPrompt(jobs)))
+    runJdSearch: async (id, request, signal) => parseJdJobs(await promptAgent(id, buildJdSearchPrompt(request), signal)),
+    analyzeJdSearch: async (id, jobs, signal) => {
+      const result = parseJdAgentJson(await promptAgent(id, buildJdAnalysisPrompt(jobs), signal))
       if (!isRecord(result) || !Array.isArray(result.tasks) || !Array.isArray(result.abilities)) throw new Error('Agent 返回结果缺少任务或能力标签')
       if (!result.abilities.every(isAgentAbility)) throw new Error('Agent 返回的专业能力标签字段无效')
       if (result.tasks.length < 5 || result.tasks.length > 15) throw new Error('典型工作任务数量应为 5–15 条')
@@ -238,6 +234,12 @@ function createInterviewAgentFunctions(ctx: ClientContext) {
       return { tasks, abilities: result.abilities }
     },
     renameJdSearchProject,
+    cancelJdWorkflow: async (id) => {
+      const session = ctx.sessions.binding(id)?.session
+      if (session === undefined) throw new Error('当前 JD 搜索会话不可用')
+      const result = await session.cancel()
+      if (!result.ok) throw new Error(result.error.message)
+    },
     saveJdSearchArtifacts,
     openJdSearchReport,
   }
@@ -247,7 +249,7 @@ function createInterviewAgentFunctions(ctx: ClientContext) {
 export function apply(ctx: ClientContext): void {
   const {
     generateInterview, observeInterviewCommands, inferJdRoles, runJdSearch, analyzeJdSearch,
-    renameJdSearchProject, saveJdSearchArtifacts, openJdSearchReport,
+    renameJdSearchProject, saveJdSearchArtifacts, openJdSearchReport, cancelJdWorkflow,
   } = createInterviewAgentFunctions(ctx)
   const betterSidebar = ctx.get('betterSidebar') as BetterSidebarService | undefined
   ctx.effect(() => {
@@ -388,6 +390,7 @@ export function apply(ctx: ClientContext): void {
           renameJdSearchProject,
           saveJdSearchArtifacts,
           openJdSearchReport,
+          cancelJdWorkflow,
           openExpertMaterialPreview: (sessionId: SessionId, material: ExpertMaterial) => {
             betterSidebar?.openTab?.({
               id: `polus-teaching-reform:expert-material:${material.id}`,

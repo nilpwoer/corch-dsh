@@ -1,15 +1,33 @@
 {
-  "provider": "controlled model fixture",
-  "real_model_calls": 0,
-  "waiting_after_301_seconds_step": 2,
-  "complete_json_before_finish_step": 2,
-  "completed_step": 3,
-  "job_cards": 1,
-  "sidebar_project_visible": true,
-  "project_persisted": true,
-  "workspace_write_failure_visible": true,
-  "workspace_file_exists": false,
-  "restored_step": 3,
-  "restoration_extra_model_calls": 0,
-  "existing_project_preserved": true
+  "completion": {
+    "provider": "controlled model fixture",
+    "real_model_calls": 0,
+    "slow_notice_before_five_minutes": false,
+    "slow_notice_after_301_seconds": true,
+    "slow_notice_after_completion": false,
+    "waiting_after_301_seconds_step": 2,
+    "complete_json_before_finish_step": 2,
+    "completed_step": 3,
+    "job_cards": 1,
+    "sidebar_project_visible": true,
+    "project_persisted": true,
+    "workspace_write_failure_visible": true,
+    "workspace_file_exists": false,
+    "restored_step": 3,
+    "restoration_extra_model_calls": 0,
+    "existing_project_preserved": true
+  },
+  "cancellation": {
+    "provider": "controlled model fixture",
+    "real_model_calls": 0,
+    "host_turn_aborted": true,
+    "host_agent_idle": true,
+    "cancelled_step": 2,
+    "assistant_stopped_visible": true,
+    "local_wait_finished": true,
+    "slow_notice_after_cancel": false,
+    "cancel_button_after_cancel": false,
+    "project_count": 0,
+    "later_stage_model_calls": 0
+  }
 }

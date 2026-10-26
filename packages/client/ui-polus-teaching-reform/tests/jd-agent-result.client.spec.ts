@@ -160,7 +160,6 @@ describe('JD agent turn completion', () => {
 
   it.each([
     ['removed', { removed: true }, '已移除'],
-    ['open error', { openError: { code: 'internal', message: '连接已断开', details: {} } }, '无法读取'],
     ['agent error', { lastAgentError: '模型请求失败' }, '模型请求失败'],
   ] satisfies [string, Partial<ConversationSnapshot>, string][])('cleans up on %s', async (_name, patch, message) => {
     const h = harness()
@@ -179,6 +178,23 @@ describe('JD agent turn completion', () => {
     await Promise.resolve()
     h.publish(finished([user(2), assistant(4), { kind: 'turn-error', seq: 5, time: 5000, turn: 1, step: 1, message: '搜索工具失败' }]))
     await failure
+    expect(h.listeners.size).toBe(0)
+  })
+
+  it('keeps an accepted task subscribed through a history-read failure until recovery', async () => {
+    vi.useFakeTimers()
+    const h = harness()
+    const result = promptJdAgent(h.session, prompt)
+    const settled = vi.fn()
+    void result.then(settled, settled)
+    await Promise.resolve()
+    h.publish({ running: true, nodes: [user(2)] })
+    h.publish({ openState: 'error', openError: { code: 'internal', message: '临时读取失败', details: {} } })
+    await vi.advanceTimersByTimeAsync(301000)
+    expect(settled).not.toHaveBeenCalled()
+    expect(h.listeners.size).toBe(1)
+    h.publish({ ...finished(), running: false, openState: 'open', openError: null })
+    await expect(result).resolves.toBe(text)
     expect(h.listeners.size).toBe(0)
   })
 
@@ -272,6 +288,22 @@ describe('JD agent turn completion', () => {
     await failure
     expect(h.listeners.size).toBe(0)
     expect(remove).toHaveBeenCalledWith('abort', expect.any(Function))
+  })
+
+  it('preserves the workflow cancellation reason after a long wait and ignores late completion', async () => {
+    vi.useFakeTimers()
+    const h = harness()
+    const controller = new AbortController()
+    const result = promptJdAgent(h.session, prompt, controller.signal)
+    const failure = expect(result).rejects.toThrow('已取消 JD 工作流')
+    await Promise.resolve()
+    h.publish({ running: true, nodes: [user(2)] })
+    await vi.advanceTimersByTimeAsync(301000)
+    controller.abort(new Error('已取消 JD 工作流'))
+    await failure
+    h.publish({ ...finished(), running: false })
+    expect(h.listeners.size).toBe(0)
+    expect(h.send).toHaveBeenCalledTimes(1)
   })
 
   it('cleans up if a synchronous subscription notification removes the session', async () => {
