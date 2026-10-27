@@ -1,10 +1,11 @@
 /** Resolve shipped packages from the portable runtime without links in user data. */
 import { createRequire, registerHooks } from 'node:module'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { dirname, join, relative, isAbsolute } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 export function registerDesktopModules(entry, home) {
+  const homeDirectory = realpathSync(home)
   const modules = dirname(dirname(dirname(dirname(entry))))
   const anchor = pathToFileURL(join(modules, '__desktop__.mjs')).href
   // Match the CLI fallback's breadth-first, first-resolution-wins closure.
@@ -26,7 +27,7 @@ export function registerDesktopModules(entry, home) {
   }
   const insideHome = url => {
     if (!url?.startsWith('file:')) return false
-    const local = relative(home, fileURLToPath(url))
+    const local = relative(homeDirectory, realpathSync(fileURLToPath(url)))
     return local !== '..' && !local.startsWith('..\\') && !local.startsWith('../') && !isAbsolute(local)
   }
   return registerHooks({

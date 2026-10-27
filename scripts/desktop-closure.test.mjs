@@ -80,16 +80,20 @@ test('frozen install staging stays outside the portable payload',async()=>{
       name:'@polus-ai/corch-dsh-desktop',version:'1.0.0',dependencies:{},files:[],
     }))
     const calls=[]
-    const receipt=await buildFrozenDesktopRuntime(source,runtime,async(bin,args,cwd)=>{
-      calls.push({bin,args,cwd})
+    const receipt=await buildFrozenDesktopRuntime(source,runtime,async(bin,args,cwd,env)=>{
+      calls.push({bin,args,cwd,env})
       await mkdir(join(cwd,'node_modules'),{recursive:true})
-    },'fixture-pnpm.mjs')
+    },'fixture-pnpm.mjs',{os:'darwin',cpu:'arm64'})
     assert.equal(receipt.frozen_install,true)
     assert.equal(receipt.packages,1)
     assert.equal(calls.length,2)
     assert.ok(calls[0].args.includes('--frozen-lockfile'))
     assert.ok(calls[0].cwd.startsWith(join(source,'.tmp')+sep+'desktop-workspace-'))
     assert.equal(calls[1].cwd,calls[0].cwd)
+    assert.ok(calls[0].args.includes('--os=darwin'))
+    assert.ok(calls[0].args.includes('--cpu=arm64'))
+    assert.deepEqual(calls[0].env,{npm_config_platform:'darwin',npm_config_arch:'arm64'})
+    assert.deepEqual(calls[1].env,{npm_config_platform:'darwin',npm_config_arch:'arm64'})
     assert.deepEqual(await readdir(resources),['runtime'])
     assert.equal(JSON.parse(await readFile(join(runtime,'DESKTOP-CLOSURE.json'),'utf8')).packages,1)
   }finally{assert.ok(resolve(root).startsWith(resolve(tmpdir())+sep+'corch-closure-'));await rm(root,{recursive:true})}

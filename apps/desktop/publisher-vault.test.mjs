@@ -10,9 +10,9 @@ test('vault invokes OS encryption, writes no plaintext and refuses any plaintext
   try {
     let available = true
     let encrypted = 0
-    const safeStorage = { isEncryptionAvailable: () => available,
-      encryptString(value) { encrypted++; return Buffer.from([...value].reverse().join('')) },
-      decryptString(value) { return [...value.toString()].reverse().join('') },
+    const safeStorage = { isAsyncEncryptionAvailable: async () => available,
+      async encryptStringAsync(value) { encrypted++; return Buffer.from([...value].reverse().join('')) },
+      async decryptStringAsync(value) { return { result: [...value.toString()].reverse().join(''), shouldReEncrypt: false } },
     }
     const path = join(directory, 'publisher.json')
     const vault = createPublisherVault(path, safeStorage)
@@ -31,5 +31,8 @@ test('vault invokes OS encryption, writes no plaintext and refuses any plaintext
     available = true
     safeStorage.getSelectedStorageBackend = () => 'basic_text'
     await assert.rejects(vault.write(saved), /系统凭据加密不可用/)
+    delete safeStorage.getSelectedStorageBackend
+    safeStorage.encryptStringAsync = async () => { throw new Error('safeStorage.encryptStringAsync is temporarily unavailable. Please try again.') }
+    await assert.rejects(vault.write(saved), /系统凭据暂时不可用/)
   } finally { await rm(directory, { recursive: true, force: true }) }
 })

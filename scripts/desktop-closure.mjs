@@ -117,14 +117,15 @@ export async function materializeDesktopWorkspaces(root, runtime, installedRoot 
     for(const dep of Object.keys({...item.manifest.dependencies,...item.manifest.peerDependencies})){
       if(!item.manifest.peerDependenciesMeta?.[dep]?.optional)queue.push(dep)
     }
+    const sourceDirectory=await realpath(item.directory)
     const target=join(runtime,'node_modules',name)
     const present=existsSync(join(target,'package.json'))
     if(!present){
     if(!item.manifest.files?.length)throw new Error(`Missing publication file list for ${name}`)
     await mkdir(target,{recursive:true})
-    for(const file of globSync([...item.manifest.files,'package.json','README*','LICENSE*'],{cwd:item.directory})){
-      const source=join(item.directory,file)
-      const owned=relative(item.directory,await realpath(source))
+    for(const file of globSync([...item.manifest.files,'package.json','README*','LICENSE*'],{cwd:sourceDirectory})){
+      const source=join(sourceDirectory,file)
+      const owned=relative(sourceDirectory,await realpath(source))
       if(owned.startsWith('..')||isAbsolute(owned))throw new Error(`Publication file escaped ${name}`)
       await mkdir(dirname(join(target,file)),{recursive:true})
       await cp(source,join(target,file),{recursive:true,dereference:false,filter:path=>desktopDependencyFile(path)&&!path.split(sep).includes('node_modules')})

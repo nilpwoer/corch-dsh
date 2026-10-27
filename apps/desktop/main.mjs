@@ -1,4 +1,4 @@
-/** Windows portable desktop. A restricted preload exposes native publication only to the local workbench. */
+/** Portable desktop. A restricted preload exposes native publication only to the local workbench. */
 import { app, BrowserWindow, dialog, Menu, session, ipcMain, safeStorage } from 'electron'
 import { spawn, execFile } from 'node:child_process'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
@@ -16,7 +16,7 @@ const args = process.argv.slice(app.isPackaged ? 1 : 2)
 const dataIndex = args.indexOf('--data-dir')
 const dataArg = dataIndex < 0 ? undefined : args[dataIndex + 1]
 if (dataIndex >= 0 && (!dataArg || !isAbsolute(dataArg))) throw new Error('--data-dir requires an absolute directory')
-const data = dataArg ?? join(dirname(process.execPath), 'data')
+const data = dataArg ?? (process.platform === 'darwin' ? join(app.getPath('appData'), 'Corch DSH') : join(dirname(process.execPath), 'data'))
 app.setPath('userData', join(data, 'electron'))
 app.setPath('sessionData', join(data, 'electron'))
 const prefs = { nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true, allowRunningInsecureContent: false }
@@ -52,7 +52,8 @@ async function stopBackend() {
   const timedOut = await Promise.race([backendDone.then(() => false), new Promise(resolve => { timer=setTimeout(() => resolve(true), 12_000) })])
   clearTimeout(timer)
   if (timedOut && child.exitCode === null && child.signalCode === null) {
-    await new Promise(resolve => execFile('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true }, () => resolve()))
+    if(process.platform==='win32')await new Promise(resolve => execFile('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true }, () => resolve()))
+    else process.kill(-child.pid,'SIGKILL')
     await backendDone
   }
   log?.end()
@@ -101,8 +102,9 @@ async function start() {
     port = state.port
   }
   log = createWriteStream(join(data, 'backend.log'), { flags: 'a' })
-  child = spawn(join(resources, 'node/node.exe'), [join(source, 'backend.mjs'), join(modules, '@deepseek-ai/dsh/lib/bin.js'), 'web', '--host', '127.0.0.1', '--port', String(port), '--no-open'], {
-    cwd: work, env: backendEnvironment(process.env, home), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+  const node = process.platform === 'win32' ? join(resources, 'node/node.exe') : join(resources, 'node/bin/node')
+  child = spawn(node, [join(source, 'backend.mjs'), join(modules, '@deepseek-ai/dsh/lib/bin.js'), 'web', '--host', '127.0.0.1', '--port', String(port), '--no-open'], {
+    cwd: work, env: backendEnvironment(process.env, home), windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
   })
   backendDone = new Promise(resolve => child.once('close', resolve))
   const endpoint = await new Promise((resolve, reject) => {
